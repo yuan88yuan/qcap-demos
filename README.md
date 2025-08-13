@@ -26,8 +26,8 @@
 選擇一個您要使用的目標平台，並執行 `make` 指令。例如，若要為 `l4t-r36-2` (NVIDIA Jetson L4T R36.2) 平台編譯：
 
 ```bash
-# 將 l4t-r36-2 替換成您的目標平台
-make l4t-r36-2
+# 將 l4t-r36-2 替換成您的目標平台, QCAP_HOME替換為QCAP函式庫路徑
+QCAP_HOME=/your-qcap-root/l4t-r36-2 make -f l4t-r36-2.mk -j4
 ```
 
 編譯成功後，所有產生的檔案 (包括執行檔) 將會被放置在 `_objs/<your-target-platform>/` 目錄下。
