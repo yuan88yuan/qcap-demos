@@ -725,6 +725,17 @@ namespace ZzUtils {
 	boost::filesystem::path GetGpioValuePath(int nPin, bool bOut);
 	void BypassSwitch(int nPin, bool bByPass);
 	void ResetIP(int nPin, useconds_t usec = 10000);
+
+	struct Scoped {
+		boost::function<void()> d;
+
+		explicit Scoped(const boost::function<void()>& d) : d(d) {
+		}
+
+		~Scoped() {
+			d();
+		}
+	};
 }
 
 template<typename FUNC> boost::thread ZzCreateThread(FUNC func, int priority) {

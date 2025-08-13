@@ -1,7 +1,9 @@
 ################## qdemo ##################
 $(call decl_mod,QDEMO)
 $(call add_flags_mod,QDEMO)
-$(call add_mods,QDEMO,BASE BOOST QCAP)
+$(call add_mods,QDEMO,QCAP ZZLAB)
+
+# $(info QDEMO_FLAGS=${QDEMO_FLAGS})
 
 QDEMO_E=qdemo
 UTILS+=$${QDEMO_e}

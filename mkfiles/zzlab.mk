@@ -1,10 +1,11 @@
-BUILD_WITH_ZZLAB=ON
+ifeq (${BUILD_WITH_ZZLAB},ON)
 
 $(call decl_mod,ZZLAB)
+$(call add_flags_mod,ZZLAB)
 
 ZZLAB_A=lib${ZZLAB_M}.a
 
-ZZLAB_SRC+=\
+ZZLAB_SRCS+=\
 zzlab/ZzClock.cpp \
 zzlab/ZzLog.cpp \
 zzlab/ZzModules.cpp \
@@ -21,3 +22,5 @@ ZZLAB_I+=\
 
 ZZLAB_L_A+=\
 -l${ZZLAB_M}
+
+endif

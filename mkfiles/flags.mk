@@ -53,7 +53,8 @@ SC6G0)
 
 # dev flags
 $$(call add_flags,$1,\
-WITH_ZZLAB)
+WITH_NEON \
+WITH_SSE)
 endef
 
 define add_flags_mod
