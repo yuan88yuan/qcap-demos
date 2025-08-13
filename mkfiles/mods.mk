@@ -1,0 +1,29 @@
+include mkfiles/boost.mk
+include mkfiles/ffmpeg.mk
+include mkfiles/freetype.mk
+include mkfiles/harfbuzz.mk
+include mkfiles/gstreamer.mk
+include mkfiles/cuda.mk
+include mkfiles/npp.mk
+include mkfiles/fontconfig.mk
+include mkfiles/zlib.mk
+include mkfiles/iconv.mk
+include mkfiles/x264.mk
+include mkfiles/openssl.mk
+include mkfiles/sdl.mk
+include mkfiles/alsa.mk
+include mkfiles/x11.mk
+include mkfiles/vaapi.mk
+include mkfiles/udev.mk
+include mkfiles/yuv.mk
+include mkfiles/ipp.mk
+include mkfiles/onetbb.mk
+include mkfiles/drm.mk
+include mkfiles/nvbuf.mk
+include mkfiles/nvjpeg.mk
+include mkfiles/speexdsp.mk
+include mkfiles/fmt.mk
+include mkfiles/ibverbs.mk
+
+include mkfiles/zzlab.mk
+# include mkfiles/qcap.mk

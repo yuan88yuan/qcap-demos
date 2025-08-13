@@ -1,0 +1,11 @@
+ifeq (${BUILD_WITH_FONTCONFIG},ON)
+
+$(call decl_mod,FONTCONFIG)
+
+FONTCONFIG_F+=\
+-DBUILD_WITH_FONTCONFIG=1
+
+FONTCONFIG_L_S+=\
+-lfontconfig
+
+endif
