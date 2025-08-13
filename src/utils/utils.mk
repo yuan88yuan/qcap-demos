@@ -9,4 +9,4 @@ QDEMO_E=qdemo
 UTILS+=$${QDEMO_e}
 
 QDEMO_SRCS+=\
-qdemo/main.cpp
+utils/qdemo.cpp

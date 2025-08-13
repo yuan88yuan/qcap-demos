@@ -21,11 +21,11 @@ include mkfiles/mods.mk
 
 # utils
 UTILS=utils=
-include mkfiles/utils.mk
+include ${S}/utils/utils.mk
 
 # tests
 TESTS=tests=
-include mkfiles/tests.mk
+include ${S}/tests/tests.mk
 
 # post rules
 ifeq (${VERBOSE},ON)
