@@ -24,6 +24,9 @@
 #include <stack>
 #include <fstream>
 
+#define LOG_ENTER(f) LOGW("+" f)
+#define LOG_LEAVE(f) LOGW("-" f)
+
 ZZ_INIT_LOG("test-avcap");
 
 int g_argc = 0;
@@ -499,14 +502,14 @@ struct App0 {
 			switch(1) { case 1:
 				std::shared_ptr<callback_t> pCallback(new callback_t(func));
 
-				LOGW("+qcap2_event_handlers_invoke()");
+				LOG_ENTER("qcap2_event_handlers_invoke()");
 				qres = qcap2_event_handlers_invoke(pEventHandlers,
 					callback_t::_func, pCallback.get());
+				LOG_LEAVE("qcap2_event_handlers_invoke()");
 				if(qres != QCAP_RS_SUCCESSFUL) {
 					LOGE("%s(%d): qcap2_event_handlers_invoke() failed, qres=%d", __FUNCTION__, __LINE__,qres);
 					break;
 				}
-				LOGW("-qcap2_event_handlers_invoke()");
 			}
 
 			return qres;
@@ -514,9 +517,9 @@ struct App0 {
 
 		QRESULT OnExitEventHandlers() {
 			return ExecInEventHandlers([&]() -> QRETURN {
-				LOGW("+_FreeStack_evt_.flush()");
+				LOG_ENTER("_FreeStack_evt_.flush()");
 				_FreeStack_evt_.flush();
-				LOGW("-_FreeStack_evt_.flush()");
+				LOG_LEAVE("_FreeStack_evt_.flush()");
 
 				return QCAP_RT_OK;
 			});
@@ -673,9 +676,9 @@ struct App0 {
 				}
 
 				_FreeStack_ += [&]() {
-					LOGW("+_FreeStack_avsrc_.flush()");
+					LOG_ENTER("_FreeStack_avsrc_.flush()");
 					_FreeStack_avsrc_.flush();
-					LOGW("-_FreeStack_avsrc_.flush()");
+					LOG_LEAVE("_FreeStack_avsrc_.flush()");
 				};
 			}
 
@@ -697,7 +700,9 @@ struct App0 {
 				_FreeStack_ += [pDevice]() {
 					QRESULT qres;
 
+					LOG_ENTER("QCAP_DESTROY(pDevice)");
 					qres = QCAP_DESTROY(pDevice);
+					LOG_LEAVE("QCAP_DESTROY(pDevice)");
 					if(qres != QCAP_RS_SUCCESSFUL) {
 						LOGE("%s(%d): QCAP_DESTROY() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					}
@@ -770,7 +775,9 @@ struct App0 {
 				_FreeStack_ += [pDevice]() {
 					QRESULT qres;
 
+					LOG_ENTER("QCAP_STOP(pDevice)");
 					qres = QCAP_STOP(pDevice);
+					LOG_LEAVE("QCAP_STOP(pDevice)");
 					if(qres != QCAP_RS_SUCCESSFUL) {
 						LOGE("%s(%d): QCAP_STOP() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					}
@@ -822,8 +829,10 @@ struct App0 {
 				qcap2_block_lock_grant(pVsrcLock, true);
 				qcap2_block_lock_grant(pAsrcLock, true);
 				_FreeStack_ += [&]() {
+					LOG_ENTER("pAsrcLock, pVsrcLock false");
 					qcap2_block_lock_grant(pAsrcLock, false);
 					qcap2_block_lock_grant(pVsrcLock, false);
+					LOG_LEAVE("pAsrcLock, pVsrcLock false");
 				};
 			}
 
@@ -834,14 +843,16 @@ struct App0 {
 			QRESULT qres = QCAP_RS_SUCCESSFUL;
 
 			switch(1) { case 1:
-				const int nBuffers = 4;
+				const int nBuffers = 8;
 				const ULONG nColorSpaceType = QCAP_COLORSPACE_TYPE_Y210;
 				const ULONG nVideoFrameWidth = 1920;
 				const ULONG nVideoFrameHeight = 1080 / 2;
 
 				qcap2_rcbuffer_queue_t* pVscaQ = qcap2_rcbuffer_queue_new();
 				_FreeStack_ += [pVscaQ]() {
+					LOG_ENTER("qcap2_rcbuffer_queue_delete(pVscaQ)");
 					qcap2_rcbuffer_queue_delete(pVscaQ);
+					LOG_LEAVE("qcap2_rcbuffer_queue_delete(pVscaQ)");
 				};
 
 				qcap2_rcbuffer_t** pRCBuffers = new qcap2_rcbuffer_t*[nBuffers];
@@ -870,7 +881,9 @@ struct App0 {
 				_FreeStack_ += [pVscaQ]() {
 					QRESULT qres;
 
+					LOG_ENTER("qcap2_rcbuffer_queue_stop(pVscaQ)");
 					qres = qcap2_rcbuffer_queue_stop(pVscaQ);
+					LOG_LEAVE("qcap2_rcbuffer_queue_stop(pVscaQ)");
 					if(qres != QCAP_RS_SUCCESSFUL) {
 						LOGE("%s(%d): qcap2_rcbuffer_queue_stop() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					}
@@ -894,7 +907,9 @@ struct App0 {
 
 				qcap2_video_sink_t* pVsink = qcap2_video_sink_new();
 				_FreeStack_ += [pVsink]() {
+					LOG_ENTER("qcap2_video_sink_delete(pVsink)");
 					qcap2_video_sink_delete(pVsink);
+					LOG_LEAVE("qcap2_video_sink_delete(pVsink)");
 				};
 
 				qcap2_video_sink_set_backend_type(pVsink, QCAP2_VIDEO_SINK_BACKEND_TYPE_V4L2CAP);
@@ -922,7 +937,9 @@ struct App0 {
 				_FreeStack_ += [pVsink]() {
 					QRESULT qres;
 
+					LOG_ENTER("qcap2_video_sink_stop(pVsink)");
 					qres = qcap2_video_sink_stop(pVsink);
+					LOG_LEAVE("qcap2_video_sink_stop(pVsink)");
 					if(qres != QCAP_RS_SUCCESSFUL) {
 						LOGE("%s(%d): qcap2_video_sink_stop() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					}
@@ -949,7 +966,9 @@ struct App0 {
 
 				pVsrcQ = qcap2_rcbuffer_queue_new();
 				_FreeStack_ += [&]() {
+					LOG_ENTER("qcap2_rcbuffer_queue_delete(pVsrcQ)");
 					qcap2_rcbuffer_queue_delete(pVsrcQ);
+					LOG_LEAVE("qcap2_rcbuffer_queue_delete(pVsrcQ)");
 				};
 
 				qcap2_rcbuffer_queue_set_max_buffers(pVsrcQ, nBuffers);
@@ -963,7 +982,9 @@ struct App0 {
 				_FreeStack_ += [&]() {
 					QRESULT qres;
 
+					LOG_ENTER("qcap2_rcbuffer_queue_stop(pVsrcQ)");
 					qres = qcap2_rcbuffer_queue_stop(pVsrcQ);
+					LOG_LEAVE("qcap2_rcbuffer_queue_stop(pVsrcQ)");
 					if(qres != QCAP_RS_SUCCESSFUL) {
 						LOGE("%s(%d): qcap2_rcbuffer_queue_stop() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					}
@@ -1004,7 +1025,9 @@ struct App0 {
 
 				qcap2_audio_sink_t* pAsink = qcap2_audio_sink_new();
 				_FreeStack_ += [pAsink]() {
+					LOG_ENTER("qcap2_audio_sink_delete(pAsink)");
 					qcap2_audio_sink_delete(pAsink);
+					LOG_LEAVE("qcap2_audio_sink_delete(pAsink)");
 				};
 
 				qcap2_audio_sink_set_backend_type(pAsink, QCAP2_AUDIO_SINK_BACKEND_TYPE_V4L2CAP);
@@ -1031,7 +1054,9 @@ struct App0 {
 				_FreeStack_ += [pAsink]() {
 					QRESULT qres;
 
+					LOG_ENTER("qcap2_audio_sink_stop(pAsink)");
 					qres = qcap2_audio_sink_stop(pAsink);
+					LOG_LEAVE("qcap2_audio_sink_stop(pAsink)");
 					if(qres != QCAP_RS_SUCCESSFUL) {
 						LOGE("%s(%d): qcap2_audio_sink_stop() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					}
@@ -1056,10 +1081,12 @@ struct App0 {
 
 				pAsrcQ = qcap2_rcbuffer_queue_new();
 				_FreeStack_ += [&]() {
+					LOG_ENTER("qcap2_rcbuffer_queue_delete(pAsrcQ)");
 					qcap2_rcbuffer_queue_delete(pAsrcQ);
+					LOG_LEAVE("qcap2_rcbuffer_queue_delete(pAsrcQ)");
 				};
 
-				qcap2_rcbuffer_queue_set_max_buffers(pAsrcQ, 4);
+				qcap2_rcbuffer_queue_set_max_buffers(pAsrcQ, 16);
 				qcap2_rcbuffer_queue_set_event(pAsrcQ, pEvent);
 
 				qres = qcap2_rcbuffer_queue_start(pAsrcQ);
@@ -1070,7 +1097,9 @@ struct App0 {
 				_FreeStack_ += [&]() {
 					QRESULT qres;
 
+					LOG_ENTER("qcap2_rcbuffer_queue_stop(pAsrcQ)");
 					qres = qcap2_rcbuffer_queue_stop(pAsrcQ);
+					LOG_LEAVE("qcap2_rcbuffer_queue_stop(pAsrcQ)");
 					if(qres != QCAP_RS_SUCCESSFUL) {
 						LOGE("%s(%d): qcap2_rcbuffer_queue_stop() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					}
@@ -1106,9 +1135,9 @@ struct App0 {
 		}
 
 		QRETURN OnSignalRemoved( PVOID pDevice, ULONG nVideoInput, ULONG nAudioInput ) {
-			LOGW("+_FreeStack_avsrc_.flush()");
+			LOG_ENTER("_FreeStack_avsrc_.flush()");
 			_FreeStack_avsrc_.flush();
-			LOGW("-_FreeStack_avsrc_.flush()");
+			LOG_LEAVE("_FreeStack_avsrc_.flush()");
 
 			return QCAP_RT_OK;
 		}
@@ -1128,9 +1157,9 @@ struct App0 {
 			this->nAudioBitsPerSample = nAudioBitsPerSample;
 			this->nAudioSampleFrequency = nAudioSampleFrequency;
 
-			LOGW("+_FreeStack_avsrc_.flush()");
+			LOG_ENTER("_FreeStack_avsrc_.flush()");
 			_FreeStack_avsrc_.flush();
-			LOGW("-_FreeStack_avsrc_.flush()");
+			LOG_LEAVE("_FreeStack_avsrc_.flush()");
 
 			if(nVideoWidth == 3840 && nVideoHeight == 2160 && bVideoIsInterleaved == FALSE && fabs(dVideoFrameRate - 50.0) <= 0.03) {
 				StartAVSrc(_FreeStack_avsrc_);
@@ -1153,12 +1182,20 @@ struct App0 {
 			if(qcap2_block_lock_enter(pVsrcLock)) {
 				switch(1) { case 1:
 					qcap2_rcbuffer_t* pRCBuffer = qcap2_rcbuffer_cast(pFrameBuffer, nFrameBufferLen);
+					if(! pRCBuffer) {
+						LOGE("%s(%d): unexpected value, pRCBuffer=%p", __FUNCTION__, __LINE__, pRCBuffer);
+						break;
+					}
 
 					std::shared_ptr<qcap2_av_frame_t> pAVFrame(
 						(qcap2_av_frame_t*)qcap2_rcbuffer_lock_data(pRCBuffer),
-						[pRCBuffer](qcap2_av_frame_t*) {
-							qcap2_rcbuffer_unlock_data(pRCBuffer);
+						[pRCBuffer](qcap2_av_frame_t* p) {
+							if(p) qcap2_rcbuffer_unlock_data(pRCBuffer);
 						});
+					if(! pAVFrame.get()) {
+						LOGE("%s(%d): unexpected value, pAVFrame=%p", __FUNCTION__, __LINE__, pAVFrame.get());
+						break;
+					}
 
 					// to embed frame counter
 					qcap2_av_frame_set_pkt_pos(pAVFrame.get(), nVideoFrame++);
@@ -1190,12 +1227,20 @@ struct App0 {
 			if(qcap2_block_lock_enter(pAsrcLock)) {
 				switch(1) { case 1:
 					qcap2_rcbuffer_t* pRCBuffer = qcap2_rcbuffer_cast(pFrameBuffer, nFrameBufferLen);
+					if(! pRCBuffer) {
+						LOGE("%s(%d): unexpected value, pRCBuffer=%p", __FUNCTION__, __LINE__, pRCBuffer);
+						break;
+					}
 
 					std::shared_ptr<qcap2_av_frame_t> pAVFrame(
 						(qcap2_av_frame_t*)qcap2_rcbuffer_lock_data(pRCBuffer),
-						[pRCBuffer](qcap2_av_frame_t*) {
-							qcap2_rcbuffer_unlock_data(pRCBuffer);
+						[pRCBuffer](qcap2_av_frame_t* p) {
+							if(p) qcap2_rcbuffer_unlock_data(pRCBuffer);
 						});
+					if(! pAVFrame.get()) {
+						LOGE("%s(%d): unexpected value, pAVFrame=%p", __FUNCTION__, __LINE__, pAVFrame.get());
+						break;
+					}
 
 					// to embed frame counter
 					qcap2_av_frame_set_pkt_pos(pAVFrame.get(), nAudioFrame++);
@@ -1228,14 +1273,22 @@ struct App0 {
 					LOGE("%s(%d): qcap2_rcbuffer_queue_pop() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
+				if(! pRCBuffer) {
+					LOGE("%s(%d): unexpected value, pRCBuffer=%p", __FUNCTION__, __LINE__, pRCBuffer);
+					break;
+				}
 
 				int64_t now = _clk();
 				std::shared_ptr<qcap2_rcbuffer_t> pRCBuffer_(pRCBuffer, qcap2_rcbuffer_release);
 				std::shared_ptr<qcap2_av_frame_t> pAVFrame(
 					(qcap2_av_frame_t*)qcap2_rcbuffer_lock_data(pRCBuffer),
-					[pRCBuffer](qcap2_av_frame_t*) {
-						qcap2_rcbuffer_unlock_data(pRCBuffer);
+					[pRCBuffer](qcap2_av_frame_t* p) {
+						if(p) qcap2_rcbuffer_unlock_data(pRCBuffer);
 					});
+				if(! pAVFrame.get()) {
+					LOGE("%s(%d): unexpected value, pAVFrame=%p", __FUNCTION__, __LINE__, pAVFrame.get());
+					break;
+				}
 
 				int64_t nPTS;
 				qcap2_av_frame_get_pts(pAVFrame.get(), &nPTS);
@@ -1263,12 +1316,21 @@ struct App0 {
 					LOGE("%s(%d): qcap2_rcbuffer_queue_pop() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
+				if(! pRCBuffer1) {
+					LOGE("%s(%d): unexpected value, pRCBuffer1=%p", __FUNCTION__, __LINE__, pRCBuffer1);
+					break;
+				}
+
 				std::shared_ptr<qcap2_rcbuffer_t> pRCBuffer1_(pRCBuffer1, qcap2_rcbuffer_release);
 				std::shared_ptr<qcap2_av_frame_t> pAVFrame1(
 					(qcap2_av_frame_t*)qcap2_rcbuffer_lock_data(pRCBuffer1),
-					[pRCBuffer1](qcap2_av_frame_t*) {
-						qcap2_rcbuffer_unlock_data(pRCBuffer1);
+					[pRCBuffer1](qcap2_av_frame_t* p) {
+						if(p) qcap2_rcbuffer_unlock_data(pRCBuffer1);
 					});
+				if(! pAVFrame1.get()) {
+					LOGE("%s(%d): unexpected value, pAVFrame1=%p", __FUNCTION__, __LINE__, pAVFrame1.get());
+					break;
+				}
 
 				uint8_t* pDstBuffer;
 				int nDstStride;
@@ -1302,12 +1364,14 @@ struct App0 {
 					pTmpBuffer, nTmpStride, pTmpBuffer1, nTmpStride1, pDstBuffer, nDstStride);
 #endif
 
+#if 1
 				cuerr = zppiHoriDownscale2X_Y210((uchar1*)pSrcBuffer, nSrcStride,
 					(uchar1*)pDstBuffer, nDstStride, nWidth, nHeight);
 				if(cuerr != cudaSuccess) {
 					LOGE("%s(%d): zppiHoriDownscale2X_Y210(), cuerr=%d", __FUNCTION__, __LINE__, cuerr);
 					break;
 				}
+#endif
 
 #if 0
 				static bool t = false;
@@ -1360,14 +1424,22 @@ struct App0 {
 					LOGE("%s(%d): qcap2_rcbuffer_queue_pop() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
+				if(! pRCBuffer) {
+					LOGE("%s(%d): unexpected value, pRCBuffer=%p", __FUNCTION__, __LINE__, pRCBuffer);
+					break;
+				}
 
 				int64_t now = _clk();
 				std::shared_ptr<qcap2_rcbuffer_t> pRCBuffer_(pRCBuffer, qcap2_rcbuffer_release);
 				std::shared_ptr<qcap2_av_frame_t> pAVFrame(
 					(qcap2_av_frame_t*)qcap2_rcbuffer_lock_data(pRCBuffer),
-					[pRCBuffer](qcap2_av_frame_t*) {
-						qcap2_rcbuffer_unlock_data(pRCBuffer);
+					[pRCBuffer](qcap2_av_frame_t* p) {
+						if(p) qcap2_rcbuffer_unlock_data(pRCBuffer);
 					});
+				if(! pAVFrame.get()) {
+					LOGE("%s(%d): unexpected value, pAVFrame=%p", __FUNCTION__, __LINE__, pAVFrame.get());
+					break;
+				}
 
 				ULONG nChannels;
 				ULONG nSampleFmt;
