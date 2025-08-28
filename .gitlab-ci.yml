@@ -1,0 +1,46 @@
+stages:
+  - build
+  - deploy
+  - test
+
+dev-build:
+  stage: build
+  only:
+    - develop
+  script:
+    - echo "dev build"
+
+dev-deploy:
+  stage: deploy
+  only:
+    - develop
+  script:
+    - echo "dev deploy"
+
+dev-test:
+  stage: test
+  only:
+    - develop
+  script:
+    - echo "dev testing"
+
+stg-build:
+  stage: build
+  only:
+    - master
+  script:
+    - echo "stg build"
+
+stg-deploy:
+  stage: deploy
+  only:
+    - master
+  script:
+    - echo "stg deploy"
+
+stg-test:
+  stage: test
+  only:
+    - master
+  script:
+    - echo "stg testing"
