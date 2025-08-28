@@ -1,62 +1,62 @@
 # qcap-demos
 
-這是一個 C++ 專案，旨在展示和測試 `qcap` 影音擷取函式庫的功能。
+This is a C++ project that demonstrates and tests the features of the `qcap` video and audio capture library.
 
-此專案包含主要的範例應用程式 (`qdemo`)、一個工具程式庫 (`zzlab`)，以及一個基於 `make` 的複雜建置系統，使其具有高度的跨平台相容性。
+This project includes a main sample application (`qdemo`), a utility library (`zzlab`), and a complex `make`-based build system that provides a high degree of cross-platform compatibility.
 
-## 目錄結構
+## Directory Structure
 
 ```
 .
 ├── src/
-│   ├── qdemo/         # 主要的範例應用程式
-│   ├── tests/         # 測試程式
-│   └── zzlab/         # 共用的工具函式庫 (日誌、時脈、工具等)
-├── mkfiles/           # Make 的設定檔，支援多種平台與函式庫
-├── _objs/             # 編譯後產生的目標檔案與執行檔
+│   ├── utils/         # The main sample application
+│   ├── tests/         # Test applications
+│   └── zzlab/         # Shared utility library (logging, clock, etc.)
+├── mkfiles/           # Make configuration files for various platforms and libraries
+├── _objs/             # Compiled object files and executables
 └── ...
 ```
 
-## 建置與執行
+## Getting Started
 
-此專案使用 `make` 進行編譯。您需要根據 `mkfiles` 目錄中定義的目標平台來進行建置。
+This project uses `make` for compilation. You need to build for a target platform defined in the `mkfiles` directory.
 
-### 1. 編譯
+### 1. Compilation
 
-選擇一個您要使用的目標平台，並執行 `make` 指令。例如，若要為 `l4t-r36-2` (NVIDIA Jetson L4T R36.2) 平台編譯：
+Choose a target platform and run the `make` command. For example, to compile for the `l4t-r36-2` (NVIDIA Jetson L4T R36.2) platform:
 
 ```bash
-# 將 l4t-r36-2 替換成您的目標平台, QCAP_HOME替換為QCAP函式庫路徑
+# Replace l4t-r36-2 with your target platform and QCAP_HOME with the path to the qcap library
 QCAP_HOME=/your-qcap-root/l4t-r36-2 make -f l4t-r36-2.mk -j4
 ```
 
-編譯成功後，所有產生的檔案 (包括執行檔) 將會被放置在 `_objs/<your-target-platform>/` 目錄下。
+After a successful compilation, all generated files (including executables) will be placed in the `_objs/<your-target-platform>/` directory.
 
-### 2. 執行
+### 2. Execution
 
-執行檔位於對應平台的 `_objs` 子目錄中。
+The executables are located in the corresponding platform's `_objs` subdirectory.
 
 ```bash
-# 執行 qdemo 範例程式
+# Run the qdemo sample application
 ./_objs/l4t-r36-2/qdemo
 ```
 
-## 主要技術與依賴函式庫
+## Main Technologies and Dependencies
 
-此專案整合了多種影音處理與系統相關的函式庫，使其能在不同硬體和作業系統上運作。主要的技術與依賴包括：
+This project integrates various video/audio processing and system-related libraries to run on different hardware and operating systems. The main technologies and dependencies include:
 
-*   **核心**: C++
-*   **建置系統**: GNU Make
-*   **影音處理**:
+*   **Core**: C++
+*   **Build System**: GNU Make
+*   **Video/Audio Processing**:
     *   FFmpeg
     *   GStreamer
     *   NVIDIA CUDA / NPP / NvJpeg
     *   VAAPI
     *   X264
-*   **支援平台**:
+*   **Supported Platforms**:
     *   Linux (Ubuntu, CentOS, Debian, Kylin)
-    *   嵌入式平台 (NVIDIA L4T, HiSilicon, Rockchip, Novatek)
-*   **其他函式庫**:
+    *   Embedded Platforms (NVIDIA L4T, HiSilicon, Rockchip, Novatek)
+*   **Other Libraries**:
     *   SDL
     *   ALSA
     *   OpenSSL
