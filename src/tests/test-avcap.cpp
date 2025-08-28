@@ -24,9 +24,6 @@
 #include <stack>
 #include <fstream>
 
-#define LOG_ENTER(f) LOGW("+" f)
-#define LOG_LEAVE(f) LOGW("-" f)
-
 ZZ_INIT_LOG("test-avcap");
 
 int g_argc = 0;
@@ -316,7 +313,10 @@ namespace __test_avcap__ {
 		switch(1) { case 1:
 			qcap2_rcbuffer_t* pRCBuffer = qcap2_rcbuffer_new_av_frame();
 			_FreeStack_ += [pRCBuffer]() {
+				LOG_ENTER("qcap2_rcbuffer_delete(pRCBuffer) %p %d %d",
+					pRCBuffer, qcap2_rcbuffer_use_count(pRCBuffer), qcap2_rcbuffer_weak_count(pRCBuffer));
 				qcap2_rcbuffer_delete(pRCBuffer);
+				LOG_LEAVE("qcap2_rcbuffer_delete(pRCBuffer)");
 			};
 
 			qcap2_av_frame_t* pAVFrame = (qcap2_av_frame_t*)qcap2_rcbuffer_get_data(pRCBuffer);

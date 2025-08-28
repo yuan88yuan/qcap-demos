@@ -52,5 +52,7 @@ struct ZzLog {
 
 #define TRACE_TAG() LOGI("\033[1;33m**** %s(%d)\033[0m", __FILE__, __LINE__)
 #define TODO_TAG() LOGW("%s(%d): TODO", __FILE__, __LINE__)
+#define LOG_ENTER(...) LOGW("+" __VA_ARGS__)
+#define LOG_LEAVE(...) LOGW("-" __VA_ARGS__)
 
 #endif // __ZZ_LOG_H__
