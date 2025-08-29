@@ -1,3 +1,5 @@
+ifeq (${BUILD_WITH_CUDA},ON)
+
 ################## test-avcap ##################
 $(call decl_mod,TEST_AVCAP)
 $(call add_flags_mod,TEST_AVCAP)
@@ -12,6 +14,10 @@ TEST_AVCAP_SRCS+=\
 tests/test-avcap.cpp \
 tests/test-avcap.cu
 
+endif # BUILD_WITH_CUDA
+
+ifeq (${BUILD_WITH_IBVERBS},ON)
+
 ################## test-hsb-vsrc ##################
 $(call decl_mod,TEST_HSB_VSRC)
 $(call add_flags_mod,TEST_HSB_VSRC)
@@ -24,3 +30,5 @@ TESTS+=$${TEST_HSB_VSRC_e}
 
 TEST_HSB_VSRC_SRCS+=\
 tests/test-hsb-vsrc.cpp
+
+endif # BUILD_WITH_IBVERBS
