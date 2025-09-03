@@ -653,6 +653,11 @@ struct App0 {
 				}
 
 				wait_for_test_finish([&](int ch) -> bool {
+					switch(ch) {
+					case '1':
+						qcap2_debug_set(0, 1);
+						break;
+					}
 					return true;
 				}, 1000000LL, 10LL);
 			}
@@ -899,6 +904,7 @@ struct App0 {
 			QRESULT qres = QCAP_RS_SUCCESSFUL;
 
 			switch(1) { case 1:
+				const int nBuffers = 10;
 				const ULONG nColorSpaceType = QCAP_COLORSPACE_TYPE_Y210;
 				const ULONG nVideoWidth = 1920;
 				const ULONG nVideoHeight = 1080;
@@ -926,7 +932,7 @@ struct App0 {
 					qcap2_video_sink_set_video_format(pVsink, pVideoFormat.get());
 				}
 
-				qcap2_video_sink_set_frame_count(pVsink, 4);
+				qcap2_video_sink_set_frame_count(pVsink, nBuffers);
 				qcap2_video_sink_set_v4l2_name(pVsink, "video1");
 
 				qres = qcap2_video_sink_start(pVsink);
@@ -955,7 +961,7 @@ struct App0 {
 			QRESULT qres = QCAP_RS_SUCCESSFUL;
 
 			switch(1) { case 1:
-				const int nBuffers = 4;
+				const int nBuffers = 10;
 
 				qcap2_event_t* pEvent;
 				qres = NewEvent(_FreeStack_, &pEvent);
@@ -1310,6 +1316,11 @@ struct App0 {
 #endif
 
 #if 1
+				int32_t nVscaQSize = qcap2_rcbuffer_queue_get_buffer_count(pVscaQ);
+				if(nVscaQSize < 5) {
+					LOGW("pVscaQ: %d", nVscaQSize);
+				}
+
 				qcap2_rcbuffer_t* pRCBuffer1;
 				qres = qcap2_rcbuffer_queue_pop(pVscaQ, &pRCBuffer1);
 				if(qres != QCAP_RS_SUCCESSFUL) {
