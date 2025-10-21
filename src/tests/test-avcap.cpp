@@ -657,6 +657,10 @@ struct App0 {
 					case '1':
 						qcap2_debug_set(0, 1);
 						break;
+
+					case '2':
+						qcap2_debug_set(1, 1);
+						break;
 					}
 					return true;
 				}, 1000000LL, 10LL);
@@ -1270,6 +1274,13 @@ struct App0 {
 			QRESULT qres;
 			cudaError_t cuerr;
 
+			if(qcap2_debug_get(1) == 1) {
+				LOGW("%s(%d): DEBUG", __FUNCTION__, __LINE__);
+
+				qcap2_debug_set(1, 0);
+				sleep(1);
+			}
+
 			switch(1) { case 1:
 				const bool bVideoIsInterleaved = true;
 
@@ -1324,7 +1335,7 @@ struct App0 {
 				qcap2_rcbuffer_t* pRCBuffer1;
 				qres = qcap2_rcbuffer_queue_pop(pVscaQ, &pRCBuffer1);
 				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): qcap2_rcbuffer_queue_pop() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					LOGE("%s(%d): qcap2_rcbuffer_queue_pop() failed, qres=%d, nVscaQSize=%d", __FUNCTION__, __LINE__, qres, nVscaQSize);
 					break;
 				}
 				if(! pRCBuffer1) {
