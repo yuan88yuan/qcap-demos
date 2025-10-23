@@ -1,7 +1,6 @@
 #include "qcap.linux.h"
 #include "qcap2.h"
 #include "qcap2.user.h"
-#include "qcap2.cuda.h"
 #include "qcap2.hsb.h"
 
 #include "ZzLog.h"
@@ -9,6 +8,7 @@
 #include "ZzClock.h"
 #include "ZzStats.h"
 #include "ZzUtils.h"
+#include "testkit.h"
 
 #include <fcntl.h>
 #include <sys/ioctl.h>
@@ -49,6 +49,7 @@ namespace __test_vsrc__ {
 		}
 	};
 
+#if 0
 	template<class FUNC_IDLE>
 	void wait_for_test_finish(FUNC_IDLE idle, int64_t dur_num = 1000000LL, int64_t dur_den = 60LL) {
 		int err;
@@ -131,34 +132,6 @@ namespace __test_vsrc__ {
 				pop();
 			}
 		}
-	};
-
-	struct tick_ctrl_t {
-		typedef tick_ctrl_t self_t;
-
-		int num;
-		int den;
-
-		explicit tick_ctrl_t() {
-		}
-
-		void start(int64_t t) {
-			nDenSecs = den * 1000000LL;
-			nTimer = t;
-		}
-
-		int64_t advance(int64_t t) {
-			int64_t nDiff = t - nTimer;
-			int64_t nTicks = nDiff * num / nDenSecs;
-			int64_t nNextTimer = nTimer + (nTicks + 1) * nDenSecs / num;
-
-			nTimer += nTicks * nDenSecs / num;
-
-			return nNextTimer - t;
-		}
-
-		int64_t nDenSecs;
-		int64_t nTimer;
 	};
 
 	struct callback_t {
@@ -279,9 +252,12 @@ namespace __test_vsrc__ {
 
 		return qres;
 	}
+#endif
 }
 
 using namespace __test_vsrc__;
+using __testkit__::wait_for_test_finish;
+using __testkit__::TestCase;
 
 struct App0 {
 	typedef App0 self_t;
@@ -360,6 +336,7 @@ struct App0 {
 		}
 	}
 
+#if 0
 	struct TestCase {
 		typedef TestCase self_t;
 
@@ -496,6 +473,7 @@ struct App0 {
 			return qres;
 		}
 	};
+#endif
 
 	struct TestCase1 : public TestCase {
 		typedef TestCase1 self_t;

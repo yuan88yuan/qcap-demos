@@ -1,5 +1,5 @@
+#include "qcap2.lic.h"
 #include "qcap2.h"
-#include "qcap.linux.h"
 
 #include "ZzLog.h"
 #include "ZzModules.h"
@@ -8,19 +8,22 @@
 #include "ZzUtils.h"
 #include "testkit.h"
 
-#include <stack>
-#include <memory>
-#include <functional>
-
-ZZ_INIT_LOG("qdemo");
+ZZ_INIT_LOG("lic-test0");
 
 int g_argc = 0;
 char** g_argv = NULL;
 
 ZZ_MODULE_DECL(__zz_log__);
 
-namespace __qdemo__ {
+#define CONCAT_I(N, S) N ## S
+#define CONCAT(N, S) CONCAT_I(N, S)
+#define GUARD_NAME CONCAT(__GUARD_, __LINE__)
+
+using namespace __zz_clock__;
+
+namespace __test0__ {
 	ZZ_MODULES_INIT();
+	struct modules_init_t;
 
 	struct modules_init_t {
 		modules_init_t() {
@@ -33,9 +36,9 @@ namespace __qdemo__ {
 	};
 }
 
-using namespace __qdemo__;
-using __testkit__::free_stack_t;
+using namespace __test0__;
 using __testkit__::wait_for_test_finish;
+using __testkit__::TestCase;
 
 struct App0 {
 	typedef App0 self_t;
@@ -43,12 +46,6 @@ struct App0 {
 	static int Main() {
 		self_t app;
 		return app.Run();
-	}
-
-	App0() {
-	}
-
-	~App0() {
 	}
 
 	bool running;
@@ -79,7 +76,7 @@ struct App0 {
 
 			int err = select(fd_max + 1, &readfds, NULL, NULL, NULL);
 			if (err < 0) {
-				LOGE("%s(%d): select failed! err = %d", __FUNCTION__, __LINE__, err);
+				LOGE("%s(%d): select() failed! err = %d", __FUNCTION__, __LINE__, err);
 				break;
 			}
 
@@ -120,54 +117,59 @@ struct App0 {
 		}
 	}
 
-	struct TestCase1 {
+	struct TestCase1 : public TestCase {
 		typedef TestCase1 self_t;
+		typedef TestCase super_t;
 
-		free_stack_t oFreeStack;
-		PVOID pDevice;
-
-		TestCase1() {
-		}
-
-		~TestCase1() {
-		}
+		QCAP2_DECL_LIC(__LIC__);
 
 		void DoWork() {
 			QRESULT qres;
 
+			LOGD("%s::%s", typeid(self_t).name(), __FUNCTION__);
+
 			switch(1) { case 1:
-				qres = QCAP_CREATE("VIDCAP", 0, NULL, &pDevice);
-				LOGD("QCAP_CREATE(), qres=%d", qres);
-				oFreeStack += [&]() {
-					QRESULT qres;
+				qcap2_lic_register(&__LIC__);
 
-					qres = QCAP_DESTROY(pDevice);
-					LOGD("QCAP_DESTROY(), qres=%d", qres);
-					pDevice = NULL;
-				};
+				qres = StartEventHandlers();
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): StartEventHandlers() failed, qres=%d", qres);
+					break;
+				}
+				std::shared_ptr<void> GUARD_NAME(NULL, [&](void*) {
+					OnExitEventHandlers();
+				});
 
-				qres = QCAP_SET_VIDEO_INPUT(pDevice, QCAP_INPUT_TYPE_HDMI);
-				LOGD("QCAP_SET_VIDEO_INPUT(), qres=%d", qres);
-
-				qres = QCAP_SET_AUDIO_INPUT(pDevice, QCAP_INPUT_TYPE_EMBEDDED_AUDIO);
-				LOGD("QCAP_SET_AUDIO_INPUT(), qres=%d", qres);
-
-				qres = QCAP_RUN(pDevice);
-				LOGD("QCAP_RUN: qres=%d", qres);
-				oFreeStack += [&]() {
-					QRESULT qres;
-
-					qres = QCAP_STOP(pDevice);
-					LOGD("QCAP_STOP(), qres=%d", qres);
-					pDevice = NULL;
-				};
+				QRESULT qres_evt = QCAP_RS_SUCCESSFUL;
+				qres = ExecInEventHandlers(std::bind(&self_t::OnStart, this, std::ref(qres_evt)));
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): ExecInEventHandlers() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+				if(qres_evt != QCAP_RS_SUCCESSFUL) {
+					break;
+				}
 
 				wait_for_test_finish([&](int ch) -> bool {
+					switch(ch) {
+					case 't':
+					case 'T':
+						if(QCAP2_LIC_SUCCEEDED(__LIC__)) {
+							LOGI("GRANTED");
+						} else {
+							LOGI("DENIED");
+						}
+						break;
+					}
 					return true;
 				}, 1000000LL, 10LL);
-
-				oFreeStack.flush();
 			}
+
+			_FreeStack_main_.flush();
+		}
+
+		QRETURN OnStart(QRESULT& qres) {
+			return QCAP_RT_OK;
 		}
 	} mTestCase1;
 };
@@ -177,8 +179,9 @@ int main(int argc, char* argv[]) {
 	g_argv = argv;
 
 	int ret;
-	{
+	switch(1) { case 1:
 		modules_init_t _modules_init_;
+
 		ret = App0::Main();
 	}
 

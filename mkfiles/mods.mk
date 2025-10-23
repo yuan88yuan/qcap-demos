@@ -29,3 +29,4 @@ include mkfiles/ibverbs.mk
 
 include mkfiles/zzlab.mk
 include mkfiles/qcap.mk
+include mkfiles/qcap2-lic.mk
