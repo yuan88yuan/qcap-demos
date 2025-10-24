@@ -136,9 +136,11 @@ struct App0 {
 					LOGE("%s(%d): StartEventHandlers() failed, qres=%d", qres);
 					break;
 				}
-				std::shared_ptr<void> GUARD_NAME(NULL, [&](void*) {
-					OnExitEventHandlers();
-				});
+				ZzUtils::Scoped ZZ_GUARD_NAME(
+					[&]() {
+						OnExitEventHandlers();
+					}
+				);
 
 				QRESULT qres_evt = QCAP_RS_SUCCESSFUL;
 				qres = ExecInEventHandlers(std::bind(&self_t::OnStart, this, std::ref(qres_evt)));
