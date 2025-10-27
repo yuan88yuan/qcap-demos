@@ -1,4 +1,4 @@
-# qcap-demos
+# qcap-demos yuantest
 
 This is a C++ project that demonstrates and tests the features of the `qcap` video and audio capture library.
 
