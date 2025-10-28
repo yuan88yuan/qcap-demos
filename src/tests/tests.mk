@@ -54,3 +54,14 @@ TESTS+=$${TEST_LIC_e}
 
 TEST_LIC_SRCS+=\
 tests/test-lic.cpp
+
+################## test-store-pic ##################
+$(call decl_mod,TEST_STORE_PIC)
+$(call add_flags_mod,TEST_STORE_PIC)
+$(call add_mods,TEST_STORE_PIC,ZZLAB QCAP QCAP2_LIC)
+
+TEST_STORE_PIC_E=test-store-pic
+TESTS+=$${TEST_STORE_PIC_e}
+
+TEST_STORE_PIC_SRCS+=\
+tests/test-store-pic.cpp

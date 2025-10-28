@@ -343,7 +343,6 @@ struct App0 {
 				qcap2_video_scaler_set_multithread(pVsca, false);
 				qcap2_video_scaler_set_frame_count(pVsca, nBuffers);
 				qcap2_video_scaler_set_buffers(pVsca, pRCBuffers);
-				qcap2_video_scaler_set_frame_count(pVsca, nBuffers);
 
 				{
 					std::shared_ptr<qcap2_video_format_t> pVideoFormat(
