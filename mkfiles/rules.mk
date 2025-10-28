@@ -61,7 +61,7 @@ install: all
 	$(INSTALL)
 
 .PHONY: all
-all: tests utils
+all: utils
 	$(info Targets $^, all done.)
 
 .PHONY: clean
