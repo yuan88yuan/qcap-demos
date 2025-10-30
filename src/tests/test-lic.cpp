@@ -8,16 +8,12 @@
 #include "ZzUtils.h"
 #include "testkit.h"
 
-ZZ_INIT_LOG("lic-test0");
+ZZ_INIT_LOG("test-lic");
 
 int g_argc = 0;
 char** g_argv = NULL;
 
 ZZ_MODULE_DECL(__zz_log__);
-
-#define CONCAT_I(N, S) N ## S
-#define CONCAT(N, S) CONCAT_I(N, S)
-#define GUARD_NAME CONCAT(__GUARD_, __LINE__)
 
 using namespace __zz_clock__;
 

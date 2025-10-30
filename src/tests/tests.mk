@@ -55,13 +55,15 @@ TESTS+=$${TEST_LIC_e}
 TEST_LIC_SRCS+=\
 tests/test-lic.cpp
 
-################## test-store-pic ##################
-$(call decl_mod,TEST_STORE_PIC)
-$(call add_flags_mod,TEST_STORE_PIC)
-$(call add_mods,TEST_STORE_PIC,ZZLAB QCAP QCAP2_LIC)
+################## bsic-demo ##################
+$(call decl_mod,BSIC_DEMO)
+$(call add_flags_mod,BSIC_DEMO)
+$(call add_mods,BSIC_DEMO,ZZLAB QCAP NVBUF CUDA NPP)
 
-TEST_STORE_PIC_E=test-store-pic
-TESTS+=$${TEST_STORE_PIC_e}
+# $(info BSIC_DEMO_FLAGS=${BSIC_DEMO_FLAGS})
 
-TEST_STORE_PIC_SRCS+=\
-tests/test-store-pic.cpp
+BSIC_DEMO_E=bsic-demo
+TESTS+=$${BSIC_DEMO_e}
+
+BSIC_DEMO_SRCS+=\
+tests/bsic-demo.cpp

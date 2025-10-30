@@ -316,10 +316,7 @@ namespace __testkit__ {
 		switch(1) { case 1:
 			qcap2_rcbuffer_t* pRCBuffer = qcap2_rcbuffer_new_av_frame();
 			_FreeStack_ += [pRCBuffer]() {
-				LOG_ENTER("qcap2_rcbuffer_delete(pRCBuffer) %p %d %d",
-					pRCBuffer, qcap2_rcbuffer_use_count(pRCBuffer), qcap2_rcbuffer_weak_count(pRCBuffer));
 				qcap2_rcbuffer_delete(pRCBuffer);
-				LOG_LEAVE("qcap2_rcbuffer_delete(pRCBuffer)");
 			};
 
 			qcap2_av_frame_t* pAVFrame = (qcap2_av_frame_t*)qcap2_rcbuffer_get_data(pRCBuffer);
@@ -384,10 +381,8 @@ namespace __testkit__ {
 			switch(1) { case 1:
 				std::shared_ptr<callback_t> pCallback(new callback_t(func));
 
-				LOG_ENTER("qcap2_event_handlers_invoke()");
 				qres = qcap2_event_handlers_invoke(pEventHandlers,
 					callback_t::_func, pCallback.get());
-				LOG_LEAVE("qcap2_event_handlers_invoke()");
 				if(qres != QCAP_RS_SUCCESSFUL) {
 					LOGE("%s(%d): qcap2_event_handlers_invoke() failed, qres=%d", __FUNCTION__, __LINE__,qres);
 					break;
@@ -399,9 +394,7 @@ namespace __testkit__ {
 
 		QRESULT OnExitEventHandlers() {
 			return ExecInEventHandlers([&]() -> QRETURN {
-				LOG_ENTER("_FreeStack_evt_.flush()");
 				_FreeStack_evt_.flush();
-				LOG_LEAVE("_FreeStack_evt_.flush()");
 
 				return QCAP_RT_OK;
 			});
