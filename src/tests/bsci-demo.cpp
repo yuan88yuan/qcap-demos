@@ -1113,7 +1113,7 @@ struct App0 {
 			QRESULT qres = QCAP_RS_SUCCESSFUL;
 
 			switch(1) { case 1:
-				const int nBuffers = 2;
+				const int nBuffers = 4;
 				const ULONG nColorSpaceType = QCAP_COLORSPACE_TYPE_GBRP;
 				const ULONG nCropX = 128;
 				const ULONG nCropY = 160;
@@ -1250,7 +1250,7 @@ struct App0 {
 			QRESULT qres = QCAP_RS_SUCCESSFUL;
 
 			switch(1) { case 1:
-				const int nBuffers = 2;
+				const int nBuffers = 4;
 				const ULONG nColorSpaceType = QCAP_COLORSPACE_TYPE_I420;
 				const ULONG nVideoFrameWidth = 560;
 				const ULONG nVideoFrameHeight = 560;
@@ -1341,6 +1341,12 @@ struct App0 {
 				}
 				if(qres != QCAP_RS_SUCCESSFUL)
 					break;
+
+				qres = qcap2_cuda_device_synchronize();
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): qcap2_cuda_device_synchronize() failed, qres=%d", __FUNCTION__, __LINE__,qres);
+					break;
+				}
 
 				qcap2_rcbuffer_queue_t* pBufferQ = qcap2_rcbuffer_queue_new();
 				_FreeStack_ += [pBufferQ]() {
@@ -1501,6 +1507,12 @@ struct App0 {
 					// LOGE("%s(%d): qcap2_video_scaler_push() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 				}
 
+				qres = qcap2_cuda_device_synchronize();
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): qcap2_cuda_device_synchronize() failed, qres=%d", __FUNCTION__, __LINE__,qres);
+					break;
+				}
+
 				qres = qcap2_video_sink_push(pVsink, pRCBuffer_crop);
 				if(qres != QCAP_RS_SUCCESSFUL) {
 					LOGE("%s(%d): qcap2_video_sink_push() failed, qres=%d", __FUNCTION__, __LINE__, qres);
@@ -1526,6 +1538,20 @@ struct App0 {
 				}
 				std::shared_ptr<qcap2_rcbuffer_t> ZZ_GUARD_NAME(pRCBuffer_infer, qcap2_rcbuffer_release);
 
+#if 0
+				switch(1) { case 1:
+					static int nIndex = 0;
+
+					if(nIndex > 30) break;
+
+					char fn[PATH_MAX];
+					sprintf(fn, "/home/nvidia/images/testcase6-%02d", nIndex);
+					nIndex++;
+
+					qcap2_save_raw_video_frame(pRCBuffer_infer, fn);
+				}
+#endif
+
 				qcap2_rcbuffer_t* pRCBuffer_result;
 				qres = DoInfer(pVsca_infer_crop, pRCBuffer_infer, &pRCBuffer_result);
 				if(qres != QCAP_RS_SUCCESSFUL) {
@@ -1548,18 +1574,52 @@ struct App0 {
 				}
 				std::shared_ptr<qcap2_rcbuffer_t> ZZ_GUARD_NAME(pRCBuffer_bgr, qcap2_rcbuffer_release);
 
+				// qcap2_print_video_frame_info(pRCBuffer_infer, "pRCBuffer_infer");
+				// qcap2_print_video_frame_info(pRCBuffer_result, "pRCBuffer_result");
+				// qcap2_print_video_frame_info(pRCBuffer_bgr, "pRCBuffer_bgr");
+
+#if 0
+				switch(1) { case 1:
+					static int nIndex = 0;
+					const char* strBase = "/home/nvidia/images";
+					// const char* strBase = "images";
+
+					char fn[PATH_MAX];
+
+					if(nIndex > 10) break;
+
+					sprintf(fn, "%s/pRCBuffer_result-%02d", strBase, nIndex);
+					qcap2_save_raw_video_frame(pRCBuffer_result, fn);
+
+					sprintf(fn, "%s/pRCBuffer_bgr-%02d", strBase, nIndex);
+					qcap2_save_raw_video_frame(pRCBuffer_bgr, fn);
+
+					nIndex++;
+				}
+#endif
+
 				std::shared_ptr<qcap2_av_frame_t> pAVFrame_bgr(
 					(qcap2_av_frame_t*)qcap2_rcbuffer_lock_data(pRCBuffer_bgr),
 					[pRCBuffer_bgr](qcap2_av_frame_t*) {
 						qcap2_rcbuffer_unlock_data(pRCBuffer_bgr);
 					});
 
-#if 1
-				{
-					static int nIndex = 0;
+				qres = qcap2_cuda_device_synchronize();
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): qcap2_cuda_device_synchronize() failed, qres=%d", __FUNCTION__, __LINE__,qres);
+					break;
+				}
 
+#if 1
+				switch(1) { case 1:
+					static int nIndex = 0;
+					const char* strBase = "/home/nvidia/images";
+					// const char* strBase = "images";
 					char fn[PATH_MAX];
-					sprintf(fn, "/home/nvidia/images/testcase6-%02d.bmp", nIndex);
+
+					if(nIndex > 30) break;
+
+					sprintf(fn, "%s/testcase6-%02d.bmp", strBase, nIndex);
 					if(nIndex++ >= 100) nIndex = 0;
 
 					qres = qcap2_av_frame_store_picture(pAVFrame_bgr.get(), fn);
