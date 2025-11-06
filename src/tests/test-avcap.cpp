@@ -202,7 +202,7 @@ struct App0 {
 			switch(1) { case 1:
 				qres = StartEventHandlers();
 				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): StartEventHandlers() failed, qres=%d", qres);
+					LOGE("%s(%d): StartEventHandlers() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
 				ZzUtils::Scoped ZZ_GUARD_NAME(

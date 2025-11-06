@@ -158,33 +158,33 @@ struct App0 {
 				qcap2_rcbuffer_t* pRCBuffer;
 				qres = __testkit__::new_video_cudahostbuf(_FreeStack_, QCAP_COLORSPACE_TYPE_NV12, 1920, 1080, cudaHostAllocMapped, &pRCBuffer);
 				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): __testkit__::new_video_cudahostbuf() failed, qres=%d", qres);
+					LOGE("%s(%d): __testkit__::new_video_cudahostbuf() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
 
 				qres = qcap2_fill_video_test_pattern(pRCBuffer, QCAP2_TEST_PATTERN_0);
 				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): qcap2_fill_video_test_pattern() failed, qres=%d", qres);
+					LOGE("%s(%d): qcap2_fill_video_test_pattern() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
 
 				qcap2_video_scaler_t* pVsca;
 				qres = StartVsca(_FreeStack_, &pVsca);
 				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): StartVsca() failed, qres=%d", qres);
+					LOGE("%s(%d): StartVsca() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
 
 				qres = qcap2_video_scaler_push(pVsca, pRCBuffer);
 				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): qcap2_video_scaler_push() failed, qres=%d", qres);
+					LOGE("%s(%d): qcap2_video_scaler_push() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
 
 				qcap2_rcbuffer_t* pRCBuffer1;
 				qres = qcap2_video_scaler_pop(pVsca, &pRCBuffer1);
 				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): qcap2_video_scaler_pop() failed, qres=%d", qres);
+					LOGE("%s(%d): qcap2_video_scaler_pop() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
 				std::shared_ptr<qcap2_rcbuffer_t> pRCBuffer1_(pRCBuffer1, qcap2_rcbuffer_release);
@@ -197,7 +197,7 @@ struct App0 {
 
 				qres = qcap2_av_frame_store_picture(pAVFrame1.get(), "testcase1.jpg");
 				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): qcap2_av_frame_store_picture() failed, qres=%d", qres);
+					LOGE("%s(%d): qcap2_av_frame_store_picture() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
 			}
@@ -269,33 +269,33 @@ struct App0 {
 				qcap2_rcbuffer_t* pRCBuffer;
 				qres = __testkit__::new_video_sysbuf(_FreeStack_, QCAP_COLORSPACE_TYPE_YUY2, 1920, 1080, &pRCBuffer);
 				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): __testkit__::new_video_sysbuf() failed, qres=%d", qres);
+					LOGE("%s(%d): __testkit__::new_video_sysbuf() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
 
 				qres = qcap2_fill_video_test_pattern(pRCBuffer, QCAP2_TEST_PATTERN_0);
 				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): qcap2_fill_video_test_pattern() failed, qres=%d", qres);
+					LOGE("%s(%d): qcap2_fill_video_test_pattern() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
 
 				qcap2_video_scaler_t* pVsca;
 				qres = StartVsca(_FreeStack_, &pVsca);
 				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): StartVsca() failed, qres=%d", qres);
+					LOGE("%s(%d): StartVsca() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
 
 				qres = qcap2_video_scaler_push(pVsca, pRCBuffer);
 				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): qcap2_video_scaler_push() failed, qres=%d", qres);
+					LOGE("%s(%d): qcap2_video_scaler_push() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
 
 				qcap2_rcbuffer_t* pRCBuffer1;
 				qres = qcap2_video_scaler_pop(pVsca, &pRCBuffer1);
 				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): qcap2_video_scaler_pop() failed, qres=%d", qres);
+					LOGE("%s(%d): qcap2_video_scaler_pop() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
 				std::shared_ptr<qcap2_rcbuffer_t> pRCBuffer1_(pRCBuffer1, qcap2_rcbuffer_release);
@@ -308,7 +308,7 @@ struct App0 {
 
 				qres = qcap2_av_frame_store_picture(pAVFrame1.get(), "testcase2.bmp");
 				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): qcap2_av_frame_store_picture() failed, qres=%d", qres);
+					LOGE("%s(%d): qcap2_av_frame_store_picture() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
 			}
@@ -390,14 +390,14 @@ struct App0 {
 				qcap2_rcbuffer_t* pRCBuffer;
 				qres = __testkit__::new_video_nvbuf(_FreeStack_, oNVBufParam, &pRCBuffer);
 				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): __testkit__::new_video_nvbuf() failed, qres=%d", qres);
+					LOGE("%s(%d): __testkit__::new_video_nvbuf() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
 
 				{
 					qres = qcap2_rcbuffer_map_nvbuf(pRCBuffer, NVBUF_MAP_WRITE);
 					if(qres != QCAP_RS_SUCCESSFUL) {
-						LOGE("%s(%d): qcap2_rcbuffer_map_nvbuf() failed, qres=%d", qres);
+						LOGE("%s(%d): qcap2_rcbuffer_map_nvbuf() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 						break;
 					}
 					ZzUtils::Scoped ZZ_GUARD_NAME([pRCBuffer]() {
@@ -405,13 +405,13 @@ struct App0 {
 
 						qres = qcap2_rcbuffer_unmap_nvbuf(pRCBuffer);
 						if(qres != QCAP_RS_SUCCESSFUL) {
-							LOGE("%s(%d): qcap2_rcbuffer_unmap_nvbuf() failed, qres=%d", qres);
+							LOGE("%s(%d): qcap2_rcbuffer_unmap_nvbuf() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 						}
 					});
 
 					qres = qcap2_fill_video_test_pattern(pRCBuffer, QCAP2_TEST_PATTERN_0);
 					if(qres != QCAP_RS_SUCCESSFUL) {
-						LOGE("%s(%d): qcap2_fill_video_test_pattern() failed, qres=%d", qres);
+						LOGE("%s(%d): qcap2_fill_video_test_pattern() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 						break;
 					}
 				}
@@ -419,14 +419,14 @@ struct App0 {
 				qcap2_video_scaler_t* pVsca;
 				qres = StartVsca(_FreeStack_, &pVsca);
 				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): StartVsca() failed, qres=%d", qres);
+					LOGE("%s(%d): StartVsca() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
 
 				{
 					qres = qcap2_rcbuffer_map_nvbuf(pRCBuffer, NVBUF_MAP_READ);
 					if(qres != QCAP_RS_SUCCESSFUL) {
-						LOGE("%s(%d): qcap2_rcbuffer_map_nvbuf() failed, qres=%d", qres);
+						LOGE("%s(%d): qcap2_rcbuffer_map_nvbuf() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 						break;
 					}
 					ZzUtils::Scoped ZZ_GUARD_NAME([pRCBuffer]() {
@@ -434,13 +434,13 @@ struct App0 {
 
 						qres = qcap2_rcbuffer_unmap_nvbuf(pRCBuffer);
 						if(qres != QCAP_RS_SUCCESSFUL) {
-							LOGE("%s(%d): qcap2_rcbuffer_unmap_nvbuf() failed, qres=%d", qres);
+							LOGE("%s(%d): qcap2_rcbuffer_unmap_nvbuf() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 						}
 					});
 
 					qres = qcap2_video_scaler_push(pVsca, pRCBuffer);
 					if(qres != QCAP_RS_SUCCESSFUL) {
-						LOGE("%s(%d): qcap2_video_scaler_push() failed, qres=%d", qres);
+						LOGE("%s(%d): qcap2_video_scaler_push() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 						break;
 					}
 				}
@@ -448,7 +448,7 @@ struct App0 {
 				qcap2_rcbuffer_t* pRCBuffer1;
 				qres = qcap2_video_scaler_pop(pVsca, &pRCBuffer1);
 				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): qcap2_video_scaler_pop() failed, qres=%d", qres);
+					LOGE("%s(%d): qcap2_video_scaler_pop() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
 				std::shared_ptr<qcap2_rcbuffer_t> pRCBuffer1_(pRCBuffer1, qcap2_rcbuffer_release);
@@ -461,7 +461,7 @@ struct App0 {
 
 				qres = qcap2_av_frame_store_picture(pAVFrame1.get(), "testcase3.jpg");
 				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): qcap2_av_frame_store_picture() failed, qres=%d", qres);
+					LOGE("%s(%d): qcap2_av_frame_store_picture() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
 			}
@@ -533,33 +533,33 @@ struct App0 {
 				qcap2_rcbuffer_t* pRCBuffer;
 				qres = __testkit__::new_video_cudahostbuf(_FreeStack_, QCAP_COLORSPACE_TYPE_NV12, 1920, 1080, cudaHostAllocMapped, &pRCBuffer);
 				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): __testkit__::new_video_cudahostbuf() failed, qres=%d", qres);
+					LOGE("%s(%d): __testkit__::new_video_cudahostbuf() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
 
 				qres = qcap2_fill_video_test_pattern(pRCBuffer, QCAP2_TEST_PATTERN_0);
 				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): qcap2_fill_video_test_pattern() failed, qres=%d", qres);
+					LOGE("%s(%d): qcap2_fill_video_test_pattern() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
 
 				qcap2_video_scaler_t* pVsca;
 				qres = StartVsca(_FreeStack_, &pVsca);
 				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): StartVsca() failed, qres=%d", qres);
+					LOGE("%s(%d): StartVsca() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
 
 				qres = qcap2_video_scaler_push(pVsca, pRCBuffer);
 				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): qcap2_video_scaler_push() failed, qres=%d", qres);
+					LOGE("%s(%d): qcap2_video_scaler_push() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
 
 				qcap2_rcbuffer_t* pRCBuffer1;
 				qres = qcap2_video_scaler_pop(pVsca, &pRCBuffer1);
 				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): qcap2_video_scaler_pop() failed, qres=%d", qres);
+					LOGE("%s(%d): qcap2_video_scaler_pop() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
 				std::shared_ptr<qcap2_rcbuffer_t> pRCBuffer1_(pRCBuffer1, qcap2_rcbuffer_release);
@@ -593,7 +593,7 @@ struct App0 {
 					qres = __testkit__::new_video_cudahostbuf(_FreeStack_,
 						nColorSpaceType, nVideoFrameWidth, nVideoFrameHeight, cudaHostAllocMapped, &pRCBuffer);
 					if(qres != QCAP_RS_SUCCESSFUL) {
-						LOGE("%s(%d): __testkit__::new_video_cudahostbuf() failed, qres=%d", qres);
+						LOGE("%s(%d): __testkit__::new_video_cudahostbuf() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 						break;
 					}
 
@@ -653,33 +653,33 @@ struct App0 {
 				qcap2_rcbuffer_t* pRCBuffer;
 				qres = __testkit__::new_video_cudahostbuf(_FreeStack_, QCAP_COLORSPACE_TYPE_GBRP, 1920, 1080, cudaHostAllocMapped, &pRCBuffer);
 				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): __testkit__::new_video_cudahostbuf() failed, qres=%d", qres);
+					LOGE("%s(%d): __testkit__::new_video_cudahostbuf() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
 
 				qres = qcap2_fill_video_test_pattern(pRCBuffer, QCAP2_TEST_PATTERN_0);
 				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): qcap2_fill_video_test_pattern() failed, qres=%d", qres);
+					LOGE("%s(%d): qcap2_fill_video_test_pattern() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
 
 				qcap2_video_scaler_t* pVsca;
 				qres = StartVsca(_FreeStack_, &pVsca);
 				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): StartVsca() failed, qres=%d", qres);
+					LOGE("%s(%d): StartVsca() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
 
 				qres = qcap2_video_scaler_push(pVsca, pRCBuffer);
 				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): qcap2_video_scaler_push() failed, qres=%d", qres);
+					LOGE("%s(%d): qcap2_video_scaler_push() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
 
 				qcap2_rcbuffer_t* pRCBuffer1;
 				qres = qcap2_video_scaler_pop(pVsca, &pRCBuffer1);
 				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): qcap2_video_scaler_pop() failed, qres=%d", qres);
+					LOGE("%s(%d): qcap2_video_scaler_pop() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
 				std::shared_ptr<qcap2_rcbuffer_t> pRCBuffer1_(pRCBuffer1, qcap2_rcbuffer_release);
@@ -713,7 +713,7 @@ struct App0 {
 					qres = __testkit__::new_video_cudahostbuf(_FreeStack_,
 						nColorSpaceType, nVideoFrameWidth, nVideoFrameHeight, cudaHostAllocMapped, &pRCBuffer);
 					if(qres != QCAP_RS_SUCCESSFUL) {
-						LOGE("%s(%d): __testkit__::new_video_cudahostbuf() failed, qres=%d", qres);
+						LOGE("%s(%d): __testkit__::new_video_cudahostbuf() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 						break;
 					}
 
@@ -775,7 +775,7 @@ struct App0 {
 			switch(1) { case 1:
 				qres = StartEventHandlers();
 				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): StartEventHandlers() failed, qres=%d", qres);
+					LOGE("%s(%d): StartEventHandlers() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
 				ZzUtils::Scoped ZZ_GUARD_NAME([&]() {
@@ -996,7 +996,7 @@ struct App0 {
 					qres = __testkit__::new_video_cudahostbuf(_FreeStack_,
 						nColorSpaceType, nCropW, nCropH, cudaHostAllocMapped, &pRCBuffer);
 					if(qres != QCAP_RS_SUCCESSFUL) {
-						LOGE("%s(%d): __testkit__::new_video_cudahostbuf() failed, qres=%d", qres);
+						LOGE("%s(%d): __testkit__::new_video_cudahostbuf() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 						break;
 					}
 
@@ -1064,7 +1064,7 @@ struct App0 {
 					qres = __testkit__::new_video_cudahostbuf(_FreeStack_,
 						nColorSpaceType, nVideoFrameWidth, nVideoFrameHeight, cudaHostAllocMapped, &pRCBuffer);
 					if(qres != QCAP_RS_SUCCESSFUL) {
-						LOGE("%s(%d): __testkit__::new_video_cudahostbuf() failed, qres=%d", qres);
+						LOGE("%s(%d): __testkit__::new_video_cudahostbuf() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 						break;
 					}
 
@@ -1134,7 +1134,7 @@ struct App0 {
 					qres = __testkit__::new_video_cudahostbuf(_FreeStack_,
 						nColorSpaceType, nCropW, nCropH, cudaHostAllocMapped, &pRCBuffer);
 					if(qres != QCAP_RS_SUCCESSFUL) {
-						LOGE("%s(%d): __testkit__::new_video_cudahostbuf() failed, qres=%d", qres);
+						LOGE("%s(%d): __testkit__::new_video_cudahostbuf() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 						break;
 					}
 
@@ -1202,7 +1202,7 @@ struct App0 {
 					qres = __testkit__::new_video_cudahostbuf(_FreeStack_,
 						nColorSpaceType, nVideoFrameWidth, nVideoFrameHeight, cudaHostAllocMapped, &pRCBuffer);
 					if(qres != QCAP_RS_SUCCESSFUL) {
-						LOGE("%s(%d): __testkit__::new_video_cudahostbuf() failed, qres=%d", qres);
+						LOGE("%s(%d): __testkit__::new_video_cudahostbuf() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 						break;
 					}
 
@@ -1269,7 +1269,7 @@ struct App0 {
 					qres = __testkit__::new_video_cudahostbuf(_FreeStack_,
 						nColorSpaceType, nVideoFrameWidth, nVideoFrameHeight, cudaHostAllocMapped, &pRCBuffer);
 					if(qres != QCAP_RS_SUCCESSFUL) {
-						LOGE("%s(%d): __testkit__::new_video_cudahostbuf() failed, qres=%d", qres);
+						LOGE("%s(%d): __testkit__::new_video_cudahostbuf() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 						break;
 					}
 
@@ -1327,7 +1327,7 @@ struct App0 {
 					qcap2_rcbuffer_t* pRCBuffer;
 					qres = __testkit__::new_video_cudahostbuf(_FreeStack_, QCAP_COLORSPACE_TYPE_NV12, 1920, 1080, cudaHostAllocMapped, &pRCBuffer);
 					if(qres != QCAP_RS_SUCCESSFUL) {
-						LOGE("%s(%d): __testkit__::new_video_cudahostbuf() failed, qres=%d", qres);
+						LOGE("%s(%d): __testkit__::new_video_cudahostbuf() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 						break;
 					}
 
@@ -1625,7 +1625,7 @@ struct App0 {
 
 					qres = qcap2_av_frame_store_picture(pAVFrame_bgr.get(), fn);
 					if(qres != QCAP_RS_SUCCESSFUL) {
-						LOGE("%s(%d): qcap2_av_frame_store_picture() failed, qres=%d", qres);
+						LOGE("%s(%d): qcap2_av_frame_store_picture() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 						break;
 					}
 				}
