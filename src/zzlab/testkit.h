@@ -4,6 +4,7 @@
 #include "qcap2.h"
 #include "qcap.linux.h"
 #include "qcap2.user.h"
+#include "qcap2.gst.h"
 
 #if BUILD_WITH_NVBUF
 #include "qcap2.nvbuf.h"

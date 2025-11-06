@@ -1613,8 +1613,9 @@ struct App0 {
 #if 1
 				switch(1) { case 1:
 					static int nIndex = 0;
-					const char* strBase = "/home/nvidia/images";
+					// const char* strBase = "/home/nvidia/images";
 					// const char* strBase = "images";
+					const char* strBase = "/home/nvidia/zzlee/images";
 					char fn[PATH_MAX];
 
 					if(nIndex > 30) break;
