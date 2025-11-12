@@ -80,3 +80,20 @@ TESTS+=$${TEST_ZZNVENC2_e}
 
 TEST_ZZNVENC2_SRCS+=\
 tests/test-zznvenc2.cpp
+
+ifeq (${BUILD_WITH_IPX},ON)
+
+################## test-ipx ##################
+$(call decl_mod,TEST_IPX)
+$(call add_flags_mod,TEST_IPX)
+$(call add_mods,TEST_IPX,ZZLAB QCAP NVBUF CUDA IPX)
+
+$(info TEST_IPX_FLAGS=${TEST_IPX_FLAGS})
+
+TEST_IPX_E=test-ipx
+TESTS+=$${TEST_IPX_e}
+
+TEST_IPX_SRCS+=\
+tests/test-ipx.cpp
+
+endif # BUILD_WITH_IPX

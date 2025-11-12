@@ -26,6 +26,7 @@ include mkfiles/nvjpeg.mk
 include mkfiles/speexdsp.mk
 include mkfiles/fmt.mk
 include mkfiles/ibverbs.mk
+include mkfiles/ipx.mk
 
 include mkfiles/zzlab.mk
 include mkfiles/qcap.mk
