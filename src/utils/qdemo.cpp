@@ -136,7 +136,7 @@ struct App0 {
 			QRESULT qres;
 
 			switch(1) { case 1:
-				qres = QCAP_CREATE("VIDCAP", 0, NULL, &pDevice);
+				qres = QCAP_CREATE("SC0710 PCI", 0, NULL, &pDevice);
 				LOGD("QCAP_CREATE(), qres=%d", qres);
 				oFreeStack += [&]() {
 					QRESULT qres;
@@ -159,7 +159,6 @@ struct App0 {
 
 					qres = QCAP_STOP(pDevice);
 					LOGD("QCAP_STOP(), qres=%d", qres);
-					pDevice = NULL;
 				};
 
 				wait_for_test_finish([&](int ch) -> bool {

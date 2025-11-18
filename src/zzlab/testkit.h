@@ -4,7 +4,10 @@
 #include "qcap2.h"
 #include "qcap.linux.h"
 #include "qcap2.user.h"
+
+#if BUILD_WITH_GSTREAMER
 #include "qcap2.gst.h"
+#endif
 
 #if BUILD_WITH_NVBUF
 #include "qcap2.nvbuf.h"
@@ -316,6 +319,7 @@ namespace __testkit__ {
 		return qres;
 	}
 
+#if BUILD_WITH_GSTREAMER
 	QRESULT StartVsink_ximage(free_stack_t& _FreeStack_, ULONG nColorSpaceType, ULONG nVideoFrameWidth, ULONG nVideoFrameHeight,
 		qcap2_window_t* pWindow, qcap2_video_sink_t** ppVsink) {
 		QRESULT qres = QCAP_RS_SUCCESSFUL;
@@ -367,6 +371,7 @@ namespace __testkit__ {
 
 		return qres;
 	}
+#endif // BUILD_WITH_GSTREAMER
 
 	QRESULT new_video_sysbuf(free_stack_t& _FreeStack_, ULONG nColorSpaceType, ULONG nWidth, ULONG nHeight, qcap2_rcbuffer_t** ppRCBuffer) {
 		QRESULT qres = QCAP_RS_SUCCESSFUL;
