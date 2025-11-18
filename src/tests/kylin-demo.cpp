@@ -116,6 +116,10 @@ struct App0 {
 		case 1:
 			mTestCase1.DoWork();
 			break;
+
+		case 2:
+			mTestCase2.DoWork();
+			break;
 		}
 	}
 
@@ -225,6 +229,7 @@ struct App0 {
 				QCAP_SET_VIDEO_DEFAULT_OUTPUT_FORMAT(pDevice, nColorSpaceType, 0, 0, 0, 0.0);
 				QCAP_SET_VIDEO_INPUT(pDevice, QCAP_INPUT_TYPE_HDMI);
 				QCAP_SET_AUDIO_INPUT(pDevice, QCAP_INPUT_TYPE_EMBEDDED_AUDIO);
+				QCAP_SET_AUDIO_SOUND_RENDERER(pDevice, 0);
 
 				pVsrcLock = qcap2_block_lock_new();
 				_FreeStack_ += [&]() {
@@ -638,6 +643,26 @@ struct App0 {
 			return QCAP_RT_OK;
 		}
 	} mTestCase1;
+
+	struct TestCase2 : public __testkit__::TestCase {
+		typedef TestCase2 self_t;
+		typedef TestCase super_t;
+
+		void DoWork() {
+			QRESULT qres;
+			CHAR* strDevName = NULL;
+
+			int i = 0;
+			while(true) {
+				qres = QCAP_SOUNDRENDERER_ENUMERATION(&strDevName, TRUE);
+				if(qres != QCAP_RS_SUCCESSFUL || ! strDevName)
+					break;
+
+				LOGD("%d: %s", i, strDevName);
+				i++;
+			}
+		}
+	} mTestCase2;
 };
 
 int main(int argc, char* argv[]) {
