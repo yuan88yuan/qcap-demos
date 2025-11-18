@@ -1,5 +1,6 @@
 #include <stdlib.h>
 #include <time.h>
+#include <fstream>
 
 #include "qcap2.h"
 
@@ -144,10 +145,15 @@ struct App0 {
 		ULONG nAudioBitsPerSample;
 		ULONG nAudioSampleFrequency;
 
+		volatile bool bSnapshot;
+		std::shared_ptr<std::ofstream> pAudioStream;
+
 		void DoWork() {
 			QRESULT qres;
 
 			LOGD("%s::%s", typeid(self_t).name(), __FUNCTION__);
+
+			bSnapshot = false;
 
 			switch(1) { case 1:
 				qres = StartEventHandlers();
@@ -173,6 +179,22 @@ struct App0 {
 				}
 
 				wait_for_test_finish([&](int ch) -> bool {
+					switch(ch) {
+					case 's': case 'S':
+						bSnapshot = true;
+						break;
+
+					case 'a': case 'A':
+						if(pAudioStream) {
+							LOGD("Stop audio stream recording.");
+							pAudioStream.reset();
+						} else {
+							LOGD("Start audio stream recording...");
+							pAudioStream.reset(new std::ofstream("testcase-audio.bin"));
+						}
+						break;
+					}
+
 					return true;
 				}, 1000000LL, 10LL);
 			}
@@ -591,6 +613,12 @@ struct App0 {
 				qcap2_av_frame_get_buffer(pAVFrame.get(), &pBuffer, &nStride);
 				(*pLog) << nPTS << ',' << (int64_t)pBuffer << ',' << nStride << std::endl;
 #endif
+
+				if(bSnapshot) {
+					bSnapshot = false;
+
+					qcap2_save_raw_video_frame(pRCBuffer, "testcase1");
+				}
 			}
 
 			return QCAP_RT_OK;
@@ -638,6 +666,14 @@ struct App0 {
 				qcap2_av_frame_get_buffer(pAVFrame.get(), &pBuffer, &nStride);
 				(*pLog) << nPTS << ',' << (int64_t)pBuffer << ',' << nStride << std::endl;
 #endif
+
+				if(pAudioStream) {
+					uint8_t* pBuffer;
+					int nStride;
+					qcap2_av_frame_get_buffer(pAVFrame.get(), &pBuffer, &nStride);
+
+					pAudioStream->write((const char*)pBuffer, nStride);
+				}
 			}
 
 			return QCAP_RT_OK;
