@@ -202,7 +202,7 @@ struct App0 {
 				const ULONG nColorSpaceType = QCAP_COLORSPACE_TYPE_YUY2;
 
 				PVOID pDevice;
-				qres = QCAP_CREATE( "SC0750 PCI", 0, NULL, &pDevice, TRUE, TRUE );
+				qres = QCAP_CREATE("SC0710 PCI", 0, NULL, &pDevice, TRUE, TRUE);
 				if(qres != QCAP_RS_SUCCESSFUL) {
 					LOGE("%s(%d): QCAP_CREATE() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
@@ -572,7 +572,9 @@ struct App0 {
 				}
 
 #if 1
-				pStats->Log(this->nVideoWidth * this->nVideoHeight * 2 * 10, now);
+				int64_t nBits;
+				qcap2_av_frame_get_video_bits(pAVFrame.get(), &nBits);
+				pStats->Log(nBits, now);
 #endif
 
 #if 0
@@ -617,13 +619,9 @@ struct App0 {
 				}
 
 #if 1
-				ULONG nChannels;
-				ULONG nSampleFmt;
-				ULONG nSampleFrequency;
-				ULONG nFrameSize;
-				qcap2_av_frame_get_audio_property(pAVFrame.get(), &nChannels, &nSampleFmt, &nSampleFrequency, &nFrameSize);
-
-				pStats->Log(nChannels * nFrameSize * 16, now);
+				int64_t nBits;
+				qcap2_av_frame_get_audio_bits(pAVFrame.get(), &nBits);
+				pStats->Log(nBits, now);
 #endif
 
 #if 0
