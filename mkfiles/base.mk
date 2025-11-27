@@ -10,7 +10,8 @@ BASE_F+=\
 -DOS_LINUX
 
 BASE_I+=\
--I${S}/../include
+-I${S}/../include \
+-I${QCAP_3RDPARTY}/include
 
 BASE_L+=$(call _ld_path,${D}/lib)
 

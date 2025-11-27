@@ -148,6 +148,8 @@ struct App0 {
 		volatile bool bSnapshot;
 		std::shared_ptr<std::ofstream> pAudioStream;
 
+		qcap2_window_t* pWindow_live;
+
 		void DoWork() {
 			QRESULT qres;
 
@@ -179,6 +181,14 @@ struct App0 {
 				}
 
 				wait_for_test_finish([&](int ch) -> bool {
+					switch(1) { case 1:
+						qres = qcap2_window_handle_events(pWindow_live);
+						if(qres != QCAP_RS_SUCCESSFUL) {
+							LOGE("%s(%d): qcap2_window_handle_events() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+							break;
+						}
+					}
+
 					switch(ch) {
 					case 's': case 'S':
 						bSnapshot = true;
@@ -204,6 +214,12 @@ struct App0 {
 
 		QRETURN OnStart(free_stack_t& _FreeStack_, QRESULT& qres) {
 			switch(1) { case 1:
+				qres = CreateWindows(_FreeStack_);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): CreateWindows() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+
 				PVOID pDevice;
 				qres = StartDevice(_FreeStack_, &pDevice);
 				if(qres != QCAP_RS_SUCCESSFUL) {
@@ -221,14 +237,50 @@ struct App0 {
 			return QCAP_RT_OK;
 		}
 
+		QRESULT CreateWindows(free_stack_t& _FreeStack_) {
+			QRESULT qres = QCAP_RS_SUCCESSFUL;
+
+			switch(1) { case 1:
+				pWindow_live = qcap2_window_new();
+				_FreeStack_ += [&]() {
+					qcap2_window_delete(pWindow_live);
+				};
+
+				qcap2_window_set_backend_type(pWindow_live, QCAP2_WINDOW_BACKEND_TYPE_X11);
+				qcap2_window_set_rect(pWindow_live, 0, 0, 1280, 720);
+				qres = qcap2_window_start(pWindow_live);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): qcap2_window_start() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+				_FreeStack_ += [&]() {
+					QRESULT qres;
+
+					qres = qcap2_window_stop(pWindow_live);
+					if(qres != QCAP_RS_SUCCESSFUL) {
+						LOGE("%s(%d): qcap2_window_stop() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					}
+				};
+			}
+
+			return qres;
+		}
+
 		QRESULT StartDevice(free_stack_t& _FreeStack_, PVOID* ppDevice) {
 			QRESULT qres = QCAP_RS_SUCCESSFUL;
 
 			switch(1) { case 1:
 				const ULONG nColorSpaceType = QCAP_COLORSPACE_TYPE_YUY2;
 
+				uintptr_t hWindow;
+				qres = qcap2_window_get_native_handle(pWindow_live, &hWindow);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): qcap2_window_get_native_handle() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+
 				PVOID pDevice;
-				qres = QCAP_CREATE("SC0710 PCI", 0, NULL, &pDevice, TRUE, TRUE);
+				qres = QCAP_CREATE("SC0710 PCI", 0, (HWND)hWindow, &pDevice, TRUE, TRUE);
 				if(qres != QCAP_RS_SUCCESSFUL) {
 					LOGE("%s(%d): QCAP_CREATE() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;

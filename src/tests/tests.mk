@@ -110,3 +110,33 @@ TESTS+=$${KYLIN_DEMO_e}
 
 KYLIN_DEMO_SRCS+=\
 tests/kylin-demo.cpp
+
+ifeq (${BUILD_SC6G0},ON)
+
+################## sc6g0-aenc ##################
+$(call decl_mod,SC6G0_AENC)
+$(call add_flags_mod,SC6G0_AENC)
+$(call add_mods,SC6G0_AENC,ZZLAB QCAP NVT_HDAL)
+
+# $(info SC6G0_AENC_FLAGS=${SC6G0_AENC_FLAGS})
+
+SC6G0_AENC_E=sc6g0-aenc
+TESTS+=$${SC6G0_AENC_e}
+
+SC6G0_AENC_SRCS+=\
+tests/sc6g0-aenc.cpp
+
+endif # BUILD_SC6G0
+
+################## test-aenc ##################
+$(call decl_mod,TEST_AENC)
+$(call add_flags_mod,TEST_AENC)
+$(call add_mods,TEST_AENC,ZZLAB QCAP NVT_HDAL)
+
+# $(info TEST_AENC_FLAGS=${TEST_AENC_FLAGS})
+
+TEST_AENC_E=test-aenc
+TESTS+=$${TEST_AENC_e}
+
+TEST_AENC_SRCS+=\
+tests/test-aenc.cpp
