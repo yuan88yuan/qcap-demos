@@ -14,6 +14,7 @@ BASE_I+=\
 -I${QCAP_3RDPARTY}/include
 
 BASE_L+=$(call _ld_path,${D}/lib)
+BASE_L+=$(call _ld_path,${QCAP_3RDPARTY}/lib)
 
 BASE_L+=\
 -pthread

@@ -6,7 +6,7 @@ FREETYPE_F+=\
 -DBUILD_WITH_FREETYPE=1
 
 FREETYPE_I+=\
--I${DOCKER_HOME}/qcap-3rdparty/${PLATFORM}/include/freetype2
+-I${QCAP_3RDPARTY}/include/freetype2
 
 FREETYPE_WITH_PNG=\
 l4t-r35-1

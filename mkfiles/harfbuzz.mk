@@ -6,7 +6,7 @@ HARFBUZZ_F+=\
 -DBUILD_WITH_HARFBUZZ=1
 
 HARFBUZZ_I+=\
--I${DOCKER_HOME}/qcap-3rdparty/${PLATFORM}/include/harfbuzz
+-I${QCAP_3RDPARTY}/include/harfbuzz
 
 HARFBUZZ_L_A+=\
 -lharfbuzz
