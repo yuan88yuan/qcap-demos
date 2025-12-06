@@ -1,9 +1,11 @@
-ifeq (${BUILD_WITH_CUDA},ON)
-
 ################## test-avcap ##################
 $(call decl_mod,TEST_AVCAP)
 $(call add_flags_mod,TEST_AVCAP)
-$(call add_mods,TEST_AVCAP,ZZLAB QCAP NVBUF CUDA NPP)
+$(call add_mods,TEST_AVCAP,ZZLAB QCAP)
+
+ifeq (${BUILD_SC6N0},ON)
+$(call add_mods,TEST_AVCAP,NVBUF CUDA NPP)
+endif # BUILD_SC6N0
 
 # $(info TEST_AVCAP_FLAGS=${TEST_AVCAP_FLAGS})
 
@@ -14,24 +16,18 @@ TEST_AVCAP_SRCS+=\
 tests/test-avcap.cpp \
 tests/test-avcap.cu
 
-endif # BUILD_WITH_CUDA
-
-ifeq (${BUILD_WITH_IBVERBS},ON)
-
 ################## test-hsb-vsrc ##################
 $(call decl_mod,TEST_HSB_VSRC)
 $(call add_flags_mod,TEST_HSB_VSRC)
 $(call add_mods,TEST_HSB_VSRC,ZZLAB QCAP CUDA FMT IBVERBS)
 
-$(info TEST_HSB_VSRC_FLAGS=${TEST_HSB_VSRC_FLAGS})
+# $(info TEST_HSB_VSRC_FLAGS=${TEST_HSB_VSRC_FLAGS})
 
 TEST_HSB_VSRC_E=test-hsb-vsrc
 TESTS+=$${TEST_HSB_VSRC_e}
 
 TEST_HSB_VSRC_SRCS+=\
 tests/test-hsb-vsrc.cpp
-
-endif # BUILD_WITH_IBVERBS
 
 ################## test-deint ##################
 $(call decl_mod,TEST_DEINT)
@@ -81,22 +77,18 @@ TESTS+=$${TEST_ZZNVENC2_e}
 TEST_ZZNVENC2_SRCS+=\
 tests/test-zznvenc2.cpp
 
-ifeq (${BUILD_WITH_IPX},ON)
-
 ################## test-ipx ##################
 $(call decl_mod,TEST_IPX)
 $(call add_flags_mod,TEST_IPX)
 $(call add_mods,TEST_IPX,ZZLAB QCAP NVBUF CUDA IPX)
 
-$(info TEST_IPX_FLAGS=${TEST_IPX_FLAGS})
+# $(info TEST_IPX_FLAGS=${TEST_IPX_FLAGS})
 
 TEST_IPX_E=test-ipx
 TESTS+=$${TEST_IPX_e}
 
 TEST_IPX_SRCS+=\
 tests/test-ipx.cpp
-
-endif # BUILD_WITH_IPX
 
 ################## kylin-demo ##################
 $(call decl_mod,KYLIN_DEMO)
@@ -111,8 +103,6 @@ TESTS+=$${KYLIN_DEMO_e}
 KYLIN_DEMO_SRCS+=\
 tests/kylin-demo.cpp
 
-ifeq (${BUILD_SC6G0},ON)
-
 ################## sc6g0-aenc ##################
 $(call decl_mod,SC6G0_AENC)
 $(call add_flags_mod,SC6G0_AENC)
@@ -125,8 +115,6 @@ TESTS+=$${SC6G0_AENC_e}
 
 SC6G0_AENC_SRCS+=\
 tests/sc6g0-aenc.cpp
-
-endif # BUILD_SC6G0
 
 ################## test-aenc ##################
 $(call decl_mod,TEST_AENC)
@@ -153,3 +141,20 @@ TESTS+=$${TEST_FREETYPE_e}
 
 TEST_FREETYPE_SRCS+=\
 tests/test-freetype.cpp
+
+################## test-graphics ##################
+$(call decl_mod,TEST_GRAPHICS)
+$(call add_flags_mod,TEST_GRAPHICS)
+$(call add_mods,TEST_GRAPHICS,ZZLAB QCAP)
+
+ifeq (${BUILD_SC6G0},ON)
+$(call add_mods,TEST_GRAPHICS,NVT_HDAL)
+endif # BUILD_SC6G0
+
+# $(info TEST_GRAPHICS_FLAGS=${TEST_GRAPHICS_FLAGS})
+
+TEST_GRAPHICS_E=test-graphics
+TESTS+=$${TEST_GRAPHICS_e}
+
+TEST_GRAPHICS_SRCS+=\
+tests/test-graphics.cpp

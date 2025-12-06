@@ -225,8 +225,8 @@ struct App0 {
 				const int DPI = 96;
 				// const int nWeight = FC_WEIGHT_BOLD;
 				const int nWeight = FC_WEIGHT_NORMAL;
-				// const int nSlant = FC_SLANT_ITALIC; 
-				const int nSlant = FC_SLANT_ROMAN; 
+				// const int nSlant = FC_SLANT_ITALIC;
+				const int nSlant = FC_SLANT_ROMAN;
 				std::string strText = "Abcj,def";
 				const int nBufferWidth = 1024;
 				const int nBufferHeight = 512;
@@ -309,8 +309,8 @@ struct App0 {
 					float current_pen_y = pen_y + (float)hb_y_offset_26_6 / 64.0f;
 
 					int draw_x = (int)(current_pen_x + pFtFace->glyph->bitmap_left);
-					int draw_y = (int)(current_pen_y - pFtFace->glyph->bitmap_top); 
-					
+					int draw_y = (int)(current_pen_y - pFtFace->glyph->bitmap_top);
+
 					FT_Bitmap* pBitmap = &pFtFace->glyph->bitmap;
 					switch(1) { case 1:
 						int nWidth = pBitmap->width;
@@ -344,7 +344,7 @@ struct App0 {
 						pBitmap->width, pBitmap->rows, pBitmap->pitch);
 
 					pen_x += (float)glyph_pos[i].x_advance / 64.0f;
-					pen_y += (float)glyph_pos[i].y_advance / 64.0f; // Y_advance 適用於垂直排版
+					pen_y += (float)glyph_pos[i].y_advance / 64.0f;
 				}
 
 				qcap2_save_raw_video_frame(pRCBuffer, "testcase1");
