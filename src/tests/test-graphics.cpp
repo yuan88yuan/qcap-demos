@@ -189,7 +189,7 @@ struct App0 {
 				// qcap2_font_atlas_set_font_file(pFontAtlas, "/opt/fonts/Ubuntu-R.ttf");
 				qcap2_font_atlas_set_char_size(pFontAtlas, 16);
 				qcap2_font_atlas_set_dpi(pFontAtlas, 96);
-				qcap2_font_atlas_set_altas_size(pFontAtlas, 1024, 1024);
+				qcap2_font_atlas_set_atlas_size(pFontAtlas, 1024, 1024);
 
 				qres = qcap2_font_atlas_start(pFontAtlas);
 				if(qres != QCAP_RS_SUCCESSFUL) {
