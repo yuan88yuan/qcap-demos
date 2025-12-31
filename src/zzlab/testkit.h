@@ -4,6 +4,7 @@
 #include "qcap2.h"
 #include "qcap.linux.h"
 #include "qcap2.user.h"
+#include "qcap2.dmabuf.h"
 
 #if BUILD_WITH_GSTREAMER
 #include "qcap2.gst.h"
@@ -24,6 +25,10 @@ namespace __testkit__ {
 	ZZ_INIT_LOG("testkit");
 
 	using __zz_clock__::_clk;
+
+	template<class T> T align(T x, T a) {
+		return (((x)+(a)-1)&~((a)-1));
+	};
 
 	template<class FUNC_IDLE>
 	void wait_for_test_finish(FUNC_IDLE idle, int64_t dur_num = 1000000LL, int64_t dur_den = 60LL) {
@@ -422,6 +427,154 @@ namespace __testkit__ {
 			};
 
 			*ppRCBuffer = pRCBuffer;
+		}
+
+		return qres;
+	}
+
+	QRESULT new_qdmabuf(free_stack_t& _FreeStack_, int nSize, int nProt, qcap2_rcbuffer_t** ppRCBuffer) {
+		QRESULT qres = QCAP_RS_SUCCESSFUL;
+		qcap2_rcbuffer_t* pRCBuffer_ret = NULL;
+
+		switch(1) { case 1:
+			pRCBuffer_ret = qcap2_rcbuffer_new_av_frame();
+			_FreeStack_ += [pRCBuffer_ret]() {
+				qcap2_rcbuffer_delete(pRCBuffer_ret);
+			};
+
+			qres = qcap2_rcbuffer_alloc_qdmabuf(pRCBuffer_ret, nSize, nProt);
+			if(qres != QCAP_RS_SUCCESSFUL) {
+				LOGE("%s(%d): qcap2_rcbuffer_alloc_qdmabuf() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+				break;
+			}
+			_FreeStack_ += [pRCBuffer_ret]() {
+				QRESULT qres;
+
+				qres = qcap2_rcbuffer_free_qdmabuf(pRCBuffer_ret);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): qcap2_rcbuffer_free_qdmabuf() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+				}
+			};
+
+			*ppRCBuffer = pRCBuffer_ret;
+		}
+
+		return qres;
+	}
+
+	QRESULT new_video_qdmabuf(free_stack_t& _FreeStack_, ULONG nWidth, ULONG nHeight, ULONG nColorSpaceType, int nProt, qcap2_rcbuffer_t** ppRCBuffer) {
+		QRESULT qres = QCAP_RS_SUCCESSFUL;
+		qcap2_rcbuffer_t* pRCBuffer_ret = NULL;
+
+		switch(1) { case 1:
+			pRCBuffer_ret = qcap2_rcbuffer_new_av_frame();
+			_FreeStack_ += [pRCBuffer_ret]() {
+				qcap2_rcbuffer_delete(pRCBuffer_ret);
+			};
+
+			int nSize;
+			uint8_t* pBuffer[4] = { NULL };
+			int pStride[4];
+			switch(nColorSpaceType) {
+			case QCAP_COLORSPACE_TYPE_NV12:
+				pStride[0] = align((int)nWidth, 16);
+				pStride[1] = pStride[0];
+				pBuffer[1] = pBuffer[0] + pStride[0] * (int)nHeight;
+				nSize = pStride[0] * nHeight * 3 / 2;
+				break;
+
+			case QCAP_COLORSPACE_TYPE_NV16:
+				pStride[0] = align((int)nWidth, 16);
+				pStride[1] = pStride[0];
+				pBuffer[1] = pBuffer[0] + pStride[0] * (int)nHeight;
+				nSize = pStride[0] * nHeight * 2;
+				break;
+
+			case QCAP_COLORSPACE_TYPE_Y444:
+				pStride[0] = align((int)(nWidth * 3), 16);
+				nSize = pStride[0] * (int)nHeight;
+				break;
+
+			default:
+				LOGE("%s(%d): unexpected value, nColorSpaceType=0x%08X", __FUNCTION__, __LINE__, nColorSpaceType);
+				qres = QCAP_RS_ERROR_INVALID_PARAMETER;
+				break;
+			}
+			if(qres != QCAP_RS_SUCCESSFUL)
+				break;
+
+			qres = new_qdmabuf(_FreeStack_, nSize, nProt, ppRCBuffer);
+			if(qres != QCAP_RS_SUCCESSFUL) {
+				LOGE("%s(%d): new_qdmabuf() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+				break;
+			}
+
+			qcap2_av_frame_t* pAVFrame = (qcap2_av_frame_t*)qcap2_rcbuffer_get_data(*ppRCBuffer);
+			qcap2_av_frame_set_video_property(pAVFrame, nColorSpaceType, nWidth, nHeight);
+			qcap2_av_frame_set_buffer1(pAVFrame, pBuffer, pStride);
+		}
+
+		return qres;
+	}
+
+	QRESULT map_video_qdmabuf(qcap2_rcbuffer_t* pRCBuffer, int nProt) {
+		QRESULT qres;
+
+		switch(1) { case 1:
+			qcap2_av_frame_t* pAVFrame = (qcap2_av_frame_t*)qcap2_rcbuffer_get_data(pRCBuffer);
+			qres = qcap2_rcbuffer_map_qdmabuf(pRCBuffer, nProt);
+			if(qres != QCAP_RS_SUCCESSFUL) {
+				LOGE("%s(%d): qcap2_rcbuffer_map_qdmabuf() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+				break;
+			}
+
+			qcap2_dmabuf_t* pDmabuf;
+			qres = qcap2_rcbuffer_get_qdmabuf(pRCBuffer, &pDmabuf);
+			if(qres != QCAP_RS_SUCCESSFUL) {
+				LOGE("%s(%d): qcap2_rcbuffer_get_qdmabuf() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+				break;
+			}
+
+			uint8_t* pBuffer[4];
+			int pStride[4];
+			qcap2_av_frame_get_buffer1(pAVFrame, pBuffer, pStride);
+
+			for(int i = 0;i < 4;i++)
+				pBuffer[i] = (uint8_t*)((intptr_t)pBuffer[i] + (intptr_t)pDmabuf->pVirAddr);
+
+			qcap2_av_frame_set_buffer1(pAVFrame, pBuffer, pStride);
+		}
+
+		return qres;
+	}
+
+	QRESULT unmap_video_qdmabuf(qcap2_rcbuffer_t* pRCBuffer) {
+		QRESULT qres;
+
+		switch(1) { case 1:
+			qcap2_dmabuf_t* pDmabuf;
+			qres = qcap2_rcbuffer_get_qdmabuf(pRCBuffer, &pDmabuf);
+			if(qres != QCAP_RS_SUCCESSFUL) {
+				LOGE("%s(%d): qcap2_rcbuffer_get_qdmabuf() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+				break;
+			}
+
+			qcap2_av_frame_t* pAVFrame = (qcap2_av_frame_t*)qcap2_rcbuffer_get_data(pRCBuffer);
+
+			uint8_t* pBuffer[4];
+			int pStride[4];
+			qcap2_av_frame_get_buffer1(pAVFrame, pBuffer, pStride);
+
+			for(int i = 0;i < 4;i++)
+				pBuffer[i] = (uint8_t*)((intptr_t)pBuffer[i] - (intptr_t)pDmabuf->pVirAddr);
+
+			qcap2_av_frame_set_buffer1(pAVFrame, pBuffer, pStride);
+
+			qres = qcap2_rcbuffer_unmap_qdmabuf(pRCBuffer);
+			if(qres != QCAP_RS_SUCCESSFUL) {
+				LOGE("%s(%d): qcap2_rcbuffer_unmap_qdmabuf() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+				break;
+			}
 		}
 
 		return qres;

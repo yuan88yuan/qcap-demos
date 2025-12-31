@@ -28,6 +28,7 @@ include mkfiles/fmt.mk
 include mkfiles/ibverbs.mk
 include mkfiles/ipx.mk
 include mkfiles/nvt-hdal.mk
+include mkfiles/allegro2.mk
 
 include mkfiles/zzlab.mk
 include mkfiles/qcap.mk
