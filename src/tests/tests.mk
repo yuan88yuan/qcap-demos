@@ -164,10 +164,23 @@ $(call decl_mod,SC6F0_DANTE_DEMO)
 $(call add_flags_mod,SC6F0_DANTE_DEMO)
 $(call add_mods,SC6F0_DANTE_DEMO,ZZLAB QCAP ALLEGRO2)
 
-$(info SC6F0_DANTE_DEMO_FLAGS=${SC6F0_DANTE_DEMO_FLAGS})
+# $(info SC6F0_DANTE_DEMO_FLAGS=${SC6F0_DANTE_DEMO_FLAGS})
 
 SC6F0_DANTE_DEMO_E=sc6f0-dante-demo
 TESTS+=$${SC6F0_DANTE_DEMO_e}
 
 SC6F0_DANTE_DEMO_SRCS+=\
 tests/sc6f0-dante-demo.cpp
+
+################## sipl-demo ##################
+$(call decl_mod,SIPL_DEMO)
+$(call add_flags_mod,SIPL_DEMO)
+$(call add_mods,SIPL_DEMO,ZZLAB QCAP CUDA SIPL)
+
+$(info SIPL_DEMO_FLAGS=${SIPL_DEMO_FLAGS})
+
+SIPL_DEMO_E=sipl-demo
+TESTS+=$${SIPL_DEMO_e}
+
+SIPL_DEMO_SRCS+=\
+tests/sipl-demo.cpp

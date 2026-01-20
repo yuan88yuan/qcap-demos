@@ -6,6 +6,7 @@ include mkfiles/freetype.mk
 include mkfiles/harfbuzz.mk
 include mkfiles/gstreamer.mk
 include mkfiles/cuda.mk
+include mkfiles/cuda-driver.mk
 include mkfiles/npp.mk
 include mkfiles/fontconfig.mk
 include mkfiles/zlib.mk
@@ -29,6 +30,7 @@ include mkfiles/ibverbs.mk
 include mkfiles/ipx.mk
 include mkfiles/nvt-hdal.mk
 include mkfiles/allegro2.mk
+include mkfiles/sipl.mk
 
 include mkfiles/zzlab.mk
 include mkfiles/qcap.mk
