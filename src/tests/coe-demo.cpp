@@ -2,6 +2,7 @@
 #include <time.h>
 
 #include "qcap2.h"
+#include "qcap2.coe.h"
 #include "qcap2.sipl.h"
 #include "qcap2.cuda.h"
 
@@ -12,7 +13,7 @@
 #include "ZzUtils.h"
 #include "testkit.h"
 
-ZZ_INIT_LOG("sipl-demo");
+ZZ_INIT_LOG("coe-demo");
 
 int g_argc = 0;
 char** g_argv = NULL;
@@ -21,7 +22,7 @@ ZZ_MODULE_DECL(__zz_log__);
 
 using namespace __zz_clock__;
 
-namespace __sipl_demo__ {
+namespace __coe_demo__ {
 	ZZ_MODULES_INIT();
 	struct modules_init_t;
 
@@ -36,7 +37,7 @@ namespace __sipl_demo__ {
 	};
 }
 
-using namespace __sipl_demo__;
+using namespace __coe_demo__;
 using __testkit__::wait_for_test_finish;
 using __testkit__::TestCase;
 using __testkit__::free_stack_t;
@@ -157,7 +158,8 @@ struct App0 {
 				);
 
 				QRESULT qres_evt = QCAP_RS_SUCCESSFUL;
-				qres = ExecInEventHandlers(std::bind(&self_t::OnStart, this, std::ref(qres_evt)));
+				qres = ExecInEventHandlers(std::bind(&self_t::OnStart, this,
+					std::ref(_FreeStack_evt_), std::ref(qres_evt)));
 				if(qres != QCAP_RS_SUCCESSFUL) {
 					LOGE("%s(%d): ExecInEventHandlers() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
@@ -182,17 +184,17 @@ struct App0 {
 			_FreeStack_main_.flush();
 		}
 
-		QRETURN OnStart(QRESULT& qres) {
+		QRETURN OnStart(free_stack_t& _FreeStack_, QRESULT& qres) {
 			switch(1) { case 1:
 				qcap2_event_t* pVsrcEvent;
 				qcap2_video_source_t* pVsrc;
-				qres = StartVsrc(&pVsrc, &pVsrcEvent);
+				qres = StartVsrc(_FreeStack_, &pVsrc, &pVsrcEvent);
 				if(qres != QCAP_RS_SUCCESSFUL) {
 					LOGE("%s(%d): StartVsrc() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
 
-				qres = AddEventHandler(_FreeStack_evt_, pVsrcEvent,
+				qres = AddEventHandler(_FreeStack_, pVsrcEvent,
 					std::bind(&self_t::OnVsrc, this, pVsrc));
 				if(qres != QCAP_RS_SUCCESSFUL) {
 					LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
@@ -203,23 +205,23 @@ struct App0 {
 			return QCAP_RT_OK;
 		}
 
-		QRESULT StartVsrc(qcap2_video_source_t** ppVsrc, qcap2_event_t** ppEvent) {
+		QRESULT StartVsrc(free_stack_t& _FreeStack_, qcap2_video_source_t** ppVsrc, qcap2_event_t** ppEvent) {
 			QRESULT qres = QCAP_RS_SUCCESSFUL;
 
 			switch(1) { case 1:
 				qcap2_event_t* pEvent;
-				qres = NewEvent(_FreeStack_evt_, &pEvent);
+				qres = NewEvent(_FreeStack_, &pEvent);
 				if(qres != QCAP_RS_SUCCESSFUL) {
 					LOGE("%s(%d): NewEvent() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
 
 				qcap2_video_source_t* pVsrc = qcap2_video_source_new();
-				_FreeStack_evt_ += [pVsrc]() {
+				_FreeStack_ += [pVsrc]() {
 					qcap2_video_source_delete(pVsrc);
 				};
 
-				qcap2_video_source_set_backend_type(pVsrc, QCAP2_VIDEO_SOURCE_BACKEND_TYPE_SIPL);
+				qcap2_video_source_set_backend_type(pVsrc, QCAP2_VIDEO_SOURCE_BACKEND_TYPE_COE);
 				qcap2_video_source_set_event(pVsrc, pEvent);
 
 				{
@@ -236,13 +238,14 @@ struct App0 {
 
 				qcap2_video_source_set_frame_count(pVsrc, 4);
 				qcap2_video_source_set_config_file(pVsrc, "yuan_config.json");
+				qcap2_video_source_set_verbosity(pVsrc, 1);
 
 				qres = qcap2_video_source_start(pVsrc);
 				if(qres != QCAP_RS_SUCCESSFUL) {
 					LOGE("%s(%d): qcap2_video_source_start() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
-				_FreeStack_evt_ += [pVsrc]() {
+				_FreeStack_ += [pVsrc]() {
 					QRESULT qres;
 
 					qres = qcap2_video_source_stop(pVsrc);
@@ -260,7 +263,8 @@ struct App0 {
 
 		QRETURN OnVsrc(qcap2_video_source_t* pVsrc) {
 			QRESULT qres;
-			cudaError_t cuerr;
+			NvSciError sciErr;
+			cudaError_t cuErr;
 
 			switch(1) { case 1:
 				qcap2_rcbuffer_t* pRCBuffer;
@@ -277,43 +281,117 @@ struct App0 {
 						qcap2_rcbuffer_unlock_data(pRCBuffer);
 					});
 
+				int64_t nPTS;
+				qcap2_av_frame_get_pts(pAVFrame.get(), &nPTS);
+				uint8_t* pBuffer;
+				int nStride;
+				qcap2_av_frame_get_buffer(pAVFrame.get(), &pBuffer, &nStride);
+				int buffer_size = nVideoHeight * nStride;
+
+				LOGD("nStride=%d, buffer_size=%d", nStride, buffer_size);
+
+				nvsipl::INvSIPLClient::INvSIPLBuffer* pSIPLBuffer;
+				qres = qcap2_rcbuffer_get_sipl_buffer(pRCBuffer, &pSIPLBuffer);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): qcap2_video_source_pop() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+
+				nvsipl::INvSIPLClient::INvSIPLNvMBuffer* pNvMBuffer = dynamic_cast<nvsipl::INvSIPLClient::INvSIPLNvMBuffer*>(pSIPLBuffer);
+				if(! pNvMBuffer) {
+					LOGE("%s(%d): dynamic_cast<nvsipl::INvSIPLClient::INvSIPLNvMBuffer*>(pSIPLBuffer) failed", __FUNCTION__, __LINE__);
+					break;
+				}
+
+				NvSciBufObj sciBufObj = pNvMBuffer->GetNvSciBufImage();
+
+#if 0
+				NvSciBufAttrList bufAttrList = nullptr;
+				sciErr = NvSciBufObjGetAttrList(sciBufObj, &bufAttrList);
+				if (sciErr != NvSciError_Success) {
+					LOGE("%s(%d): NvSciBufObjGetAttrList() failed, sciErr=%d", __FUNCTION__, __LINE__, sciErr);
+					qres = QCAP_RS_ERROR_GENERAL;
+					break;
+				}
+
+				NvSciBufAttrKeyValuePair imgAttrs[] = {
+					{ NvSciBufImageAttrKey_PlaneColorFormat, NULL, 0 },
+					{ NvSciBufImageAttrKey_SurfType, NULL, 0}
+				};
+
+				sciErr = NvSciBufAttrListGetAttrs(bufAttrList, imgAttrs, sizeof(imgAttrs) / sizeof(imgAttrs[0]));
+				if (sciErr != NvSciError_Success) {
+					LOGE("%s(%d): NvSciBufAttrListGetAttrs() failed, sciErr=%d", __FUNCTION__, __LINE__, sciErr);
+					qres = QCAP_RS_ERROR_GENERAL;
+					break;
+				}
+
+				NvSciBufAttrValColorFmt color_fmt = (imgAttrs[0].len != 0) ? *(static_cast<const NvSciBufAttrValColorFmt*>(imgAttrs[0].value)) : 0;
+				NvSciBufSurfType surf_type = (imgAttrs[1].len != 0) ? *(static_cast<const NvSciBufSurfType*>(imgAttrs[1].value)) : 0;
+
+				LOGD("color_fmt=%d, %d, surf_type=%d", color_fmt, NvSciColor_A8Y8U8V8, surf_type);
+#endif
+
+#if 1
+				int fd_dmabuf;
+				sciErr = NvSciBufObjGetDmaBufFd(sciBufObj, &fd_dmabuf);
+				if (sciErr != NvSciError_Success) {
+					LOGE("%s(%d): NvSciBufObjGetDmaBufFd() failed, sciErr=%d", __FUNCTION__, __LINE__, sciErr);
+					break;
+				}
+				ZzUtils::Scoped _fd_dmabuf([fd_dmabuf]() {
+					close(fd_dmabuf);
+				});
+
+				LOGD("fd_dmabuf=%d, buffer_size=%d", fd_dmabuf, buffer_size);
+
+				cudaExternalMemoryHandleDesc memHandleDesc;
+				memset(&memHandleDesc, 0, sizeof(memHandleDesc));
+
+				memHandleDesc.type = cudaExternalMemoryHandleTypeOpaqueFd;
+				memHandleDesc.handle.fd = fd_dmabuf;
+				memHandleDesc.size = buffer_size;
+				memHandleDesc.flags = 0;
+
+				cudaExternalMemory_t extMem = nullptr;
+				cuErr = cudaImportExternalMemory(&extMem, &memHandleDesc);
+				if (cuErr != cudaSuccess) {
+					LOGE("%s(%d): cudaImportExternalMemory() failed, cuErr=%d", __FUNCTION__, __LINE__, cuErr);
+					break;
+				}
+#endif
+
+#if 0
+				cudaExternalMemoryHandleDesc memHandleDesc;
+				memset(&memHandleDesc, 0, sizeof(memHandleDesc));
+
+				memHandleDesc.type = cudaExternalMemoryHandleTypeNvSciBuf;
+				memHandleDesc.handle.nvSciBufObject = sciBufObj;
+				memHandleDesc.size = buffer_size;
+				memHandleDesc.flags = 0;
+
+				cudaExternalMemory_t extMem = nullptr;
+				cuErr = cudaImportExternalMemory(&extMem, &memHandleDesc);
+				if (cuErr != cudaSuccess) {
+					LOGE("%s(%d): cudaImportExternalMemory() failed, cuErr=%d", __FUNCTION__, __LINE__, cuErr);
+					break;
+				}
+#endif
+
+				ZzUtils::Scoped _extMem([extMem]() {
+					cudaDestroyExternalMemory(extMem);
+				});
+
+				LOGD("extMem=%p", extMem);
+
 				if(bSnapshot) {
 					bSnapshot = false;
 
-					int64_t nPTS;
-					qcap2_av_frame_get_pts(pAVFrame.get(), &nPTS);
-					uint8_t* pBuffer;
-					int nStride;
-					qcap2_av_frame_get_buffer(pAVFrame.get(), &pBuffer, &nStride);
-
-#if 0
-					std::shared_ptr<qcap2_av_frame_t> pAVFrame_dst(
-						(qcap2_av_frame_t*)qcap2_rcbuffer_lock_data(pSnapshotBuffer),
-						[&](qcap2_av_frame_t*) {
-							qcap2_rcbuffer_unlock_data(pSnapshotBuffer);
-						});
-					uint8_t* pBuffer_dst;
-					int nStride_dst;
-					qcap2_av_frame_get_buffer(pAVFrame_dst.get(), &pBuffer_dst, &nStride_dst);
-
-					LOGD("snapshot: (%p %d) (%p %d) %dx%d",
-						pBuffer_dst, nStride_dst,
-						pBuffer, nStride, nVideoWidth, nVideoHeight);
-
-					// FOR YUY2 ONLY
-					cuerr = cudaMemcpy2D(pBuffer_dst, nStride_dst,
-						pBuffer, nStride, nVideoWidth * 2, nVideoHeight, cudaMemcpyDeviceToHost);
-					if(cuerr != cudaSuccess) {
-						LOGE("%s(%d): cudaMemcpy2D() failed, cuerr=%d", __FUNCTION__, __LINE__, cudaMemcpy2D);
-						break;
-					}
-
-					qres = qcap2_save_raw_video_frame(pSnapshotBuffer, "snapshot");
+					qres = qcap2_save_raw_video_frame(pRCBuffer, "snapshot");
 					if(qres != QCAP_RS_SUCCESSFUL) {
 						LOGE("%s(%d): qcap2_save_raw_video_frame() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 						break;
 					}
-#endif
 				}
 			}
 

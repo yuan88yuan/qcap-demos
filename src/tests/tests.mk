@@ -172,15 +172,15 @@ TESTS+=$${SC6F0_DANTE_DEMO_e}
 SC6F0_DANTE_DEMO_SRCS+=\
 tests/sc6f0-dante-demo.cpp
 
-################## sipl-demo ##################
-$(call decl_mod,SIPL_DEMO)
-$(call add_flags_mod,SIPL_DEMO)
-$(call add_mods,SIPL_DEMO,ZZLAB QCAP CUDA SIPL)
+################## coe-demo ##################
+$(call decl_mod,COE_DEMO)
+$(call add_flags_mod,COE_DEMO)
+$(call add_mods,COE_DEMO,ZZLAB QCAP CUDA SIPL)
 
-$(info SIPL_DEMO_FLAGS=${SIPL_DEMO_FLAGS})
+$(info COE_DEMO_FLAGS=${COE_DEMO_FLAGS})
 
-SIPL_DEMO_E=sipl-demo
-TESTS+=$${SIPL_DEMO_e}
+COE_DEMO_E=coe-demo
+TESTS+=$${COE_DEMO_e}
 
-SIPL_DEMO_SRCS+=\
-tests/sipl-demo.cpp
+COE_DEMO_SRCS+=\
+tests/coe-demo.cpp
