@@ -304,8 +304,9 @@ struct App0 {
 				}
 
 				NvSciBufObj sciBufObj = pNvMBuffer->GetNvSciBufImage();
+				LOGD("sciBufObj=%p", sciBufObj);
 
-#if 0
+#if 1
 				NvSciBufAttrList bufAttrList = nullptr;
 				sciErr = NvSciBufObjGetAttrList(sciBufObj, &bufAttrList);
 				if (sciErr != NvSciError_Success) {
@@ -326,13 +327,13 @@ struct App0 {
 					break;
 				}
 
-				NvSciBufAttrValColorFmt color_fmt = (imgAttrs[0].len != 0) ? *(static_cast<const NvSciBufAttrValColorFmt*>(imgAttrs[0].value)) : 0;
-				NvSciBufSurfType surf_type = (imgAttrs[1].len != 0) ? *(static_cast<const NvSciBufSurfType*>(imgAttrs[1].value)) : 0;
+				NvSciBufAttrValColorFmt color_fmt = (imgAttrs[0].len != 0) ? *(static_cast<const NvSciBufAttrValColorFmt*>(imgAttrs[0].value)) : NvSciColor_LowerBound;
+				NvSciBufSurfType surf_type = (imgAttrs[1].len != 0) ? *(static_cast<const NvSciBufSurfType*>(imgAttrs[1].value)) : NvSciSurfType_MaxValid;
 
 				LOGD("color_fmt=%d, %d, surf_type=%d", color_fmt, NvSciColor_A8Y8U8V8, surf_type);
 #endif
 
-#if 1
+#if 0
 				int fd_dmabuf;
 				sciErr = NvSciBufObjGetDmaBufFd(sciBufObj, &fd_dmabuf);
 				if (sciErr != NvSciError_Success) {
@@ -343,7 +344,7 @@ struct App0 {
 					close(fd_dmabuf);
 				});
 
-				LOGD("fd_dmabuf=%d, buffer_size=%d", fd_dmabuf, buffer_size);
+				LOGD("fd_dmabuf=%d", fd_dmabuf);
 
 				cudaExternalMemoryHandleDesc memHandleDesc;
 				memset(&memHandleDesc, 0, sizeof(memHandleDesc));
@@ -351,7 +352,6 @@ struct App0 {
 				memHandleDesc.type = cudaExternalMemoryHandleTypeOpaqueFd;
 				memHandleDesc.handle.fd = fd_dmabuf;
 				memHandleDesc.size = buffer_size;
-				memHandleDesc.flags = 0;
 
 				cudaExternalMemory_t extMem = nullptr;
 				cuErr = cudaImportExternalMemory(&extMem, &memHandleDesc);
@@ -361,14 +361,13 @@ struct App0 {
 				}
 #endif
 
-#if 0
+#if 1
 				cudaExternalMemoryHandleDesc memHandleDesc;
 				memset(&memHandleDesc, 0, sizeof(memHandleDesc));
 
 				memHandleDesc.type = cudaExternalMemoryHandleTypeNvSciBuf;
 				memHandleDesc.handle.nvSciBufObject = sciBufObj;
 				memHandleDesc.size = buffer_size;
-				memHandleDesc.flags = 0;
 
 				cudaExternalMemory_t extMem = nullptr;
 				cuErr = cudaImportExternalMemory(&extMem, &memHandleDesc);
@@ -407,6 +406,14 @@ int main(int argc, char* argv[]) {
 	int ret;
 	switch(1) { case 1:
 		modules_init_t _modules_init_;
+		CUresult cures;
+
+		cures = cuInit(0);
+		if (cures != CUDA_SUCCESS) {
+			LOGE("%s(%d): cuInit() failed, cures=%d", __FUNCTION__, __LINE__, cures);
+			break;
+		}
+		cudaFree(0); // DON'T KNOWN WHY?
 
 		ret = App0::Main();
 	}

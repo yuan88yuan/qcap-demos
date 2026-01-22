@@ -175,7 +175,7 @@ tests/sc6f0-dante-demo.cpp
 ################## coe-demo ##################
 $(call decl_mod,COE_DEMO)
 $(call add_flags_mod,COE_DEMO)
-$(call add_mods,COE_DEMO,ZZLAB QCAP CUDA SIPL)
+$(call add_mods,COE_DEMO,ZZLAB QCAP CUDA CUDA_DRIVER SIPL)
 
 $(info COE_DEMO_FLAGS=${COE_DEMO_FLAGS})
 

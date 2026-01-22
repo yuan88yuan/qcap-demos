@@ -301,6 +301,7 @@ struct App0 {
 				}
 #endif
 
+#if 1
 				qcap2_muxer_t* pMuxer;
 				qcap2_video_decoder_t* pVdec;
 				qres = StartRTSPMuxer(_FreeStack_, &pMuxer, &pVdec);
@@ -308,14 +309,17 @@ struct App0 {
 					LOGE("%s(%d): StartRTSPMuxer() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
+#endif
 
-				PVOID pDanteServer;
-				PVOID pDanteSender;
+				PVOID pDanteServer = NULL;
+				PVOID pDanteSender = NULL;
+#if 0
 				qres = StartDanteServer(_FreeStack_, &pDanteServer, &pDanteSender);
 				if(qres != QCAP_RS_SUCCESSFUL) {
 					LOGE("%s(%d): StartDanteServer() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
+#endif
 
 				qres = AddEventHandler(_FreeStack_, pVsrcEvent,
 					std::bind(&self_t::OnVsrc, this, pVsrc, pVenc));
@@ -547,11 +551,13 @@ struct App0 {
 				double dSampleTime;
 				qcap2_av_packet_get_sample_time(pAVPacket.get(), &dSampleTime);
 
+#if 0
 				qres = QCAP_SET_VIDEO_BROADCAST_SERVER_COMPRESSION_BUFFER(pDanteSender, 0, pStreamBuffer, nStreamBufferLen, bIsKeyFrame, dSampleTime);
 				if(qres != QCAP_RS_SUCCESSFUL) {
 					LOGE("%s(%d): qcap2_video_decoder_push() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
+#endif
 			}
 
 			return QCAP_RT_OK;
