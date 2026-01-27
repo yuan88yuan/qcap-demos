@@ -122,6 +122,10 @@ struct App0 {
 		case 2:
 			mTestCase2.DoWork();
 			break;
+
+		case 3:
+			mTestCase3.DoWork();
+			break;
 		}
 	}
 
@@ -328,14 +332,12 @@ struct App0 {
 					break;
 				}
 
-#if 1
 				qres = AddEventHandler(_FreeStack_, pVencEvent,
 					std::bind(&self_t::OnVenc, this, pVenc, pVdec, pDanteSender));
 				if(qres != QCAP_RS_SUCCESSFUL) {
 					LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
-#endif
 			}
 
 			return QCAP_RT_OK;
@@ -466,7 +468,7 @@ struct App0 {
 					ULONG nRecordComplexity = QCAP_RECORD_COMPLEXITY_0;
 					ULONG nRecordMode = QCAP_RECORD_MODE_CBR;
 					ULONG nQuality = 8000;
-					ULONG nBitRate = 48 * 1000000;
+					ULONG nBitRate = nVideoBitRate;
 					ULONG nGOP = 60;
 					ULONG nBFrames = 0;
 					BOOL bIsInterleaved = FALSE;
@@ -551,13 +553,13 @@ struct App0 {
 				double dSampleTime;
 				qcap2_av_packet_get_sample_time(pAVPacket.get(), &dSampleTime);
 
-#if 0
-				qres = QCAP_SET_VIDEO_BROADCAST_SERVER_COMPRESSION_BUFFER(pDanteSender, 0, pStreamBuffer, nStreamBufferLen, bIsKeyFrame, dSampleTime);
-				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): qcap2_video_decoder_push() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-					break;
+				if(pDanteSender) {
+					qres = QCAP_SET_VIDEO_BROADCAST_SERVER_COMPRESSION_BUFFER(pDanteSender, 0, pStreamBuffer, nStreamBufferLen, bIsKeyFrame, dSampleTime);
+					if(qres != QCAP_RS_SUCCESSFUL) {
+						LOGE("%s(%d): qcap2_video_decoder_push() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+						break;
+					}
 				}
-#endif
 			}
 
 			return QCAP_RT_OK;
@@ -803,6 +805,170 @@ struct App0 {
 			return QCAP_RT_OK;
 		}
 	} mTestCase2;
+
+	struct TestCase3 : public TestCase {
+		typedef TestCase3 self_t;
+		typedef TestCase super_t;
+
+		void DoWork() {
+			QRESULT qres;
+
+			LOGD("%s::%s", typeid(self_t).name(), __FUNCTION__);
+
+			switch(1) { case 1:
+				free_stack_t& _FreeStack_ = _FreeStack_main_;
+
+				qres = StartEventHandlers();
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): StartEventHandlers() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+				ZzUtils::Scoped ZZ_GUARD_NAME([&]() {
+					OnExitEventHandlers();
+				} );
+
+				QRESULT qres_evt = QCAP_RS_SUCCESSFUL;
+				qres = ExecInEventHandlers(std::bind(&self_t::OnStart, this,
+					std::ref(_FreeStack_evt_), std::ref(qres_evt)));
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): ExecInEventHandlers() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+				if(qres_evt != QCAP_RS_SUCCESSFUL) {
+					break;
+				}
+
+				wait_for_test_finish([&](int ch) -> bool {
+					QRESULT qres;
+
+					switch(1) { case 1:
+						break;
+					}
+
+					return true;
+				}, 1000000LL, 10LL);
+			}
+
+			_FreeStack_main_.flush();
+		}
+
+		QRETURN OnStart(free_stack_t& _FreeStack_, QRESULT& qres) {
+			switch(1) { case 1:
+				qcap2_event_t* pDmxEvent;
+				qcap2_demuxer_t* pDmx;
+				qres = StartDmx(_FreeStack_, &pDmx, &pDmxEvent);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): StartDmx() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+
+				qres = AddEventHandler(_FreeStack_, pDmxEvent, std::bind(&self_t::OnDmx, this, pDmx));
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+			}
+			return QCAP_RT_OK;
+		}
+
+		QRESULT StartDmx(free_stack_t& _FreeStack_, qcap2_demuxer_t** ppDmx, qcap2_event_t** ppDmxEvent) {
+			QRESULT qres;
+
+			switch(1) { case 1:
+				qcap2_event_t* pEvent;
+				qres = NewEvent(_FreeStack_, &pEvent);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): NewEvent() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+
+				qcap2_demuxer_t* pDmx = qcap2_demuxer_new();
+				_FreeStack_ += [pDmx]() {
+					qcap2_demuxer_delete(pDmx);
+				};
+
+				qcap2_demuxer_set_type(pDmx, QCAP2_DEMUXER_TYPE_SC6F0);
+				qcap2_demuxer_set_event(pDmx, pEvent);
+				qcap2_demuxer_set_url(pDmx, "media1");
+
+				qres = qcap2_demuxer_start(pDmx);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): qcap2_demuxer_start() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+				_FreeStack_ += [pDmx]() {
+					QRESULT qres;
+
+					qres = qcap2_demuxer_stop(pDmx);
+					if(qres != QCAP_RS_SUCCESSFUL) {
+						LOGE("%s(%d): qcap2_demuxer_stop() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					}
+				};
+
+				*ppDmx = pDmx;
+				*ppDmxEvent = pEvent;
+			}
+
+			return qres;
+		}
+
+		QRETURN OnDmx(qcap2_demuxer_t* pDmx) {
+			QRESULT qres;
+
+			switch(1) {	case 1:
+				free_stack_t& _FreeStack_ = _FreeStack_evt_;
+
+				qres = qcap2_demuxer_update(pDmx);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): qcap2_demuxer_update() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+
+				LOGD("%d VSRCs, %d ASRCs, %d PROGs",
+					qcap2_demuxer_get_video_source_count(pDmx),
+					qcap2_demuxer_get_audio_source_count(pDmx),
+					qcap2_demuxer_get_program_count(pDmx));
+
+				qcap2_program_info_t* pProgram = qcap2_demuxer_get_program_info(pDmx, 0);
+				int nVideoIndex = qcap2_program_info_get_video_source_index(pProgram, 0);
+				int nAudioIndex = qcap2_program_info_get_audio_source_index(pProgram, 0);
+
+				LOGD("---> %s/%s, V:%d, A:%d", qcap2_program_info_get_metadata(pProgram, "service_name"),
+					qcap2_program_info_get_metadata(pProgram, "service_provider"), nVideoIndex, nAudioIndex);
+
+				qcap2_video_source_t* pVsrc = qcap2_demuxer_get_video_source(pDmx, nVideoIndex);
+				std::shared_ptr<qcap2_video_format_t> pVideoFormat(qcap2_video_format_new(), qcap2_video_format_delete);
+				qcap2_video_source_get_video_format(pVsrc, pVideoFormat.get());
+				{
+					ULONG nColorSpaceType;
+					ULONG nVideoWidth;
+					ULONG nVideoHeight;
+					BOOL bVideoIsInterleaved;
+					double dVideoFrameRate;
+
+					qcap2_video_format_get_property(pVideoFormat.get(), &nColorSpaceType, &nVideoWidth, &nVideoHeight, &bVideoIsInterleaved, &dVideoFrameRate);
+
+					LOGI("v: %08X %ux%u'%u, %.2f", nColorSpaceType, nVideoWidth, nVideoHeight, bVideoIsInterleaved, dVideoFrameRate);
+				}
+
+				qcap2_audio_source_t* pAsrc = qcap2_demuxer_get_audio_source(pDmx, nAudioIndex);
+				std::shared_ptr<qcap2_audio_format_t> pAudioFormat(qcap2_audio_format_new(), qcap2_audio_format_delete);
+				qcap2_audio_source_get_audio_format(pAsrc, pAudioFormat.get());
+				{
+					ULONG nAudioChannels;
+					ULONG nAudioBitsPerSample;
+					ULONG nAudioSampleFrequency;
+
+					qcap2_audio_format_get_property(pAudioFormat.get(), &nAudioChannels, &nAudioBitsPerSample, &nAudioSampleFrequency);
+
+					LOGI("a: %ux%u'%u", nAudioChannels, nAudioBitsPerSample, nAudioSampleFrequency);
+				}
+			}
+
+			return QCAP_RT_OK;
+		}
+
+	} mTestCase3;
 };
 
 int main(int argc, char* argv[]) {
