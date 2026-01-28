@@ -12,6 +12,10 @@
 #include "ZzUtils.h"
 #include "testkit.h"
 
+extern "C" {
+#include "dauservice.h"
+}
+
 ZZ_INIT_LOG("sc6f0-dante-demo");
 
 int g_argc = 0;
@@ -810,6 +814,154 @@ struct App0 {
 		typedef TestCase3 self_t;
 		typedef TestCase super_t;
 
+		struct dau_service* dauserv_hdmirx;
+
+		const struct dau_service_methods dauserv_methods = {
+			.get_cable_status = dau_get_cable_status,
+			.get_hdcp = dau_get_hdcp,
+			.set_hdcp = dau_set_hdcp,
+
+			.get_video_format = dau_get_video_format,
+			.get_audio_info = dau_get_audio_info,
+			.get_hdr = dau_get_hdr,
+			.set_edid = dau_set_edid,
+			.toggle_hpd = dau_toggle_hpd,
+
+			.set_video_format = dau_set_video_format,
+			.set_audio_info = dau_set_audio_info,
+			.set_hdr = dau_set_hdr,
+			.get_edid = dau_get_edid,
+		};
+
+		static void dau_get_cable_status(struct dau_service *dau,
+						 struct DBusMessage *message,
+						 void *ctxt)
+		{
+			dau_reply_get_cable_status(dau, message, true);
+		}
+
+		static void dau_get_hdcp(struct dau_service *dau,
+					    struct DBusMessage *message,
+					    void *ctxt)
+		{
+			struct hdcp hdcp;
+
+			memset(&hdcp, 0x00, sizeof(hdcp));
+			hdcp.current = HDCP_VERSION_22;
+			hdcp.hdcp14_supported = false;
+			hdcp.hdcp22_supported = true;
+
+			dau_reply_get_hdcp(dau, message, &hdcp);
+		}
+
+		static void dau_set_hdcp(struct dau_service *dau,
+					    struct DBusMessage *message,
+					    enum hdcp_version version,
+					    void *ctxt)
+		{
+			dau_reply_success(dau, message);
+		}
+
+		static void dau_get_video_format(struct dau_service *dau,
+						 struct DBusMessage *message,
+						 void *ctxt)
+		{
+			struct video_format format = {
+				.width = 3840,
+				.height = 2160,
+				.framerate = 60,
+				.colorformat = VIDEO_COLORFORMAT_YUV444,
+				.bpp = 8,
+				.interlaced = false,
+				.locked = true
+			};
+
+			dau_reply_get_video_format(dau, message, &format);
+		}
+
+		static void dau_get_audio_info(struct dau_service *dau,
+					       struct DBusMessage *message,
+					       void *ctxt)
+		{
+			struct audio_info info = {
+				.channel_count = 2,
+				.speaker_map = AUDIO_SM_FR_FL,
+				.level_shift_value = 0,
+				.downmix_inhibit = false,
+			};
+
+			dau_reply_get_audio_info(dau, message, &info);
+		}
+
+		static void dau_get_hdr(struct dau_service *dau,
+					struct DBusMessage *message,
+					void *ctxt)
+		{
+			char hdr[HDR_LEN] = { 0x00, 0x01, 0x02 };
+			char dv[DV_LEN] = { 0x04, 0x05, 0x06 };
+			struct hdr_info info = {
+				.avi_c = 1,
+				.avi_ec = 2,
+				.avi_q = 3,
+				.hdr = hdr,
+				.dv = dv
+			};
+
+			dau_reply_get_hdr(dau, message, &info);
+		}
+
+		static void dau_set_edid(struct dau_service *dau,
+					    struct DBusMessage *message,
+					    const void *edid,
+					    void *ctxt)
+		{
+			dau_reply_success(dau, message);
+		}
+
+		static void dau_toggle_hpd(struct dau_service *dau,
+					   struct DBusMessage *message,
+					   void *ctxt)
+		{
+			dau_reply_success(dau, message);
+		}
+
+		static void dau_set_video_format(struct dau_service *dau,
+						 struct DBusMessage *message,
+						 const struct video_format *format,
+						 void *ctxt)
+		{
+			dau_reply_success(dau, message);
+		}
+
+		static void dau_set_audio_info(struct dau_service *dau,
+					       struct DBusMessage *message,
+					       const struct audio_info *info,
+					       void *ctxt)
+		{
+			dau_reply_success(dau, message);
+		}
+
+		static void dau_set_hdr(struct dau_service *dau,
+					struct DBusMessage *message,
+					const struct hdr_info *hdr,
+					void *ctxt)
+		{
+			dau_reply_success(dau, message);
+		}
+
+		static void dau_get_edid(struct dau_service *dau,
+					 struct DBusMessage *message,
+					 void *ctxt)
+		{
+			unsigned char edid[EDID_LEN];
+			unsigned int i;
+
+			for (i = 0; i < sizeof(edid); ++i)
+				edid[i] = i;
+
+			dau_reply_get_edid(dau, message, edid);
+		}
+
 		void DoWork() {
 			QRESULT qres;
 
@@ -854,6 +1006,15 @@ struct App0 {
 
 		QRETURN OnStart(free_stack_t& _FreeStack_, QRESULT& qres) {
 			switch(1) { case 1:
+				dauserv_hdmirx = dau_service_register(DAU_SERVICE_SOURCE, 0, &dauserv_methods, this);
+				if (! dauserv_hdmirx) {
+					LOGE("%s(%d): dau_service_register() failed", __FUNCTION__, __LINE__);
+					break;
+				}
+				_FreeStack_ += [&]() {
+					dau_service_unregister(dauserv_hdmirx);
+				};
+
 				qcap2_event_t* pDmxEvent;
 				qcap2_demuxer_t* pDmx;
 				qres = StartDmx(_FreeStack_, &pDmx, &pDmxEvent);
@@ -889,7 +1050,6 @@ struct App0 {
 
 				qcap2_demuxer_set_type(pDmx, QCAP2_DEMUXER_TYPE_SC6F0);
 				qcap2_demuxer_set_event(pDmx, pEvent);
-				qcap2_demuxer_set_url(pDmx, "media1");
 
 				qres = qcap2_demuxer_start(pDmx);
 				if(qres != QCAP_RS_SUCCESSFUL) {
@@ -933,7 +1093,7 @@ struct App0 {
 				int nVideoIndex = qcap2_program_info_get_video_source_index(pProgram, 0);
 				int nAudioIndex = qcap2_program_info_get_audio_source_index(pProgram, 0);
 
-				LOGD("---> %s/%s, V:%d, A:%d", qcap2_program_info_get_metadata(pProgram, "service_name"),
+				LOGD("Prog[%s/%s] V:%d, A:%d", qcap2_program_info_get_metadata(pProgram, "service_name"),
 					qcap2_program_info_get_metadata(pProgram, "service_provider"), nVideoIndex, nAudioIndex);
 
 				qcap2_video_source_t* pVsrc = qcap2_demuxer_get_video_source(pDmx, nVideoIndex);

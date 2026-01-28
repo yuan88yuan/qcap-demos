@@ -1,4 +1,7 @@
 # Toolchain configured by /opt/qcap-dev-init
+NOWARN=-Wno-nonnull -Wno-deprecated-declarations
+CXXFLAGS+=$(NOWARN)
+CFLAGS+=$(NOWARN)
 
 QCAP_HOME?=/docker/qcap-dev/qcap/build-qcap/_objs/xlnk2_arm64/
 QCAP_3RDPARTY?=/docker/qcap-3rdparty/xlnk2_arm64/
