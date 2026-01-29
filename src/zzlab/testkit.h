@@ -253,17 +253,10 @@ namespace __testkit__ {
 	}
 
 	template<class FUNC>
-	QRESULT AddEventHandler(free_stack_t& _FreeStack_, qcap2_event_handlers_t* pEventHandlers, qcap2_event_t* pEvent, FUNC func) {
+	QRESULT AddEventHandler(free_stack_t& _FreeStack_, qcap2_event_handlers_t* pEventHandlers, uintptr_t nHandle, FUNC func) {
 		QRESULT qres = QCAP_RS_SUCCESSFUL;
 
 		switch(1) { case 1:
-			uintptr_t nHandle;
-			qres = qcap2_event_get_native_handle(pEvent, &nHandle);
-			if(qres != QCAP_RS_SUCCESSFUL) {
-				LOGE("%s(%d): qcap2_event_get_native_handle() failed, qres=%d", qres);
-				break;
-			}
-
 			callback_t* pCallback = new callback_t(func);
 			_FreeStack_ += [pCallback]() {
 				delete pCallback;
@@ -283,6 +276,24 @@ namespace __testkit__ {
 					LOGE("%s(%d): qcap2_event_handlers_remove_handler() failed, qres=%d", qres);
 				}
 			};
+		}
+
+		return qres;
+	}
+
+	template<class FUNC>
+	QRESULT AddEventHandler(free_stack_t& _FreeStack_, qcap2_event_handlers_t* pEventHandlers, qcap2_event_t* pEvent, FUNC func) {
+		QRESULT qres = QCAP_RS_SUCCESSFUL;
+
+		switch(1) { case 1:
+			uintptr_t nHandle;
+			qres = qcap2_event_get_native_handle(pEvent, &nHandle);
+			if(qres != QCAP_RS_SUCCESSFUL) {
+				LOGE("%s(%d): qcap2_event_get_native_handle() failed, qres=%d", qres);
+				break;
+			}
+
+			qres = AddEventHandler(_FreeStack_, pEventHandlers, nHandle, func);
 		}
 
 		return qres;
@@ -687,6 +698,11 @@ namespace __testkit__ {
 		template<class FUNC>
 		QRESULT AddEventHandler(free_stack_t& _FreeStack_, qcap2_event_t* pEvent, FUNC func) {
 			return __testkit__::AddEventHandler(_FreeStack_, pEventHandlers, pEvent, func);
+		}
+
+		template<class FUNC>
+		QRESULT AddEventHandler(free_stack_t& _FreeStack_, uintptr_t nHandle, FUNC func) {
+			return __testkit__::AddEventHandler(_FreeStack_, pEventHandlers, nHandle, func);
 		}
 
 		template<class FUNC>

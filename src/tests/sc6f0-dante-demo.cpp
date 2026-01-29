@@ -1,6 +1,8 @@
 #include <stdlib.h>
 #include <time.h>
 
+#include <atomic>
+
 #include "qcap2.h"
 #include "qcap2.v4l2.h"
 #include "qcap2.allegro2.h"
@@ -47,6 +49,8 @@ using __testkit__::free_stack_t;
 using __testkit__::tick_ctrl_t;
 using __testkit__::NewEvent;
 using __testkit__::AddEventHandler;
+using __testkit__::spinlock_lock;
+using __testkit__::spinlock_unlock;
 
 struct App0 {
 	typedef App0 self_t;
@@ -814,36 +818,42 @@ struct App0 {
 		typedef TestCase3 self_t;
 		typedef TestCase super_t;
 
-		struct dau_service* dauserv_hdmirx;
+		free_stack_t _FreeStack_vsrc_;
 
-		const struct dau_service_methods dauserv_methods = {
-			.get_cable_status = dau_get_cable_status,
-			.get_hdcp = dau_get_hdcp,
-			.set_hdcp = dau_set_hdcp,
+		int nSnapshot;
 
-			.get_video_format = dau_get_video_format,
-			.get_audio_info = dau_get_audio_info,
-			.get_hdr = dau_get_hdr,
-			.set_edid = dau_set_edid,
-			.toggle_hpd = dau_toggle_hpd,
+		std::atomic_flag current_format_spinlock = ATOMIC_FLAG_INIT;
+		struct video_format current_format;
 
-			.set_video_format = dau_set_video_format,
-			.set_audio_info = dau_set_audio_info,
-			.set_hdr = dau_set_hdr,
-			.get_edid = dau_get_edid,
-		};
-
-		static void dau_get_cable_status(struct dau_service *dau,
+		static void _get_cable_status(struct dau_service *dau,
 						 struct DBusMessage *message,
 						 void *ctxt)
 		{
-			dau_reply_get_cable_status(dau, message, true);
+			self_t* pThis = (self_t*)ctxt;
+
+			pThis->get_cable_status(dau, message);
 		}
 
-		static void dau_get_hdcp(struct dau_service *dau,
+		void get_cable_status(struct dau_service *dau,
+						 struct DBusMessage *message)
+		{
+			LOGD("+++tag: %s", __FUNCTION__);
+
+			video_format format;
+
+			spinlock_lock(current_format_spinlock);
+			format = current_format;
+			spinlock_unlock(current_format_spinlock);
+
+			dau_reply_get_cable_status(dau, message, format.locked);
+		}
+
+		static void _get_hdcp(struct dau_service *dau,
 					    struct DBusMessage *message,
 					    void *ctxt)
 		{
+			LOGD("+++tag: %s", __FUNCTION__);
+
 			struct hdcp hdcp;
 
 			memset(&hdcp, 0x00, sizeof(hdcp));
@@ -854,35 +864,43 @@ struct App0 {
 			dau_reply_get_hdcp(dau, message, &hdcp);
 		}
 
-		static void dau_set_hdcp(struct dau_service *dau,
+		static void _set_hdcp(struct dau_service *dau,
 					    struct DBusMessage *message,
 					    enum hdcp_version version,
 					    void *ctxt)
 		{
+			LOGD("+++tag: %s", __FUNCTION__);
+
 			dau_reply_success(dau, message);
 		}
 
-		static void dau_get_video_format(struct dau_service *dau,
+		static void _get_video_format(struct dau_service *dau,
 						 struct DBusMessage *message,
 						 void *ctxt)
 		{
-			struct video_format format = {
-				.width = 3840,
-				.height = 2160,
-				.framerate = 60,
-				.colorformat = VIDEO_COLORFORMAT_YUV444,
-				.bpp = 8,
-				.interlaced = false,
-				.locked = true
-			};
+			self_t* pThis = (self_t*)ctxt;
+
+			pThis->get_video_format(dau, message);
+		}
+
+		void get_video_format(struct dau_service *dau, struct DBusMessage *message) {
+			LOGD("+++tag: %s", __FUNCTION__);
+
+			video_format format;
+
+			spinlock_lock(current_format_spinlock);
+			format = current_format;
+			spinlock_unlock(current_format_spinlock);
 
 			dau_reply_get_video_format(dau, message, &format);
 		}
 
-		static void dau_get_audio_info(struct dau_service *dau,
+		static void _get_audio_info(struct dau_service *dau,
 					       struct DBusMessage *message,
 					       void *ctxt)
 		{
+			LOGD("+++tag: %s", __FUNCTION__);
+
 			struct audio_info info = {
 				.channel_count = 2,
 				.speaker_map = AUDIO_SM_FR_FL,
@@ -893,10 +911,12 @@ struct App0 {
 			dau_reply_get_audio_info(dau, message, &info);
 		}
 
-		static void dau_get_hdr(struct dau_service *dau,
+		static void _get_hdr(struct dau_service *dau,
 					struct DBusMessage *message,
 					void *ctxt)
 		{
+			LOGD("+++tag: %s", __FUNCTION__);
+
 			char hdr[HDR_LEN] = { 0x00, 0x01, 0x02 };
 			char dv[DV_LEN] = { 0x04, 0x05, 0x06 };
 			struct hdr_info info = {
@@ -910,49 +930,61 @@ struct App0 {
 			dau_reply_get_hdr(dau, message, &info);
 		}
 
-		static void dau_set_edid(struct dau_service *dau,
+		static void _set_edid(struct dau_service *dau,
 					    struct DBusMessage *message,
 					    const void *edid,
 					    void *ctxt)
 		{
+			LOGD("+++tag: %s", __FUNCTION__);
+
 			dau_reply_success(dau, message);
 		}
 
-		static void dau_toggle_hpd(struct dau_service *dau,
+		static void _toggle_hpd(struct dau_service *dau,
 					   struct DBusMessage *message,
 					   void *ctxt)
 		{
+			LOGD("+++tag: %s", __FUNCTION__);
+
 			dau_reply_success(dau, message);
 		}
 
-		static void dau_set_video_format(struct dau_service *dau,
+		static void _set_video_format(struct dau_service *dau,
 						 struct DBusMessage *message,
 						 const struct video_format *format,
 						 void *ctxt)
 		{
+			LOGD("+++tag: %s", __FUNCTION__);
+
 			dau_reply_success(dau, message);
 		}
 
-		static void dau_set_audio_info(struct dau_service *dau,
+		static void _set_audio_info(struct dau_service *dau,
 					       struct DBusMessage *message,
 					       const struct audio_info *info,
 					       void *ctxt)
 		{
+			LOGD("+++tag: %s", __FUNCTION__);
+
 			dau_reply_success(dau, message);
 		}
 
-		static void dau_set_hdr(struct dau_service *dau,
+		static void _set_hdr(struct dau_service *dau,
 					struct DBusMessage *message,
 					const struct hdr_info *hdr,
 					void *ctxt)
 		{
+			LOGD("+++tag: %s", __FUNCTION__);
+
 			dau_reply_success(dau, message);
 		}
 
-		static void dau_get_edid(struct dau_service *dau,
+		static void _get_edid(struct dau_service *dau,
 					 struct DBusMessage *message,
 					 void *ctxt)
 		{
+			LOGD("+++tag: %s", __FUNCTION__);
+
 			unsigned char edid[EDID_LEN];
 			unsigned int i;
 
@@ -966,6 +998,9 @@ struct App0 {
 			QRESULT qres;
 
 			LOGD("%s::%s", typeid(self_t).name(), __FUNCTION__);
+
+			memset(&current_format, 0, sizeof(current_format));
+			nSnapshot = 0;
 
 			switch(1) { case 1:
 				free_stack_t& _FreeStack_ = _FreeStack_main_;
@@ -993,7 +1028,9 @@ struct App0 {
 				wait_for_test_finish([&](int ch) -> bool {
 					QRESULT qres;
 
-					switch(1) { case 1:
+					switch(ch) {
+					case 's': case 'S':
+						LOGD("++nSnapshot=%d", ++nSnapshot);
 						break;
 					}
 
@@ -1006,14 +1043,12 @@ struct App0 {
 
 		QRETURN OnStart(free_stack_t& _FreeStack_, QRESULT& qres) {
 			switch(1) { case 1:
-				dauserv_hdmirx = dau_service_register(DAU_SERVICE_SOURCE, 0, &dauserv_methods, this);
-				if (! dauserv_hdmirx) {
-					LOGE("%s(%d): dau_service_register() failed", __FUNCTION__, __LINE__);
+				dau_service* pHdmiRxDauServ;
+				qres = StartDauServHdmiRx(_FreeStack_, &pHdmiRxDauServ);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): StartDauServHdmiRx() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
-				_FreeStack_ += [&]() {
-					dau_service_unregister(dauserv_hdmirx);
-				};
 
 				qcap2_event_t* pDmxEvent;
 				qcap2_demuxer_t* pDmx;
@@ -1023,12 +1058,68 @@ struct App0 {
 					break;
 				}
 
-				qres = AddEventHandler(_FreeStack_, pDmxEvent, std::bind(&self_t::OnDmx, this, pDmx));
+				qres = AddEventHandler(_FreeStack_, pDmxEvent, std::bind(&self_t::OnDmx, this, pDmx, pHdmiRxDauServ));
 				if(qres != QCAP_RS_SUCCESSFUL) {
 					LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
+
+				_FreeStack_ += [&]() {
+					_FreeStack_vsrc_.flush();
+				};
 			}
+			return QCAP_RT_OK;
+		}
+
+		QRESULT StartDauServHdmiRx(free_stack_t& _FreeStack_, dau_service** ppHdmiRxDauServ) {
+			QRESULT qres = QCAP_RS_SUCCESSFUL;
+
+			switch(1) { case 1:
+				static const struct dau_service_methods methods = {
+					.get_cable_status = _get_cable_status,
+					.get_hdcp = _get_hdcp,
+					.set_hdcp = _set_hdcp,
+
+					.get_video_format = _get_video_format,
+					.get_audio_info = _get_audio_info,
+					.get_hdr = _get_hdr,
+					.set_edid = _set_edid,
+					.toggle_hpd = _toggle_hpd,
+
+					.set_video_format = _set_video_format,
+					.set_audio_info = _set_audio_info,
+					.set_hdr = _set_hdr,
+					.get_edid = _get_edid,
+				};
+
+				struct dau_service* hdmirx = dau_service_register(DAU_SERVICE_SOURCE, 0, &methods, this);
+				if (! hdmirx) {
+					qres = QCAP_RS_ERROR_GENERAL;
+					LOGE("%s(%d): dau_service_register() failed", __FUNCTION__, __LINE__);
+					break;
+				}
+				_FreeStack_ += [hdmirx]() {
+					dau_service_unregister(hdmirx);
+				};
+
+				int fd = dau_service_get_fd(hdmirx);
+				LOGD("hdmirx, fd=%d", fd);
+
+				qres = AddEventHandler(_FreeStack_, fd, std::bind(&self_t::OnDauServEvent, this, hdmirx));
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+
+				*ppHdmiRxDauServ = hdmirx;
+			}
+
+			return qres;
+		}
+
+		QRETURN OnDauServEvent(dau_service* dauserv_hdmirx) {
+			dau_service_dispatch(dauserv_hdmirx, 0);
+
 			return QCAP_RT_OK;
 		}
 
@@ -1072,11 +1163,13 @@ struct App0 {
 			return qres;
 		}
 
-		QRETURN OnDmx(qcap2_demuxer_t* pDmx) {
+		QRETURN OnDmx(qcap2_demuxer_t* pDmx, dau_service* pHdmiRxDauServ) {
 			QRESULT qres;
 
 			switch(1) {	case 1:
-				free_stack_t& _FreeStack_ = _FreeStack_evt_;
+				free_stack_t& _FreeStack_ = _FreeStack_vsrc_;
+
+				_FreeStack_.flush();
 
 				qres = qcap2_demuxer_update(pDmx);
 				if(qres != QCAP_RS_SUCCESSFUL) {
@@ -1108,7 +1201,80 @@ struct App0 {
 
 					qcap2_video_format_get_property(pVideoFormat.get(), &nColorSpaceType, &nVideoWidth, &nVideoHeight, &bVideoIsInterleaved, &dVideoFrameRate);
 
-					LOGI("v: %08X %ux%u'%u, %.2f", nColorSpaceType, nVideoWidth, nVideoHeight, bVideoIsInterleaved, dVideoFrameRate);
+					if(nColorSpaceType == QCAP_COLORSPACE_TYPE_UNDEFINED || nVideoWidth <= 0 || nVideoHeight <= 0) {
+						LOGI("v: no-link");
+
+						spinlock_lock(current_format_spinlock);
+						memset(&current_format, 0, sizeof(current_format));
+						spinlock_unlock(current_format_spinlock);
+
+						dau_signal_cable_change(pHdmiRxDauServ);
+					} else {
+						LOGI("v: %08X %ux%u'%u, %.2f", nColorSpaceType, nVideoWidth, nVideoHeight, bVideoIsInterleaved, dVideoFrameRate);
+
+						spinlock_lock(current_format_spinlock);
+						current_format = (video_format){
+							.width = (unsigned int)nVideoWidth,
+							.height = (unsigned int)nVideoHeight,
+							.framerate = (unsigned int)dVideoFrameRate,
+							.colorformat = VIDEO_COLORFORMAT_YUV444,
+							.bpp = 8,
+							.interlaced = (bVideoIsInterleaved != FALSE),
+							.locked = true
+						};
+						spinlock_unlock(current_format_spinlock);
+
+						dau_signal_cable_change(pHdmiRxDauServ);
+						dau_signal_video_change(pHdmiRxDauServ);
+
+						const ULONG nColorSpaceType = QCAP_COLORSPACE_TYPE_NV12;
+						const ULONG nEncoderFormat = QCAP_ENCODER_FORMAT_H264;
+						const ULONG nVideoBitRate = 16 * 1000000;
+
+						qcap2_event_t* pVsrcEvent;
+						qres = StartVsrc(_FreeStack_, pVsrc, nColorSpaceType,
+							nVideoWidth, nVideoHeight, bVideoIsInterleaved, dVideoFrameRate, &pVsrcEvent);
+						if(qres != QCAP_RS_SUCCESSFUL) {
+							LOGE("%s(%d): StartVsrc() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+							break;
+						}
+
+#if 1
+						qcap2_event_t* pVencEvent;
+						qcap2_video_encoder_t* pVenc;
+						qres = StartVenc(_FreeStack_, nColorSpaceType, nVideoWidth, nVideoHeight,
+							bVideoIsInterleaved, dVideoFrameRate, nEncoderFormat, nVideoBitRate, &pVenc, &pVencEvent);
+						if(qres != QCAP_RS_SUCCESSFUL) {
+							LOGE("%s(%d): StartVenc() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+							break;
+						}
+#endif
+
+#if 1
+						qcap2_muxer_t* pMuxer;
+						qcap2_video_decoder_t* pVdec;
+						qres = StartRTSPMuxer(_FreeStack_, nColorSpaceType, nVideoWidth, nVideoHeight,
+							bVideoIsInterleaved, dVideoFrameRate, nEncoderFormat, nVideoBitRate, &pMuxer, &pVdec);
+						if(qres != QCAP_RS_SUCCESSFUL) {
+							LOGE("%s(%d): StartRTSPMuxer() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+							break;
+						}
+#endif
+
+						qres = AddEventHandler(_FreeStack_, pVsrcEvent,
+							std::bind(&self_t::OnVsrc, this, pVsrc, pVenc));
+						if(qres != QCAP_RS_SUCCESSFUL) {
+							LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+							break;
+						}
+
+						qres = AddEventHandler(_FreeStack_, pVencEvent,
+							std::bind(&self_t::OnVenc, this, pVenc, pVdec));
+						if(qres != QCAP_RS_SUCCESSFUL) {
+							LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+							break;
+						}
+					}
 				}
 
 				qcap2_audio_source_t* pAsrc = qcap2_demuxer_get_audio_source(pDmx, nAudioIndex);
@@ -1128,6 +1294,304 @@ struct App0 {
 			return QCAP_RT_OK;
 		}
 
+		QRESULT StartVsrc(free_stack_t& _FreeStack_, qcap2_video_source_t* pVsrc, ULONG nColorSpaceType,
+			ULONG nVideoWidth, ULONG nVideoHeight, BOOL bVideoIsInterleaved, double dVideoFrameRate, qcap2_event_t** ppEvent) {
+			QRESULT qres = QCAP_RS_SUCCESSFUL;
+
+			switch(1) { case 1:
+				qcap2_event_t* pEvent;
+				qres = NewEvent(_FreeStack_, &pEvent);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): NewEvent() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+
+				qcap2_video_source_set_frame_count(pVsrc, 4);
+				qcap2_video_source_set_event(pVsrc, pEvent);
+
+				{
+					std::shared_ptr<qcap2_video_format_t> pVideoFormat(
+						qcap2_video_format_new(), qcap2_video_format_delete);
+
+					qcap2_video_format_set_property(pVideoFormat.get(),
+						nColorSpaceType, nVideoWidth,
+						bVideoIsInterleaved ? nVideoHeight / 2 : nVideoHeight,
+						bVideoIsInterleaved, dVideoFrameRate);
+
+					qcap2_video_source_set_video_format(pVsrc, pVideoFormat.get());
+				}
+
+				qres = qcap2_video_source_start(pVsrc);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): qcap2_video_source_start() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+				_FreeStack_ += [pVsrc]() {
+					QRESULT qres;
+
+					qres = qcap2_video_source_stop(pVsrc);
+					if(qres != QCAP_RS_SUCCESSFUL) {
+						LOGE("%s(%d): qcap2_video_source_stop() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					}
+				};
+
+				*ppEvent = pEvent;
+			}
+
+			return qres;
+		}
+
+		QRETURN OnVsrc(qcap2_video_source_t* pVsrc, qcap2_video_encoder_t* pVenc) {
+			QRESULT qres;
+
+			switch(1) { case 1:
+				qcap2_rcbuffer_t* pRCBuffer;
+				qres = qcap2_video_source_pop(pVsrc, &pRCBuffer);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): qcap2_video_source_pop() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+				std::shared_ptr<qcap2_rcbuffer_t> pRCBuffer_(pRCBuffer,
+					qcap2_rcbuffer_release);
+
+				qres = qcap2_video_encoder_push(pVenc, pRCBuffer);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): qcap2_video_encoder_push() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+
+#if 1
+				if(nSnapshot > 0) {
+					LOGD("--nSnapshot=%d", --nSnapshot);
+
+					qres = qcap2_save_raw_video_frame(pRCBuffer, "snapshot");
+					if(qres != QCAP_RS_SUCCESSFUL) {
+						LOGE("%s(%d): qcap2_save_raw_video_frame() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+						break;
+					}
+				}
+#endif
+			}
+
+			return QCAP_RT_OK;
+		}
+
+		QRESULT StartVenc(free_stack_t& _FreeStack_, ULONG nColorSpaceType, ULONG nVideoWidth, ULONG nVideoHeight,
+			BOOL bVideoIsInterleaved, double dVideoFrameRate, ULONG nEncoderFormat, ULONG nVideoBitRate,
+			qcap2_video_encoder_t** ppVenc, qcap2_event_t** ppEvent) {
+			QRESULT qres = QCAP_RS_SUCCESSFUL;
+
+			switch(1) { case 1:
+				qcap2_event_t* pEvent;
+				qres = NewEvent(_FreeStack_, &pEvent);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): NewEvent() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+
+				qcap2_video_encoder_t* pVenc = qcap2_video_encoder_new();
+				_FreeStack_ += [pVenc]() {
+					qcap2_video_encoder_delete(pVenc);
+				};
+
+				{
+					std::shared_ptr<qcap2_video_encoder_property_t> pVencProp(qcap2_video_encoder_property_new(),
+						qcap2_video_encoder_property_delete);
+
+					UINT nGpuNum = 0;
+					ULONG nEncoderType = QCAP_ENCODER_TYPE_ALLEGRO2;
+					// ULONG nEncoderFormat = QCAP_ENCODER_FORMAT_H265;
+					// ULONG nColorSpaceType = nColorSpaceType;
+					ULONG nWidth = nVideoWidth;
+					ULONG nHeight = nVideoHeight;
+					double dFrameRate = dVideoFrameRate;
+					ULONG nRecordProfile = QCAP_RECORD_PROFILE_MAIN;
+					ULONG nRecordLevel = QCAP_RECORD_LEVEL_51;
+					ULONG nRecordEntropy = QCAP_RECORD_ENTROPY_CABAC;
+					ULONG nRecordComplexity = QCAP_RECORD_COMPLEXITY_0;
+					ULONG nRecordMode = QCAP_RECORD_MODE_CBR;
+					ULONG nQuality = 8000;
+					ULONG nBitRate = nVideoBitRate;
+					ULONG nGOP = 60;
+					ULONG nBFrames = 0;
+					BOOL bIsInterleaved = FALSE;
+					ULONG nSlices = 0;
+					ULONG nLayers = 0;
+					ULONG nSceneCut = 0;
+					BOOL bMultiThread = FALSE;
+					BOOL bMBBRC = FALSE;
+					BOOL bExtBRC = FALSE;
+					ULONG nMinQP = 0;
+					ULONG nMaxQP = 0;
+					ULONG nVBVMaxRate = 0;
+					ULONG nVBVBufSize = 0;
+					ULONG nAspectRatioX = 0;
+					ULONG nAspectRatioY = 0;
+
+					qcap2_video_encoder_property_set_property1(pVencProp.get(), nGpuNum, nEncoderType, nEncoderFormat, nColorSpaceType, nWidth, nHeight, dFrameRate, nRecordProfile, nRecordLevel, nRecordEntropy, nRecordComplexity, nRecordMode, nQuality, nBitRate, nGOP, nBFrames, bIsInterleaved, nSlices, nLayers, nSceneCut, bMultiThread, bMBBRC, bExtBRC, nMinQP, nMaxQP, nVBVMaxRate , nVBVBufSize, nAspectRatioX, nAspectRatioY);
+					qcap2_video_encoder_property_set_low_delay(pVencProp.get(), true);
+					qcap2_video_encoder_property_set_time_scale_factor(pVencProp.get(), 1);
+					qcap2_video_encoder_set_video_property(pVenc, pVencProp.get());
+				}
+
+				qcap2_video_encoder_set_multithread(pVenc, false);
+				qcap2_video_encoder_set_num_cores(pVenc, 4);
+				qcap2_video_encoder_set_filler_ctrl_mode(pVenc, AL_FILLER_ENC);
+				qcap2_video_encoder_set_event(pVenc, pEvent);
+
+				qres = qcap2_video_encoder_start(pVenc);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGD("%s(%d): qcap2_video_encoder_start() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+				_FreeStack_ += [pVenc]() {
+					QRESULT qres;
+
+					qres = qcap2_video_encoder_stop(pVenc);
+					if(qres != QCAP_RS_SUCCESSFUL) {
+						LOGD("%s(%d): qcap2_video_encoder_stop() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					}
+				};
+
+				*ppVenc = pVenc;
+				*ppEvent = pEvent;
+			}
+
+			return qres;
+		}
+
+		QRETURN OnVenc(qcap2_video_encoder_t* pVenc, qcap2_video_decoder_t* pVdec) {
+			QRESULT qres;
+
+			switch(1) { case 1:
+				qcap2_rcbuffer_t* pRCBuffer;
+				qres = qcap2_video_encoder_pop(pVenc, &pRCBuffer);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): qcap2_video_encoder_pop() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+				std::shared_ptr<qcap2_rcbuffer_t> pRCBuffer_(pRCBuffer,
+					qcap2_rcbuffer_release);
+
+				qres = qcap2_video_decoder_push(pVdec, pRCBuffer);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): qcap2_video_decoder_push() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+			}
+
+			return QCAP_RT_OK;
+		}
+
+		QRESULT StartRTSPMuxer(free_stack_t& _FreeStack_, ULONG nColorSpaceType, ULONG nVideoWidth, ULONG nVideoHeight,
+			BOOL bVideoIsInterleaved, double dVideoFrameRate, ULONG nEncoderFormat, ULONG nVideoBitRate,
+			qcap2_muxer_t** ppMuxer, qcap2_video_decoder_t** ppVdec) {
+			QRESULT qres = QCAP_RS_SUCCESSFUL;
+
+			switch(1) { case 1:
+				qcap2_muxer_t* pMuxer = qcap2_muxer_new();
+				_FreeStack_ += [pMuxer]() {
+					qcap2_muxer_delete(pMuxer);
+				};
+
+				qcap2_muxer_set_type(pMuxer, QCAP2_MUXER_TYPE_RTSP);
+				qcap2_muxer_set_endpoint(pMuxer, "0.0.0.0", 554);
+				qcap2_muxer_set_max_threads(pMuxer, 4);
+				qcap2_muxer_set_realm(pMuxer, "YUAN");
+				qcap2_muxer_add_user(pMuxer, "root", "root_pass");
+				qcap2_muxer_add_user(pMuxer, "guest", "guest_pass");
+
+				{
+					std::shared_ptr<qcap2_program_info_t> pProgInfo(
+						qcap2_program_info_new(), qcap2_program_info_delete);
+
+					qcap2_program_info_set_metadata(pProgInfo.get(), "cname", "YUAN");
+					qcap2_program_info_set_metadata(pProgInfo.get(), "resource_name", "session0");
+					qcap2_program_info_set_video_decoder_count(pProgInfo.get(), 1);
+					qcap2_program_info_set_video_decoder_index(pProgInfo.get(), 0, 0);
+					qcap2_muxer_add_program_info(pMuxer, pProgInfo.get());
+				}
+
+				qres = qcap2_muxer_start(pMuxer);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): qcap2_muxer_start() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+				_FreeStack_ += [pMuxer]() {
+					QRESULT qres;
+
+					qres = qcap2_muxer_stop(pMuxer);
+					if(qres != QCAP_RS_SUCCESSFUL) {
+						LOGE("%s(%d): qcap2_muxer_stop() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					}
+				};
+
+				qcap2_video_decoder_t* pVdec = qcap2_muxer_get_video_decoder(pMuxer, 0);
+				{
+					std::shared_ptr<qcap2_video_encoder_property_t> pVencProp(
+						qcap2_video_encoder_property_new(), qcap2_video_encoder_property_delete);
+
+					UINT nGpuNum = 0;
+					ULONG nEncoderType = QCAP_ENCODER_TYPE_SOFTWARE;
+					// ULONG nEncoderFormat = QCAP_ENCODER_FORMAT_H264;
+					// ULONG nColorSpaceType = XX;
+					ULONG nWidth = nVideoWidth;
+					ULONG nHeight = nVideoHeight;
+					double dFrameRate = dVideoFrameRate;
+					ULONG nRecordProfile = QCAP_RECORD_PROFILE_HIGH;
+					ULONG nRecordLevel = QCAP_RECORD_LEVEL_51;
+					ULONG nRecordEntropy = QCAP_RECORD_ENTROPY_CABAC;
+					ULONG nRecordComplexity = QCAP_RECORD_COMPLEXITY_0;
+					ULONG nRecordMode = QCAP_RECORD_MODE_CBR;
+					ULONG nQuality = 8000;
+					ULONG nBitRate = nVideoBitRate;
+					ULONG nGOP = 60;
+					ULONG nBFrames = 0;
+					BOOL bIsInterleaved = FALSE;
+					ULONG nSlices = 0;
+					ULONG nLayers = 0;
+					ULONG nSceneCut = 0;
+					BOOL bMultiThread = FALSE;
+					BOOL bMBBRC = FALSE;
+					BOOL bExtBRC = FALSE;
+					ULONG nMinQP = 0;
+					ULONG nMaxQP = 0;
+					ULONG nVBVMaxRate = 0;
+					ULONG nVBVBufSize = 0;
+					ULONG nAspectRatioX = 0;
+					ULONG nAspectRatioY = 0;
+
+					qcap2_video_encoder_property_set_property1(pVencProp.get(), nGpuNum, nEncoderType, nEncoderFormat, nColorSpaceType, nWidth, nHeight, dFrameRate, nRecordProfile, nRecordLevel, nRecordEntropy, nRecordComplexity, nRecordMode, nQuality, nBitRate, nGOP, nBFrames, bIsInterleaved, nSlices, nLayers, nSceneCut, bMultiThread, bMBBRC, bExtBRC, nMinQP, nMaxQP, nVBVMaxRate , nVBVBufSize, nAspectRatioX, nAspectRatioY);
+					qcap2_video_decoder_set_video_property(pVdec, pVencProp.get());
+				}
+				qcap2_video_decoder_set_payload_type(pVdec, 96);
+
+				qres = qcap2_muxer_play(pMuxer);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): qcap2_muxer_play() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+
+				qres = qcap2_video_decoder_start(pVdec);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): qcap2_video_decoder_start() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+				_FreeStack_ += [pVdec]() {
+					QRESULT qres;
+
+					qres = qcap2_video_decoder_stop(pVdec);
+					if(qres != QCAP_RS_SUCCESSFUL) {
+						LOGE("%s(%d): qcap2_video_decoder_stop() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					}
+				};
+
+				*ppMuxer = pMuxer;
+				*ppVdec = pVdec;
+			}
+
+			return qres;
+		}
 	} mTestCase3;
 };
 

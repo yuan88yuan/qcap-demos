@@ -1,0 +1,14 @@
+ifeq (${BUILD_WITH_DAUSERVICE},ON)
+
+$(call decl_mod,DAUSERVICE)
+
+DAUSERVICE_F+=\
+-DBUILD_WITH_DAUSERVICE=1
+
+DAUSERVICE_L_A+=\
+-ldauservice \
+
+DAUSERVICE_L_S+=\
+-ldbus-1
+
+endif
