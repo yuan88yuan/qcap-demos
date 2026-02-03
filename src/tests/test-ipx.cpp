@@ -124,11 +124,11 @@ struct App0 {
 			mTestCase1.DoWork();
 			break;
 
-#if 0
 		case 2:
 			mTestCase2.DoWork();
 			break;
 
+#if 0
 		case 3:
 			mTestCase3.DoWork();
 			break;
@@ -177,7 +177,7 @@ struct App0 {
 		QRETURN OnStart(free_stack_t& _FreeStack_, QRESULT& qres) {
 			switch(1) { case 1:
 				ipxgpucodec_error_t ipxerr;
-				const char* pLicenseFn = "/opt/20240702-132607_672_Yuan-high-tech-devel_3686.lic";
+				const char* pLicenseFn = "/opt/ipx.lic";
 
 				std::ifstream oLicenseFile(pLicenseFn);
 				oLicenseFile.seekg(0, std::ios::end);
@@ -266,6 +266,589 @@ struct App0 {
 		}
 	} mTestCase1;
 
+	struct TestCase2 : public TestCase {
+		typedef TestCase2 self_t;
+		typedef TestCase super_t;
+
+		int nSnapshot;
+
+		void DoWork() {
+			LOGD("%s::%s", typeid(self_t).name(), __FUNCTION__);
+
+			QRESULT qres;
+
+			nSnapshot = 0;
+
+			switch(1) { case 1:
+				qres = StartEventHandlers();
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): StartEventHandlers() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+				ZzUtils::Scoped ZZ_GUARD_NAME([&]() {
+					OnExitEventHandlers();
+				} );
+
+				QRESULT qres_evt = QCAP_RS_SUCCESSFUL;
+				qres = ExecInEventHandlers(std::bind(&self_t::OnStart, this,
+					std::ref(_FreeStack_evt_), std::ref(qres_evt)));
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): ExecInEventHandlers() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+				if(qres_evt != QCAP_RS_SUCCESSFUL) {
+					break;
+				}
+
+				wait_for_test_finish([&](int ch) -> bool {
+					switch(ch) {
+					case 's': case 'S':
+						LOGD("++nSnapshot=%d", ++nSnapshot);
+						break;
+					}
+
+					return true;
+				}, 1000000LL, 10LL);
+			}
+
+			_FreeStack_main_.flush();
+		}
+
+		QRETURN OnStart(free_stack_t& _FreeStack_, QRESULT& qres) {
+			switch(1) { case 1:
+				qcap2_event_t* pEvent_vsrc;
+				qres = NewEvent(_FreeStack_, &pEvent_vsrc);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): NewEvent() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+
+				qcap2_video_source_t* pVsrc;
+				qres = StartVsrc(_FreeStack_, pEvent_vsrc, &pVsrc);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): StartVsrc() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+
+				qcap2_event_t* pEvent_venc;
+				qres = NewEvent(_FreeStack_, &pEvent_venc);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): NewEvent() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+
+				ipxgpucodec_encoder_t* pEncoder;
+				qcap2_rcbuffer_queue_t* pVencQ;
+				qcap2_rcbuffer_queue_t* pVencEvtQ;
+				size_t packed_image_size;
+				uint32_t codestream_size;
+				qres = StartVenc(_FreeStack_, pEvent_venc, &pEncoder, &pVencQ, &pVencEvtQ, &packed_image_size, &codestream_size);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): StartVenc() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+
+				qres = AddEventHandler(_FreeStack_, pEvent_vsrc,
+					std::bind(&self_t::OnVsrc, this, pVsrc, packed_image_size, pEncoder, pVencQ, pVencEvtQ));
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+
+				qres = AddEventHandler(_FreeStack_, pEvent_venc,
+					std::bind(&self_t::OnVenc, this, codestream_size, pVencEvtQ));
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+			}
+
+			return QCAP_RT_OK;
+		}
+
+		QRESULT StartVsrc(free_stack_t& _FreeStack_, qcap2_event_t* pEvent_vsrc, qcap2_video_source_t** ppVsrc) {
+			QRESULT qres = QCAP_RS_SUCCESSFUL;
+			cudaError_t cuerr;
+
+			switch(1) { case 1:
+				const int nBuffers = 4;
+				const ULONG nColorSpaceType = QCAP_COLORSPACE_TYPE_UYVY;
+				const ULONG nVideoFrameWidth = 3840;
+				const ULONG nVideoFrameHeight = 2160;
+
+				std::ifstream oRawImage("3840x2160.uyvy422", std::ios::binary);
+				if(! oRawImage) {
+					qres = QCAP_RS_ERROR_GENERAL;
+					LOGE("%s(%d): failed to open \"3840x2160.uyvy422\"", __FUNCTION__, __LINE__);
+					break;
+				}
+
+				oRawImage.seekg(0, std::ios::end);
+				size_t nRawImageSize = oRawImage.tellg();
+				std::string strRawImage(nRawImageSize, ' ');
+				oRawImage.seekg(0);
+				oRawImage.read(&strRawImage[0], nRawImageSize);
+				LOGD("nRawImageSize=%d", nRawImageSize);
+
+				qcap2_video_source_t* pVsrc = qcap2_video_source_new();
+				_FreeStack_ += [pVsrc]() {
+					qcap2_video_source_delete(pVsrc);
+				};
+
+				qcap2_rcbuffer_t** pBuffers = new qcap2_rcbuffer_t*[nBuffers];
+				_FreeStack_ += [pBuffers]() {
+					delete [] pBuffers;
+				};
+
+				for(int i = 0;i < nBuffers;i++) {
+					qcap2_rcbuffer_t* pRCBuffer;
+					qres = __testkit__::new_video_cudahostbuf(_FreeStack_, nColorSpaceType, nVideoFrameWidth, nVideoFrameHeight, cudaHostAllocMapped, &pRCBuffer);
+					if(qres != QCAP_RS_SUCCESSFUL) {
+						LOGE("%s(%d): __testkit__::new_video_cudahostbuf() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+						break;
+					}
+
+					std::shared_ptr<qcap2_av_frame_t> pAVFrame(
+						(qcap2_av_frame_t*)qcap2_rcbuffer_lock_data(pRCBuffer),
+						[pRCBuffer](qcap2_av_frame_t*) {
+							qcap2_rcbuffer_unlock_data(pRCBuffer);
+						});
+
+					uint8_t* pData[4];
+					int pLineSize[4];
+					qcap2_av_frame_get_buffer1(pAVFrame.get(), pData, pLineSize);
+
+					LOGD("%d: [%p %p %p %p] [%d,%d,%d,%d]", i,
+						pData[0], pData[1], pData[2], pData[3],
+						(int)pLineSize[0], (int)pLineSize[1], (int)pLineSize[2], (int)pLineSize[3]);
+
+#if 0
+					qres = qcap2_fill_video_test_pattern(pRCBuffer, QCAP2_TEST_PATTERN_0);
+					if(qres != QCAP_RS_SUCCESSFUL) {
+						LOGE("%s(%d): qcap2_fill_video_test_pattern() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+						break;
+					}
+#else
+					memcpy(pData[0], &strRawImage[0], nRawImageSize);
+#endif
+
+					pBuffers[i] = pRCBuffer;
+				}
+				if(qres != QCAP_RS_SUCCESSFUL)
+					break;
+
+				qcap2_video_source_set_backend_type(pVsrc, QCAP2_VIDEO_SOURCE_BACKEND_TYPE_TPG);
+				qcap2_video_source_set_frame_count(pVsrc, nBuffers);
+				qcap2_video_source_set_buffers(pVsrc, &pBuffers[0]);
+				qcap2_video_source_set_event(pVsrc, pEvent_vsrc);
+
+				{
+					std::shared_ptr<qcap2_video_format_t> pVideoFormat(
+						qcap2_video_format_new(), qcap2_video_format_delete);
+
+					qcap2_video_format_set_property(pVideoFormat.get(),
+						nColorSpaceType, nVideoFrameWidth, nVideoFrameHeight, FALSE, 60.0);
+
+					qcap2_video_source_set_video_format(pVsrc, pVideoFormat.get());
+				}
+
+				qres = qcap2_video_source_start(pVsrc);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): qcap2_video_source_start() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+				_FreeStack_ += [pVsrc]() {
+					QRESULT qres;
+
+					qres = qcap2_video_source_stop(pVsrc);
+					if(qres != QCAP_RS_SUCCESSFUL) {
+						LOGE("%s(%d): qcap2_video_scaler_stop() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					}
+				};
+
+				*ppVsrc = pVsrc;
+			}
+
+			return qres;
+		}
+
+		QRETURN OnVsrc(qcap2_video_source_t* pVsrc, size_t packed_image_size, ipxgpucodec_encoder_t* pEncoder, qcap2_rcbuffer_queue_t* pVencQ, qcap2_rcbuffer_queue_t* pVencEvtQ) {
+			QRESULT qres;
+			ipxgpucodec_error_t ipxerr;
+			int64_t now = _clk();
+
+			switch(1) { case 1:
+				qcap2_rcbuffer_t* pRCBuffer;
+				qres = qcap2_video_source_pop(pVsrc, &pRCBuffer);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): qcap2_video_source_pop() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+				std::shared_ptr<qcap2_rcbuffer_t> ZZ_GUARD_NAME(pRCBuffer, qcap2_rcbuffer_release);
+				std::shared_ptr<qcap2_av_frame_t> pAVFrame(
+					(qcap2_av_frame_t*)qcap2_rcbuffer_lock_data(pRCBuffer),
+					[pRCBuffer](qcap2_av_frame_t*) {
+						qcap2_rcbuffer_unlock_data(pRCBuffer);
+					});
+
+				uint8_t* pData[4];
+				int pLineSize[4];
+				qcap2_av_frame_get_buffer1(pAVFrame.get(), pData, pLineSize);
+
+#if 1
+				if(nSnapshot > 0) {
+					LOGD("--nSnapshot=%d", --nSnapshot);
+
+					qres = qcap2_save_raw_video_frame(pRCBuffer, "snapshot");
+					if(qres != QCAP_RS_SUCCESSFUL) {
+						LOGE("%s(%d): qcap2_save_raw_video_frame() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+						break;
+					}
+				}
+#endif
+
+#if 1
+				LOGD("packed_image_size=%u", packed_image_size);
+				ipxerr = ipxgpucodec_enc_push_frame(pEncoder, (const void*)pData[0], packed_image_size);
+				if(ipxerr != IPXGPUCODEC_SUCCESS) {
+					LOGE("%s(%d): ipxgpucodec_enc_push_frame() failed, ipxerr=%d",
+						__FUNCTION__, __LINE__, ipxerr);
+					break;
+				}
+#endif
+			}
+
+			return QCAP_RT_OK;
+		}
+
+		QRESULT StartVenc(free_stack_t& _FreeStack_, qcap2_event_t* pEvent_venc, ipxgpucodec_encoder_t** ppEncoder, qcap2_rcbuffer_queue_t** ppVencQ, qcap2_rcbuffer_queue_t** ppVencEvtQ, size_t* pPackedImageSize, uint32_t* pCodeStreamSize) {
+			QRESULT qres = QCAP_RS_SUCCESSFUL;
+			ipxgpucodec_error_t ipxerr;
+
+			switch(1) { case 1:
+				const ipxgpucodec_image_format_t nImageFormat = IPXGPUCODEC_FMT_UYVY;
+				const int nWidth = 3840;
+				const int nHeight = 2160;
+				const ipxgpucodec_picture_profile_t nPictureProfile = IPXGPUCODEC_PIC_PROFILE_DEFAULT;
+				const ipxgpucodec_picture_chroma_format_t nPicChromaFormat = IPXGPUCODEC_PIC_CHROMA_FORMAT_422;
+				const float fBpp = 1.0f;
+				const int nBuffers = 10;
+
+				ipxgpucodec_image_format_configuration_t* fmt_config = NULL;
+				ipxerr = ipxgpucodec_create_image_format_configuration(nImageFormat, &fmt_config);
+				if(ipxerr != IPXGPUCODEC_SUCCESS) {
+					qres = QCAP_RS_ERROR_GENERAL;
+					LOGE("%s(%d): ipxgpucodec_create_image_format_configuration() failed, ipxerr=%d",
+						__FUNCTION__, __LINE__, ipxerr);
+					break;
+				}
+				ZzUtils::Scoped ZZ_GUARD_NAME([fmt_config]() {
+					ipxgpucodec_error_t ipxerr;
+
+					ipxerr = ipxgpucodec_delete_image_format_configuration(fmt_config);
+					if(ipxerr != IPXGPUCODEC_SUCCESS) {
+						LOGE("%s(%d): ipxgpucodec_delete_image_format_configuration() failed, ipxerr=%d",
+							__FUNCTION__, __LINE__, ipxerr);
+					}
+				});
+
+				size_t packed_image_size;
+				ipxerr = ipxgpucodec_get_image_format_size(fmt_config, nWidth, nHeight, &packed_image_size);
+				if(ipxerr != IPXGPUCODEC_SUCCESS) {
+					qres = QCAP_RS_ERROR_GENERAL;
+					LOGE("%s(%d): ipxgpucodec_get_image_format_size() failed, ipxerr=%d",
+						__FUNCTION__, __LINE__, ipxerr);
+					break;
+				}
+				LOGD("packed_image_size=%d", packed_image_size);
+
+				ipxgpucodec_picture_configuration_t* pic_config = NULL;
+				ipxerr = ipxgpucodec_create_picture_configuration(
+					nPictureProfile,
+					nWidth, nHeight,
+					nPicChromaFormat,
+					8, (nWidth * nHeight * fBpp) / 8, &pic_config);
+				if(ipxerr != IPXGPUCODEC_SUCCESS) {
+					qres = QCAP_RS_ERROR_GENERAL;
+					const char* error_name = ipxgpucodec_error_name(ipxerr);
+					const char* error_msg = ipxgpucodec_last_error_message();
+					LOGE("%s(%d): ipxgpucodec_create_picture_configuration() failed, ipxerr=%d, %s, %s",
+						__FUNCTION__, __LINE__, ipxerr, error_name, error_msg);
+					break;
+				}
+				ZzUtils::Scoped ZZ_GUARD_NAME([pic_config]() {
+					ipxgpucodec_error_t ipxerr;
+
+					ipxerr = ipxgpucodec_delete_picture_configuration(pic_config);
+					if(ipxerr != IPXGPUCODEC_SUCCESS) {
+						LOGE("%s(%d): ipxgpucodec_delete_picture_configuration() failed, ipxerr=%d",
+							__FUNCTION__, __LINE__, ipxerr);
+					}
+				});
+
+				uint32_t nAttrSize;
+
+				ipxgpucodec_picture_profile_t pic_profile;
+				ipxerr = ipxgpucodec_get_picture_configuration(pic_config,
+					IPXGPUCODEC_PIC_PROFILE,
+					&pic_profile,
+					sizeof(pic_profile),
+					&nAttrSize);
+				if(ipxerr != IPXGPUCODEC_SUCCESS) {
+					qres = QCAP_RS_ERROR_GENERAL;
+					LOGE("%s(%d): ipxgpucodec_get_picture_configuration(IPXGPUCODEC_PIC_PROFILE) failed, ipxerr=%d",
+						__FUNCTION__, __LINE__, ipxerr);
+					break;
+				}
+				LOGD("pic_profile=%d (%d)", (int)pic_profile, nAttrSize);
+
+				uint32_t codestream_size;
+				ipxerr = ipxgpucodec_get_picture_configuration(pic_config,
+					IPXGPUCODEC_PIC_CODESTREAM_SIZE,
+					&codestream_size,
+					sizeof(codestream_size),
+					&nAttrSize);
+				if(ipxerr != IPXGPUCODEC_SUCCESS) {
+					qres = QCAP_RS_ERROR_GENERAL;
+					LOGE("%s(%d): ipxgpucodec_get_picture_configuration(IPXGPUCODEC_PIC_CODESTREAM_SIZE) failed, ipxerr=%d",
+						__FUNCTION__, __LINE__, ipxerr);
+					break;
+				}
+				LOGD("codestream_size=%d (%d)", codestream_size, nAttrSize);
+
+				ipxgpucodec_picture_rate_allocation_optimization_t optimization = IPXGPUCODEC_PIC_RA_OPT_PSNR;
+				ipxerr = ipxgpucodec_set_picture_configuration(pic_config,
+					IPXGPUCODEC_PIC_RATE_ALLOCATION_OPTIMIZATION, &optimization, sizeof(optimization));
+				if(ipxerr != IPXGPUCODEC_SUCCESS) {
+					qres = QCAP_RS_ERROR_GENERAL;
+					LOGE("%s(%d): ipxgpucodec_set_picture_configuration(IPXGPUCODEC_PIC_RATE_ALLOCATION_OPTIMIZATION) failed, ipxerr=%d",
+						__FUNCTION__, __LINE__, ipxerr);
+					break;
+				}
+
+				ipxgpucodec_encoder_configuration_t* enc_config = NULL;
+				ipxerr = ipxgpucodec_enc_create_encoder_configuration(&enc_config);
+				if(ipxerr != IPXGPUCODEC_SUCCESS) {
+					qres = QCAP_RS_ERROR_GENERAL;
+					LOGE("%s(%d): ipxgpucodec_enc_create_encoder_configuration() failed, ipxerr=%d",
+						__FUNCTION__, __LINE__, ipxerr);
+					break;
+				}
+				ZzUtils::Scoped ZZ_GUARD_NAME([enc_config]() {
+					ipxgpucodec_error_t ipxerr;
+
+					ipxerr = ipxgpucodec_enc_delete_encoder_configuration(enc_config);
+					if(ipxerr != IPXGPUCODEC_SUCCESS) {
+						LOGE("%s(%d): ipxgpucodec_enc_delete_encoder_configuration() failed, ipxerr=%d",
+							__FUNCTION__, __LINE__, ipxerr);
+					}
+				});
+
+				// need to set encoder to use primary CUDA context (the one used by the CUDA runtime API), instead of creating its own CUDA context
+				ipxgpucodec_bool_t use_primary_cuda_context = IPXGPUCODEC_TRUE;
+				ipxerr = ipxgpucodec_enc_set_encoder_configuration(enc_config, IPXGPUCODEC_ENC_INTEROPERATION_PRIMARY_CUDA_CONTEXT, &use_primary_cuda_context, sizeof(use_primary_cuda_context));
+				if(ipxerr != IPXGPUCODEC_SUCCESS) {
+					qres = QCAP_RS_ERROR_GENERAL;
+					LOGE("%s(%d): ipxgpucodec_enc_set_encoder_configuration(IPXGPUCODEC_ENC_INTEROPERATION_PRIMARY_CUDA_CONTEXT) failed, ipxerr=%d",
+						__FUNCTION__, __LINE__, ipxerr);
+					break;
+				}
+
+				// use CUDA buffer input and output mode: encoder will directly access the managed memory buffers, instead of explicitly doing a copy
+				ipxgpucodec_enc_input_mode_t input_mode = IPXGPUCODEC_ENC_CUDA_BUFFER_INPUT;
+				ipxerr = ipxgpucodec_enc_set_encoder_configuration(enc_config, IPXGPUCODEC_ENC_INPUT_MODE, &input_mode, sizeof(input_mode));
+				if(ipxerr != IPXGPUCODEC_SUCCESS) {
+					qres = QCAP_RS_ERROR_GENERAL;
+					LOGE("%s(%d): ipxgpucodec_enc_set_encoder_configuration(IPXGPUCODEC_ENC_INPUT_MODE) failed, ipxerr=%d",
+						__FUNCTION__, __LINE__, ipxerr);
+					break;
+				}
+
+				ipxgpucodec_enc_output_mode_t output_mode = IPXGPUCODEC_ENC_CUDA_BUFFER_OUTPUT;
+				ipxerr = ipxgpucodec_enc_set_encoder_configuration(enc_config, IPXGPUCODEC_ENC_OUTPUT_MODE, &output_mode, sizeof(output_mode));
+				if(ipxerr != IPXGPUCODEC_SUCCESS) {
+					qres = QCAP_RS_ERROR_GENERAL;
+					LOGE("%s(%d): ipxgpucodec_enc_set_encoder_configuration(IPXGPUCODEC_ENC_OUTPUT_MODE) failed, ipxerr=%d",
+						__FUNCTION__, __LINE__, ipxerr);
+					break;
+				}
+
+				qcap2_rcbuffer_t** pBuffers = new qcap2_rcbuffer_t*[nBuffers];
+				_FreeStack_ += [pBuffers]() {
+					delete [] pBuffers;
+				};
+
+				const int codestream_width = 1024;
+				const int codestream_height = (codestream_size / codestream_width) + 1;
+
+				for(int i = 0;i < nBuffers;i++) {
+					qcap2_rcbuffer_t* pRCBuffer;
+					qres = __testkit__::new_video_cudahostbuf(_FreeStack_, QCAP_COLORSPACE_TYPE_Y8, codestream_width, codestream_height, cudaHostAllocMapped, &pRCBuffer);
+					if(qres != QCAP_RS_SUCCESSFUL) {
+						LOGE("%s(%d): __testkit__::new_video_cudahostbuf() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+						break;
+					}
+
+					pBuffers[i] = pRCBuffer;
+				}
+				if(qres != QCAP_RS_SUCCESSFUL)
+					break;
+
+				qcap2_rcbuffer_queue_t* pVencQ = qcap2_rcbuffer_queue_new();
+				_FreeStack_ += [pVencQ]() {
+					qcap2_rcbuffer_queue_delete(pVencQ);
+				};
+
+				qcap2_rcbuffer_queue_set_max_buffers(pVencQ, nBuffers);
+				qcap2_rcbuffer_queue_set_buffers(pVencQ, &pBuffers[0]);
+
+				qres = qcap2_rcbuffer_queue_start(pVencQ);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): qcap2_rcbuffer_queue_start() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+				_FreeStack_ += [pVencQ]() {
+					QRESULT qres;
+
+					qres = qcap2_rcbuffer_queue_stop(pVencQ);
+					if(qres != QCAP_RS_SUCCESSFUL) {
+						LOGE("%s(%d): qcap2_rcbuffer_queue_stop() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					}
+				};
+
+				qcap2_rcbuffer_queue_t* pVencEvtQ = qcap2_rcbuffer_queue_new();
+				_FreeStack_ += [pVencEvtQ]() {
+					qcap2_rcbuffer_queue_delete(pVencEvtQ);
+				};
+
+				qcap2_rcbuffer_queue_set_max_buffers(pVencEvtQ, nBuffers);
+				qcap2_rcbuffer_queue_set_event(pVencEvtQ, pEvent_venc);
+
+				qres = qcap2_rcbuffer_queue_start(pVencEvtQ);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): qcap2_rcbuffer_queue_start() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+				_FreeStack_ += [pVencEvtQ]() {
+					QRESULT qres;
+
+					qres = qcap2_rcbuffer_queue_stop(pVencEvtQ);
+					if(qres != QCAP_RS_SUCCESSFUL) {
+						LOGE("%s(%d): qcap2_rcbuffer_queue_stop() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					}
+				};
+
+				ipxgpucodec_encoder_t* pEncoder = NULL;
+				ipxerr = ipxgpucodec_enc_create_encoder(enc_config, fmt_config, pic_config, &pEncoder);
+				if(ipxerr != IPXGPUCODEC_SUCCESS) {
+					qres = QCAP_RS_ERROR_GENERAL;
+					const char* error_name = ipxgpucodec_error_name(ipxerr);
+					const char* error_msg = ipxgpucodec_last_error_message();
+					LOGE("%s(%d): ipxgpucodec_enc_create_encoder() failed, ipxerr=%d, %s, %s",
+						__FUNCTION__, __LINE__, ipxerr, error_name, error_msg);
+					break;
+				}
+				_FreeStack_ += [pEncoder]() {
+					ipxgpucodec_error_t ipxerr;
+
+					ipxerr = ipxgpucodec_enc_delete_encoder(pEncoder);
+					if(ipxerr != IPXGPUCODEC_SUCCESS) {
+						LOGE("%s(%d): ipxgpucodec_enc_delete_encoder() failed, ipxerr=%d",
+							__FUNCTION__, __LINE__, ipxerr);
+					}
+				};
+
+				std::thread* pPullThread = new std::thread(std::bind(&self_t::Main_Puller, this,
+					pEncoder, codestream_size, pVencQ, pVencEvtQ));
+				_FreeStack_ += [pPullThread]() {
+					pPullThread->join();
+					delete pPullThread;
+				};
+
+				_FreeStack_ += [pEncoder]() {
+					ipxgpucodec_error_t ipxerr;
+
+					ipxerr = ipxgpucodec_enc_set_end_of_codestream(pEncoder, true);
+					if(ipxerr != IPXGPUCODEC_SUCCESS) {
+						LOGE("%s(%d): ipxgpucodec_enc_set_end_of_codestream() failed, ipxerr=%d",
+							__FUNCTION__, __LINE__, ipxerr);
+					}
+				};
+
+				*ppEncoder = pEncoder;
+				*ppVencQ = pVencQ;
+				*ppVencEvtQ = pVencEvtQ;
+				*pPackedImageSize = packed_image_size;
+			}
+
+			return qres;
+		}
+
+		void Main_Puller(ipxgpucodec_encoder_t* pEncoder, uint32_t codestream_size, qcap2_rcbuffer_queue_t* pVencQ, qcap2_rcbuffer_queue_t* pVencEvtQ) {
+			QRESULT qres;
+			ipxgpucodec_error_t ipxerr;
+			int64_t now;
+
+			while(true) {
+				qcap2_rcbuffer_t* pRCBuffer;
+				qres = qcap2_rcbuffer_queue_pop(pVencQ, &pRCBuffer);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): qcap2_rcbuffer_queue_pop() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+
+				std::shared_ptr<qcap2_rcbuffer_t> pRCBuffer_(pRCBuffer, qcap2_rcbuffer_release);
+				std::shared_ptr<qcap2_av_frame_t> pAVFrame(
+					(qcap2_av_frame_t*)qcap2_rcbuffer_lock_data(pRCBuffer),
+					[pRCBuffer](qcap2_av_frame_t*) {
+						qcap2_rcbuffer_unlock_data(pRCBuffer);
+					});
+
+
+				uint8_t* pData[4];
+				int pLineSize[4];
+				qcap2_av_frame_get_buffer1(pAVFrame.get(), pData, pLineSize);
+
+				ipxerr = ipxgpucodec_enc_pull_frame(pEncoder, (void*)pData[0], codestream_size);
+				if(ipxerr != IPXGPUCODEC_SUCCESS) {
+					if(ipxerr == IPXGPUCODEC_ERR_END_OF_CODESTREAM)
+						break;
+
+					LOGE("%s(%d): ipxgpucodec_enc_pull_frame() failed, ipxerr=%d",
+						__FUNCTION__, __LINE__, ipxerr);
+					break;
+				}
+				LOGD("codestream_size=%d", codestream_size);
+
+				now = _clk();
+
+				qres = qcap2_rcbuffer_queue_push(pVencEvtQ, pRCBuffer);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): qcap2_rcbuffer_queue_push() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+			}
+		}
+
+		QRETURN OnVenc(uint32_t codestream_size, qcap2_rcbuffer_queue_t* pVencEvtQ) {
+			QRESULT qres;
+			int64_t now = _clk();
+
+			switch(1) { case 1:
+				qcap2_rcbuffer_t* pRCBuffer;
+				qres = qcap2_rcbuffer_queue_pop(pVencEvtQ, &pRCBuffer);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): qcap2_rcbuffer_queue_pop() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+				std::shared_ptr<qcap2_rcbuffer_t> ZZ_GUARD_NAME(pRCBuffer, qcap2_rcbuffer_release);
+			}
+
+			return QCAP_RT_OK;
+		}
+	} mTestCase2;
+
+#if 0
 	struct TestCase2 : public TestCase {
 		typedef TestCase2 self_t;
 		typedef TestCase super_t;
@@ -684,7 +1267,7 @@ struct App0 {
 
 				ipxerr = ipxgpucodec_enc_set_end_of_codestream(pEncoder, true);
 				if(ipxerr != IPXGPUCODEC_SUCCESS) {
-					LOGE("%s(%d): ipxgpucodec_enc_push_frame() failed, ipxerr=%d",
+					LOGE("%s(%d): ipxgpucodec_enc_set_end_of_codestream() failed, ipxerr=%d",
 						__FUNCTION__, __LINE__, ipxerr);
 					break;
 				}
@@ -852,6 +1435,7 @@ struct App0 {
 			return nTasks;
 		}
 	} mTestCase2;
+#endif
 
 #if 0
 	struct TestCase3 : public TestCase {
@@ -914,6 +1498,8 @@ struct App0 {
 			oBitRate.Reset();
 
 			switch(1) { case 1:
+				free_stack_t& _FreeStack_ = _FreeStack_main_;
+
 				oLogLock.clear();
 				nVdecCounter.store(0);
 				oLog.open("vdec.log");
@@ -950,7 +1536,7 @@ struct App0 {
 						__FUNCTION__, __LINE__, ipxerr);
 					break;
 				}
-				oFreeStack += [&, pic_config]() {
+				_FreeStack_ += [&, pic_config]() {
 					ipxgpucodec_error_t ipxerr;
 
 					ipxerr = ipxgpucodec_delete_picture_configuration(pic_config);
@@ -1031,7 +1617,7 @@ struct App0 {
 						__FUNCTION__, __LINE__, ipxerr);
 					break;
 				}
-				oFreeStack += [&, fmt_config]() {
+				_FreeStack_ += [&, fmt_config]() {
 					ipxgpucodec_error_t ipxerr;
 
 					ipxerr = ipxgpucodec_delete_image_format_configuration(fmt_config);
@@ -1084,7 +1670,7 @@ struct App0 {
 						__FUNCTION__, __LINE__, ipxerr);
 					break;
 				}
-				oFreeStack += [&]() {
+				_FreeStack_ += [&]() {
 					ipxgpucodec_error_t ipxerr;
 
 					ipxerr = ipxgpucodec_dec_delete_decoder(pDecoder);
@@ -1131,17 +1717,17 @@ struct App0 {
 				LOGD("oNVBufParam_venc=%dx%d", oNVBufParam_venc.width, oNVBufParam_venc.height);
 
 				for(int i = 0;i < nBuffers_vsrc;i++) {
-					qcap2_rcbuffer_t* pRCBuffer = new_mapped_nvbuf(oFreeStack, oNVBufParam_vsrc,
+					qcap2_rcbuffer_t* pRCBuffer = new_mapped_nvbuf(_FreeStack_, oNVBufParam_vsrc,
 						NVBUF_MAP_READ_WRITE, CU_GRAPHICS_MAP_RESOURCE_FLAGS_NONE);
 
 					oRCBuffers_vsrc.push_back(pRCBuffer);
 				}
-				oFreeStack += [&]() {
+				_FreeStack_ += [&]() {
 					oRCBuffers_vsrc.clear();
 				};
 
 				pRCBufferQ_vsrc = qcap2_rcbuffer_queue_new();
-				oFreeStack += [&]() {
+				_FreeStack_ += [&]() {
 					qcap2_rcbuffer_queue_delete(pRCBufferQ_vsrc);
 				};
 
@@ -1153,7 +1739,7 @@ struct App0 {
 					LOGE("%s(%d): qcap2_rcbuffer_queue_start() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
-				oFreeStack += [&]() {
+				_FreeStack_ += [&]() {
 					QRESULT qres;
 
 					LOGD("%s(%d):++++", __FUNCTION__, __LINE__);
@@ -1165,7 +1751,7 @@ struct App0 {
 				};
 
 				for(int i = 0;i < nBuffers_venc;i++) {
-					qcap2_rcbuffer_t* pRCBuffer = new_mapped_nvbuf(oFreeStack, oNVBufParam_venc,
+					qcap2_rcbuffer_t* pRCBuffer = new_mapped_nvbuf(_FreeStack_, oNVBufParam_venc,
 						NVBUF_MAP_READ_WRITE, CU_GRAPHICS_MAP_RESOURCE_FLAGS_NONE);
 
 #if 1
@@ -1185,12 +1771,12 @@ struct App0 {
 
 					oRCBuffers_venc.push_back(pRCBuffer);
 				}
-				oFreeStack += [&]() {
+				_FreeStack_ += [&]() {
 					oRCBuffers_venc.clear();
 				};
 
 				pRCBufferQ_venc = qcap2_rcbuffer_queue_new();
-				oFreeStack += [&]() {
+				_FreeStack_ += [&]() {
 					qcap2_rcbuffer_queue_delete(pRCBufferQ_venc);
 				};
 
@@ -1202,7 +1788,7 @@ struct App0 {
 					LOGE("%s(%d): qcap2_rcbuffer_queue_start() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
-				oFreeStack += [&]() {
+				_FreeStack_ += [&]() {
 					QRESULT qres;
 
 					LOGD("%s(%d):++++", __FUNCTION__, __LINE__);
@@ -1235,7 +1821,7 @@ struct App0 {
 #endif
 			}
 
-			oFreeStack.flush();
+			_FreeStack_main_.flush();
 		}
 
 		void Main_Puller() {

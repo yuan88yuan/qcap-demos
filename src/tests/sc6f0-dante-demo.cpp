@@ -586,8 +586,8 @@ struct App0 {
 				qcap2_muxer_set_endpoint(pMuxer, "0.0.0.0", 554);
 				qcap2_muxer_set_max_threads(pMuxer, 4);
 				qcap2_muxer_set_realm(pMuxer, "YUAN");
-				qcap2_muxer_add_user(pMuxer, "root", "root_pass");
-				qcap2_muxer_add_user(pMuxer, "guest", "guest_pass");
+				qcap2_muxer_add_user(pMuxer, "root", "root");
+				qcap2_muxer_add_user(pMuxer, "guest", "guest");
 
 				{
 					std::shared_ptr<qcap2_program_info_t> pProgInfo(
@@ -839,6 +839,7 @@ struct App0 {
 		{
 			LOGD("+++tag: %s", __FUNCTION__);
 
+#if 0
 			video_format format;
 
 			spinlock_lock(current_format_spinlock);
@@ -846,6 +847,9 @@ struct App0 {
 			spinlock_unlock(current_format_spinlock);
 
 			dau_reply_get_cable_status(dau, message, format.locked);
+#else
+			dau_reply_get_cable_status(dau, message, true);
+#endif
 		}
 
 		static void _get_hdcp(struct dau_service *dau,
@@ -1229,7 +1233,7 @@ struct App0 {
 
 						const ULONG nColorSpaceType = QCAP_COLORSPACE_TYPE_NV12;
 						const ULONG nEncoderFormat = QCAP_ENCODER_FORMAT_H264;
-						const ULONG nVideoBitRate = 16 * 1000000;
+						const ULONG nVideoBitRate = 30 * 1000000;
 
 						qcap2_event_t* pVsrcEvent;
 						qres = StartVsrc(_FreeStack_, pVsrc, nColorSpaceType,
@@ -1261,6 +1265,17 @@ struct App0 {
 						}
 #endif
 
+						PVOID pDanteServer = NULL;
+						PVOID pDanteSender = NULL;
+#if 1
+						qres = StartDanteServer(_FreeStack_, nColorSpaceType, nVideoWidth, nVideoHeight,
+							bVideoIsInterleaved, dVideoFrameRate, nEncoderFormat, nVideoBitRate, &pDanteServer, &pDanteSender);
+						if(qres != QCAP_RS_SUCCESSFUL) {
+							LOGE("%s(%d): StartDanteServer() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+							break;
+						}
+#endif
+
 						qres = AddEventHandler(_FreeStack_, pVsrcEvent,
 							std::bind(&self_t::OnVsrc, this, pVsrc, pVenc));
 						if(qres != QCAP_RS_SUCCESSFUL) {
@@ -1269,7 +1284,7 @@ struct App0 {
 						}
 
 						qres = AddEventHandler(_FreeStack_, pVencEvent,
-							std::bind(&self_t::OnVenc, this, pVenc, pVdec));
+							std::bind(&self_t::OnVenc, this, pVenc, pVdec, pDanteSender));
 						if(qres != QCAP_RS_SUCCESSFUL) {
 							LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 							break;
@@ -1460,7 +1475,7 @@ struct App0 {
 			return qres;
 		}
 
-		QRETURN OnVenc(qcap2_video_encoder_t* pVenc, qcap2_video_decoder_t* pVdec) {
+		QRETURN OnVenc(qcap2_video_encoder_t* pVenc, qcap2_video_decoder_t* pVdec, PVOID pDanteSender) {
 			QRESULT qres;
 
 			switch(1) { case 1:
@@ -1477,6 +1492,31 @@ struct App0 {
 				if(qres != QCAP_RS_SUCCESSFUL) {
 					LOGE("%s(%d): qcap2_video_decoder_push() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
+				}
+
+				BYTE * pStreamBuffer;
+				ULONG nStreamBufferLen;
+				qcap2_rcbuffer_to_buffer(pRCBuffer, &pStreamBuffer, &nStreamBufferLen);
+
+				std::shared_ptr<qcap2_av_packet_t> pAVPacket((qcap2_av_packet_t*)qcap2_rcbuffer_lock_data(pRCBuffer),
+					[pRCBuffer](qcap2_av_packet_t*) {
+						qcap2_rcbuffer_unlock_data(pRCBuffer);
+					}
+				);
+
+				int nStreamIndex;
+				BOOL bIsKeyFrame;
+				qcap2_av_packet_get_property(pAVPacket.get(), &nStreamIndex, &bIsKeyFrame);
+
+				double dSampleTime;
+				qcap2_av_packet_get_sample_time(pAVPacket.get(), &dSampleTime);
+
+				if(pDanteSender) {
+					qres = QCAP_SET_VIDEO_BROADCAST_SERVER_COMPRESSION_BUFFER(pDanteSender, 0, pStreamBuffer, nStreamBufferLen, bIsKeyFrame, dSampleTime);
+					if(qres != QCAP_RS_SUCCESSFUL) {
+						LOGE("%s(%d): qcap2_video_decoder_push() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+						break;
+					}
 				}
 			}
 
@@ -1498,8 +1538,8 @@ struct App0 {
 				qcap2_muxer_set_endpoint(pMuxer, "0.0.0.0", 554);
 				qcap2_muxer_set_max_threads(pMuxer, 4);
 				qcap2_muxer_set_realm(pMuxer, "YUAN");
-				qcap2_muxer_add_user(pMuxer, "root", "root_pass");
-				qcap2_muxer_add_user(pMuxer, "guest", "guest_pass");
+				qcap2_muxer_add_user(pMuxer, "root", "root");
+				qcap2_muxer_add_user(pMuxer, "guest", "guest");
 
 				{
 					std::shared_ptr<qcap2_program_info_t> pProgInfo(
@@ -1591,6 +1631,140 @@ struct App0 {
 			}
 
 			return qres;
+		}
+
+		QRESULT StartDanteServer(free_stack_t& _FreeStack_, ULONG nColorSpaceType, ULONG nVideoWidth, ULONG nVideoHeight,
+			BOOL bVideoIsInterleaved, double dVideoFrameRate, ULONG nEncoderFormat, ULONG nVideoBitRate,
+			PVOID* ppDanteServer, PVOID* ppSender) {
+			QRESULT qres = QCAP_RS_SUCCESSFUL;
+
+			switch(1) { case 1:
+				PVOID pDanteServer;
+				qres = QCAP_CREATE_DANTE_SERVER(&pDanteServer);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): QCAP_CREATE_DANTE_SERVER() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+				_FreeStack_ += [pDanteServer]() {
+					QRESULT qres;
+
+					qres = QCAP_DESTROY_DANTE_SERVER(pDanteServer);
+					if(qres != QCAP_RS_SUCCESSFUL) {
+						LOGE("%s(%d): QCAP_DESTROY_DANTE_SERVER() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					}
+				};
+
+				qres = QCAP_SET_DANTE_SERVER_CUSTOM_PROPERTY(pDanteServer, 1, 0);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): QCAP_SET_DANTE_SERVER_CUSTOM_PROPERTY() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+
+				qres = QCAP_REGISTER_DANTE_SERVER_MESSAGE_CALLBACK(pDanteServer, &self_t::_DANTE_SERVER_MESSAGE_CALLBACK, this);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): QCAP_SET_DANTE_SERVER_CUSTOM_PROPERTY() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+
+				qres = QCAP_REGISTER_DANTE_SERVER_TX_AUDIO_REQUEST_CALLBACK(pDanteServer, &self_t::_DANTE_SERVER_TX_AUDIO_REQUEST_CALLBACK, this);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): QCAP_SET_DANTE_SERVER_CUSTOM_PROPERTY() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+
+				qres = QCAP_REGISTER_DANTE_SERVER_NO_RESPOND_CALLBACK(pDanteServer, &self_t::_DANTE_SERVER_NO_RESPOND_CALLBACK, this);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): QCAP_SET_DANTE_SERVER_CUSTOM_PROPERTY() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+
+				qres = QCAP_START_DANTE_SERVER(pDanteServer);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): QCAP_START_DANTE_SERVER() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+				_FreeStack_ += [pDanteServer]() {
+					QRESULT qres;
+
+					qres = QCAP_STOP_DANTE_SERVER(pDanteServer);
+					if(qres != QCAP_RS_SUCCESSFUL) {
+						LOGE("%s(%d): QCAP_STOP_DANTE_SERVER() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					}
+				};
+
+				PVOID pSender;
+				qres = QCAP_CREATE_DANTE_SENDER(pDanteServer, 0, &pSender, 0, 0);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): QCAP_CREATE_DANTE_SENDER() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+				_FreeStack_ += [pSender]() {
+					QRESULT qres;
+
+					qres = QCAP_DESTROY_BROADCAST_SERVER(pSender);
+					if(qres != QCAP_RS_SUCCESSFUL) {
+						LOGE("%s(%d): QCAP_DESTROY_BROADCAST_SERVER() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					}
+				};
+
+				qres = QCAP_SET_VIDEO_BROADCAST_SERVER_PROPERTY(pSender, 0,
+					QCAP_ENCODER_TYPE_SOFTWARE, nEncoderFormat, nColorSpaceType,
+					nVideoWidth, nVideoHeight, dVideoFrameRate, QCAP_RECORD_MODE_CBR, 6000,
+					nVideoBitRate, 30, 0, 0, NULL, FALSE, FALSE, QCAP_BROADCAST_FLAG_NETWORK | QCAP_BROADCAST_FLAG_VIDEO_ONLY);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): QCAP_CREATE_DANTE_SENDER() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+
+				qres = QCAP_START_BROADCAST_SERVER(pSender);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): QCAP_START_BROADCAST_SERVER() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+				_FreeStack_ += [pSender]() {
+					QRESULT qres;
+
+					qres = QCAP_STOP_BROADCAST_SERVER(pSender);
+					if(qres != QCAP_RS_SUCCESSFUL) {
+						LOGE("%s(%d): QCAP_STOP_BROADCAST_SERVER() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					}
+				};
+
+				*ppDanteServer = pDanteServer;
+				*ppSender = pSender;
+			}
+
+			return qres;
+		}
+
+		static QRETURN QCAP_EXPORT _DANTE_SERVER_MESSAGE_CALLBACK(PVOID pServer, UINT nVideoChannel, DWORD dwFlags, PVOID pUserData) {
+			self_t* pThis = (self_t*)pUserData;
+
+			return pThis->OnDanteMessage(nVideoChannel, dwFlags);
+		}
+
+		QRETURN OnDanteMessage(UINT nVideoChannel, DWORD dwFlags) {
+			return QCAP_RT_OK;
+		}
+
+		static QRETURN QCAP_EXPORT _DANTE_SERVER_TX_AUDIO_REQUEST_CALLBACK(PVOID pServer, double dSampleTime, PVOID pUserData) {
+			self_t* pThis = (self_t*)pUserData;
+
+			return pThis->OnDanteTxAudioRequest(dSampleTime);
+		}
+
+		QRETURN OnDanteTxAudioRequest(double dSampleTime) {
+			return QCAP_RT_OK;
+		}
+
+		static QRETURN QCAP_EXPORT _DANTE_SERVER_NO_RESPOND_CALLBACK(PVOID pServer, BOOL bActivate, PVOID pUserData) {
+			self_t* pThis = (self_t*)pUserData;
+
+			return pThis->OnDanteServerNoResponse(bActivate);
+		}
+
+		QRETURN OnDanteServerNoResponse(BOOL bActivate) {
+			return QCAP_RT_OK;
 		}
 	} mTestCase3;
 };

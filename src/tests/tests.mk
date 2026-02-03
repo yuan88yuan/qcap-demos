@@ -82,7 +82,7 @@ $(call decl_mod,TEST_IPX)
 $(call add_flags_mod,TEST_IPX)
 $(call add_mods,TEST_IPX,ZZLAB QCAP NVBUF CUDA IPX)
 
-# $(info TEST_IPX_FLAGS=${TEST_IPX_FLAGS})
+$(info TEST_IPX_FLAGS=${TEST_IPX_FLAGS})
 
 TEST_IPX_E=test-ipx
 TESTS+=$${TEST_IPX_e}
@@ -164,7 +164,7 @@ $(call decl_mod,SC6F0_DANTE_DEMO)
 $(call add_flags_mod,SC6F0_DANTE_DEMO)
 $(call add_mods,SC6F0_DANTE_DEMO,ZZLAB QCAP ALLEGRO2 DAUSERVICE)
 
-$(info SC6F0_DANTE_DEMO_FLAGS=${SC6F0_DANTE_DEMO_FLAGS})
+# $(info SC6F0_DANTE_DEMO_FLAGS=${SC6F0_DANTE_DEMO_FLAGS})
 
 SC6F0_DANTE_DEMO_E=sc6f0-dante-demo
 TESTS+=$${SC6F0_DANTE_DEMO_e}
@@ -177,7 +177,7 @@ $(call decl_mod,COE_DEMO)
 $(call add_flags_mod,COE_DEMO)
 $(call add_mods,COE_DEMO,ZZLAB QCAP CUDA CUDA_DRIVER SIPL)
 
-$(info COE_DEMO_FLAGS=${COE_DEMO_FLAGS})
+# $(info COE_DEMO_FLAGS=${COE_DEMO_FLAGS})
 
 COE_DEMO_E=coe-demo
 TESTS+=$${COE_DEMO_e}
