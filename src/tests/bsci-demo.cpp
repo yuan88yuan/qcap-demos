@@ -156,9 +156,9 @@ struct App0 {
 				free_stack_t& _FreeStack_ = _FreeStack_main_;
 
 				qcap2_rcbuffer_t* pRCBuffer;
-				qres = __testkit__::new_video_cudahostbuf(_FreeStack_, QCAP_COLORSPACE_TYPE_NV12, 1920, 1080, cudaHostAllocMapped, &pRCBuffer);
+				qres = __testkit__::new_video_cudabuf_host(_FreeStack_, QCAP_COLORSPACE_TYPE_NV12, 1920, 1080, cudaHostAllocMapped, &pRCBuffer);
 				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): __testkit__::new_video_cudahostbuf() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					LOGE("%s(%d): __testkit__::new_video_cudabuf_host() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
 
@@ -531,9 +531,9 @@ struct App0 {
 				free_stack_t& _FreeStack_ = _FreeStack_main_;
 
 				qcap2_rcbuffer_t* pRCBuffer;
-				qres = __testkit__::new_video_cudahostbuf(_FreeStack_, QCAP_COLORSPACE_TYPE_NV12, 1920, 1080, cudaHostAllocMapped, &pRCBuffer);
+				qres = __testkit__::new_video_cudabuf_host(_FreeStack_, QCAP_COLORSPACE_TYPE_NV12, 1920, 1080, cudaHostAllocMapped, &pRCBuffer);
 				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): __testkit__::new_video_cudahostbuf() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					LOGE("%s(%d): __testkit__::new_video_cudabuf_host() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
 
@@ -590,10 +590,10 @@ struct App0 {
 				};
 				for(int i = 0;i < nBuffers;i++) {
 					qcap2_rcbuffer_t* pRCBuffer;
-					qres = __testkit__::new_video_cudahostbuf(_FreeStack_,
+					qres = __testkit__::new_video_cudabuf_host(_FreeStack_,
 						nColorSpaceType, nVideoFrameWidth, nVideoFrameHeight, cudaHostAllocMapped, &pRCBuffer);
 					if(qres != QCAP_RS_SUCCESSFUL) {
-						LOGE("%s(%d): __testkit__::new_video_cudahostbuf() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+						LOGE("%s(%d): __testkit__::new_video_cudabuf_host() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 						break;
 					}
 
@@ -651,9 +651,9 @@ struct App0 {
 				free_stack_t& _FreeStack_ = _FreeStack_main_;
 
 				qcap2_rcbuffer_t* pRCBuffer;
-				qres = __testkit__::new_video_cudahostbuf(_FreeStack_, QCAP_COLORSPACE_TYPE_GBRP, 1920, 1080, cudaHostAllocMapped, &pRCBuffer);
+				qres = __testkit__::new_video_cudabuf_host(_FreeStack_, QCAP_COLORSPACE_TYPE_GBRP, 1920, 1080, cudaHostAllocMapped, &pRCBuffer);
 				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): __testkit__::new_video_cudahostbuf() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					LOGE("%s(%d): __testkit__::new_video_cudabuf_host() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
 
@@ -710,10 +710,10 @@ struct App0 {
 				};
 				for(int i = 0;i < nBuffers;i++) {
 					qcap2_rcbuffer_t* pRCBuffer;
-					qres = __testkit__::new_video_cudahostbuf(_FreeStack_,
+					qres = __testkit__::new_video_cudabuf_host(_FreeStack_,
 						nColorSpaceType, nVideoFrameWidth, nVideoFrameHeight, cudaHostAllocMapped, &pRCBuffer);
 					if(qres != QCAP_RS_SUCCESSFUL) {
-						LOGE("%s(%d): __testkit__::new_video_cudahostbuf() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+						LOGE("%s(%d): __testkit__::new_video_cudabuf_host() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 						break;
 					}
 
@@ -993,10 +993,10 @@ struct App0 {
 				};
 				for(int i = 0;i < nBuffers;i++) {
 					qcap2_rcbuffer_t* pRCBuffer;
-					qres = __testkit__::new_video_cudahostbuf(_FreeStack_,
+					qres = __testkit__::new_video_cudabuf_host(_FreeStack_,
 						nColorSpaceType, nCropW, nCropH, cudaHostAllocMapped, &pRCBuffer);
 					if(qres != QCAP_RS_SUCCESSFUL) {
-						LOGE("%s(%d): __testkit__::new_video_cudahostbuf() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+						LOGE("%s(%d): __testkit__::new_video_cudabuf_host() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 						break;
 					}
 
@@ -1061,10 +1061,10 @@ struct App0 {
 				};
 				for(int i = 0;i < nBuffers;i++) {
 					qcap2_rcbuffer_t* pRCBuffer;
-					qres = __testkit__::new_video_cudahostbuf(_FreeStack_,
+					qres = __testkit__::new_video_cudabuf_host(_FreeStack_,
 						nColorSpaceType, nVideoFrameWidth, nVideoFrameHeight, cudaHostAllocMapped, &pRCBuffer);
 					if(qres != QCAP_RS_SUCCESSFUL) {
-						LOGE("%s(%d): __testkit__::new_video_cudahostbuf() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+						LOGE("%s(%d): __testkit__::new_video_cudabuf_host() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 						break;
 					}
 
@@ -1131,10 +1131,10 @@ struct App0 {
 				};
 				for(int i = 0;i < nBuffers;i++) {
 					qcap2_rcbuffer_t* pRCBuffer;
-					qres = __testkit__::new_video_cudahostbuf(_FreeStack_,
+					qres = __testkit__::new_video_cudabuf_host(_FreeStack_,
 						nColorSpaceType, nCropW, nCropH, cudaHostAllocMapped, &pRCBuffer);
 					if(qres != QCAP_RS_SUCCESSFUL) {
-						LOGE("%s(%d): __testkit__::new_video_cudahostbuf() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+						LOGE("%s(%d): __testkit__::new_video_cudabuf_host() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 						break;
 					}
 
@@ -1199,10 +1199,10 @@ struct App0 {
 				};
 				for(int i = 0;i < nBuffers;i++) {
 					qcap2_rcbuffer_t* pRCBuffer;
-					qres = __testkit__::new_video_cudahostbuf(_FreeStack_,
+					qres = __testkit__::new_video_cudabuf_host(_FreeStack_,
 						nColorSpaceType, nVideoFrameWidth, nVideoFrameHeight, cudaHostAllocMapped, &pRCBuffer);
 					if(qres != QCAP_RS_SUCCESSFUL) {
-						LOGE("%s(%d): __testkit__::new_video_cudahostbuf() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+						LOGE("%s(%d): __testkit__::new_video_cudabuf_host() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 						break;
 					}
 
@@ -1266,10 +1266,10 @@ struct App0 {
 				};
 				for(int i = 0;i < nBuffers;i++) {
 					qcap2_rcbuffer_t* pRCBuffer;
-					qres = __testkit__::new_video_cudahostbuf(_FreeStack_,
+					qres = __testkit__::new_video_cudabuf_host(_FreeStack_,
 						nColorSpaceType, nVideoFrameWidth, nVideoFrameHeight, cudaHostAllocMapped, &pRCBuffer);
 					if(qres != QCAP_RS_SUCCESSFUL) {
-						LOGE("%s(%d): __testkit__::new_video_cudahostbuf() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+						LOGE("%s(%d): __testkit__::new_video_cudabuf_host() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 						break;
 					}
 
@@ -1325,9 +1325,9 @@ struct App0 {
 				};
 				for(int i = 0;i < nBuffers;i++) {
 					qcap2_rcbuffer_t* pRCBuffer;
-					qres = __testkit__::new_video_cudahostbuf(_FreeStack_, QCAP_COLORSPACE_TYPE_NV12, 1920, 1080, cudaHostAllocMapped, &pRCBuffer);
+					qres = __testkit__::new_video_cudabuf_host(_FreeStack_, QCAP_COLORSPACE_TYPE_NV12, 1920, 1080, cudaHostAllocMapped, &pRCBuffer);
 					if(qres != QCAP_RS_SUCCESSFUL) {
-						LOGE("%s(%d): __testkit__::new_video_cudahostbuf() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+						LOGE("%s(%d): __testkit__::new_video_cudabuf_host() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 						break;
 					}
 

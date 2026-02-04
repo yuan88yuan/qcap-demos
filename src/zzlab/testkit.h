@@ -651,7 +651,7 @@ namespace __testkit__ {
 		return qres;
 	}
 
-	QRESULT new_video_cudahostbuf(free_stack_t& _FreeStack_, ULONG nColorSpaceType, ULONG nWidth, ULONG nHeight, unsigned int nFlags, qcap2_rcbuffer_t** ppRCBuffer) {
+	QRESULT new_video_cudabuf_host(free_stack_t& _FreeStack_, ULONG nColorSpaceType, ULONG nWidth, ULONG nHeight, unsigned int nFlags, qcap2_rcbuffer_t** ppRCBuffer) {
 		QRESULT qres = QCAP_RS_SUCCESSFUL;
 
 		switch(1) { case 1:
@@ -670,6 +670,33 @@ namespace __testkit__ {
 			}
 			_FreeStack_ += [pAVFrame]() {
 				qcap2_av_frame_free_cuda_host_buffer(pAVFrame);
+			};
+
+			*ppRCBuffer = pRCBuffer;
+		}
+
+		return qres;
+	}
+
+	QRESULT new_video_cudabuf_managed(free_stack_t& _FreeStack_, ULONG nColorSpaceType, ULONG nWidth, ULONG nHeight, unsigned int nFlags, qcap2_rcbuffer_t** ppRCBuffer) {
+		QRESULT qres = QCAP_RS_SUCCESSFUL;
+
+		switch(1) { case 1:
+			qcap2_rcbuffer_t* pRCBuffer = qcap2_rcbuffer_new_av_frame();
+			_FreeStack_ += [pRCBuffer]() {
+				qcap2_rcbuffer_delete(pRCBuffer);
+			};
+
+			qcap2_av_frame_t* pAVFrame = (qcap2_av_frame_t*)qcap2_rcbuffer_get_data(pRCBuffer);
+			qcap2_av_frame_set_video_property(pAVFrame, nColorSpaceType, nWidth, nHeight);
+
+			if(! qcap2_av_frame_alloc_cuda_managed_buffer(pAVFrame, nFlags, 32, 1)) {
+				qres = QCAP_RS_ERROR_OUT_OF_MEMORY;
+				LOGE("%s(%d): qcap2_av_frame_alloc_cuda_managed_buffer() failed", __FUNCTION__, __LINE__);
+				break;
+			}
+			_FreeStack_ += [pAVFrame]() {
+				qcap2_av_frame_free_cuda_managed_buffer(pAVFrame);
 			};
 
 			*ppRCBuffer = pRCBuffer;

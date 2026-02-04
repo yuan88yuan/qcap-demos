@@ -439,10 +439,10 @@ struct App0 {
 					delete[] pRCBuffers;
 				};
 				for(int i = 0;i < nBuffers;i++) {
-					qres = new_video_cudahostbuf(_FreeStack_, nColorSpaceType,
+					qres = new_video_cudabuf_host(_FreeStack_, nColorSpaceType,
 						nVideoFrameWidth, nVideoFrameHeight, cudaHostAllocMapped, &pRCBuffers[i]);
 					if(qres != QCAP_RS_SUCCESSFUL) {
-						LOGE("%s(%d): new_video_cudahostbuf() failed, qres=%d", __FUNCTION__, __LINE__,qres);
+						LOGE("%s(%d): new_video_cudabuf_host() failed, qres=%d", __FUNCTION__, __LINE__,qres);
 						break;
 					}
 				}
