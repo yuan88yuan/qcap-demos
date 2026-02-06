@@ -364,45 +364,6 @@ struct App0 {
 
 			return QCAP_RT_OK;
 		}
-
-#if 0
-		void DoWork() {
-			MyData data;
-
-			qcap2_rcbuffer_t* pRCBuffer = qcap2_rcbuffer_new(&data.av_frame, MyData::_on_free_resource);
-			LOGD("qcap2_rcbuffer_new(), %p", pRCBuffer);
-
-			qcap2_rcbuffer_add_ref(pRCBuffer);
-			LOGD("qcap2_rcbuffer_add_ref()");
-
-			qcap2_rcbuffer_add_ref(pRCBuffer);
-			LOGD("qcap2_rcbuffer_add_ref()");
-
-			qcap2_av_frame_t* pAVFrame = (qcap2_av_frame_t*)qcap2_rcbuffer_lock_data(pRCBuffer);
-			LOGD("qcap2_rcbuffer_lock_data(), %p", pAVFrame);
-
-			qcap2_rcbuffer_unlock_data(pRCBuffer);
-			LOGD("qcap2_rcbuffer_unlock_data()");
-
-			qcap2_rcbuffer_release(pRCBuffer);
-			LOGD("qcap2_rcbuffer_release()");
-
-			qcap2_rcbuffer_release(pRCBuffer);
-			LOGD("qcap2_rcbuffer_release()");
-
-			qcap2_rcbuffer_add_ref(pRCBuffer);
-			LOGD("qcap2_rcbuffer_add_ref()");
-
-#if 1
-			qcap2_rcbuffer_release(pRCBuffer);
-			LOGD("qcap2_rcbuffer_release()");
-#endif
-
-			qcap2_rcbuffer_delete(pRCBuffer);
-			LOGD("qcap2_rcbuffer_delete()");
-		}
-#endif
-
 	} mTestCase1;
 };
 
