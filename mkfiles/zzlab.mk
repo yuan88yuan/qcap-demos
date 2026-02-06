@@ -12,7 +12,8 @@ zzlab/ZzModules.cpp \
 zzlab/ZzStats.cpp \
 zzlab/ZzUtils.cpp \
 zzlab/ZzUtils_string.cpp \
-zzlab/ZzUtils_env.cpp
+zzlab/ZzUtils_env.cpp \
+zzlab/ZzUtils_memory.cpp
 
 ZZLAB_F+=\
 -DBUILD_WITH_ZZLAB=1

@@ -1230,10 +1230,11 @@ struct App0 {
 
 						dau_signal_cable_change(pHdmiRxDauServ);
 						dau_signal_video_change(pHdmiRxDauServ);
+						dau_signal_audio_change(pHdmiRxDauServ);
 
 						const ULONG nColorSpaceType = QCAP_COLORSPACE_TYPE_NV12;
 						const ULONG nEncoderFormat = QCAP_ENCODER_FORMAT_H264;
-						const ULONG nVideoBitRate = 30 * 1000000;
+						const ULONG nVideoBitRate = 60 * 1000000;
 
 						qcap2_event_t* pVsrcEvent;
 						qres = StartVsrc(_FreeStack_, pVsrc, nColorSpaceType,
