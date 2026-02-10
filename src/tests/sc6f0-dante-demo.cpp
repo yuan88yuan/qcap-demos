@@ -709,6 +709,7 @@ struct App0 {
 							.sample_rate = (unsigned int)nAudioSampleFrequency,
 							.encoding = AUDIO_EN_LPCM,
 							.sample_bits = (unsigned int)nAudioBitsPerSample
+							// .sample_bits = (unsigned int)32
 						};
 						spinlock_unlock(current_audio_info_spinlock);
 
@@ -741,15 +742,15 @@ struct App0 {
 
 				// next level muxers
 				{
-					qcap2_video_decoder_t* pVdec = NULL;
-					qcap2_audio_decoder_t* pAdec = NULL;
+					qcap2_video_decoder_t* pVdec_rtsp = NULL;
+					qcap2_audio_decoder_t* pAdec_rtsp = NULL;
 
 #if 1
 					qcap2_muxer_t* pRTSPMuxer;
 					qres = StartRTSPMuxer(_FreeStack_, nColorSpaceType, nVideoWidth, nVideoHeight,
 						bVideoIsInterleaved, dVideoFrameRate, nVideoEncoderFormat, nVideoBitRate,
 						nAudioChannels, nAudioBitsPerSample, nAudioSampleFrequency, nAudioEncoderFormat,
-						&pRTSPMuxer, &pVdec, &pAdec);
+						&pRTSPMuxer, &pVdec_rtsp, &pAdec_rtsp);
 					if(qres != QCAP_RS_SUCCESSFUL) {
 						LOGE("%s(%d): StartRTSPMuxer() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 						break;
@@ -771,7 +772,7 @@ struct App0 {
 
 					if(pVenc) {
 						qres = AddEventHandler(_FreeStack_, pVencEvent,
-							std::bind(&self_t::OnVenc, this, pVenc, pVdec, pDanteSender));
+							std::bind(&self_t::OnVenc, this, pVenc, pVdec_rtsp, pDanteSender));
 						if(qres != QCAP_RS_SUCCESSFUL) {
 							LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 							break;
@@ -780,7 +781,7 @@ struct App0 {
 
 					if(pAenc) {
 						qres = AddEventHandler(_FreeStack_, pAencEvent,
-							std::bind(&self_t::OnAenc, this, pAenc, pAdec, pDanteSender));
+							std::bind(&self_t::OnAenc, this, pAenc, pAdec_rtsp, pDanteSender));
 						if(qres != QCAP_RS_SUCCESSFUL) {
 							LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 							break;
@@ -960,7 +961,7 @@ struct App0 {
 			return qres;
 		}
 
-		QRETURN OnVenc(qcap2_video_encoder_t* pVenc, qcap2_video_decoder_t* pVdec, PVOID pDanteSender) {
+		QRETURN OnVenc(qcap2_video_encoder_t* pVenc, qcap2_video_decoder_t* pVdec_rtsp, PVOID pDanteSender) {
 			QRESULT qres;
 
 			switch(1) { case 1:
@@ -973,8 +974,8 @@ struct App0 {
 				std::shared_ptr<qcap2_rcbuffer_t> pRCBuffer_(pRCBuffer,
 					qcap2_rcbuffer_release);
 
-				if(pVdec) {
-					qres = qcap2_video_decoder_push(pVdec, pRCBuffer);
+				if(pVdec_rtsp) {
+					qres = qcap2_video_decoder_push(pVdec_rtsp, pRCBuffer);
 					if(qres != QCAP_RS_SUCCESSFUL) {
 						LOGE("%s(%d): qcap2_video_decoder_push() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 						break;
@@ -1096,7 +1097,7 @@ struct App0 {
 				}
 
 				qcap2_audio_encoder_set_event(pAenc, pEvent);
-				qcap2_audio_encoder_set_frame_count(pAenc, 4);
+				qcap2_audio_encoder_set_frame_count(pAenc, 16);
 				qcap2_audio_encoder_set_packet_count(pAenc, 16);
 				qcap2_audio_encoder_set_multithread(pAenc, true);
 
@@ -1121,7 +1122,7 @@ struct App0 {
 			return qres;
 		}
 
-		QRETURN OnAenc(qcap2_audio_encoder_t* pAenc, qcap2_audio_decoder_t* pAdec, PVOID pDanteSender) {
+		QRETURN OnAenc(qcap2_audio_encoder_t* pAenc, qcap2_audio_decoder_t* pAdec_rtsp, PVOID pDanteSender) {
 			QRESULT qres;
 
 			switch(1) { case 1:
@@ -1134,8 +1135,8 @@ struct App0 {
 				std::shared_ptr<qcap2_rcbuffer_t> pRCBuffer_(pRCBuffer,
 					qcap2_rcbuffer_release);
 
-				if(pAdec) {
-					qres = qcap2_audio_decoder_push(pAdec, pRCBuffer);
+				if(pAdec_rtsp) {
+					qres = qcap2_audio_decoder_push(pAdec_rtsp, pRCBuffer);
 					if(qres != QCAP_RS_SUCCESSFUL) {
 						LOGE("%s(%d): qcap2_audio_decoder_push() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 						break;
@@ -1257,7 +1258,7 @@ struct App0 {
 					qcap2_video_encoder_property_set_property1(pVencProp.get(), nGpuNum, nEncoderType, nEncoderFormat, nColorSpaceType, nWidth, nHeight, dFrameRate, nRecordProfile, nRecordLevel, nRecordEntropy, nRecordComplexity, nRecordMode, nQuality, nBitRate, nGOP, nBFrames, bIsInterleaved, nSlices, nLayers, nSceneCut, bMultiThread, bMBBRC, bExtBRC, nMinQP, nMaxQP, nVBVMaxRate , nVBVBufSize, nAspectRatioX, nAspectRatioY);
 					qcap2_video_decoder_set_video_property(pVdec, pVencProp.get());
 				}
-				qcap2_video_decoder_set_payload_type(pVdec, 96);
+				// qcap2_video_decoder_set_payload_type(pVdec, 98);
 
 				qcap2_audio_decoder_t* pAdec = qcap2_muxer_get_audio_decoder(pMuxer, 0);
 				{
@@ -1269,7 +1270,7 @@ struct App0 {
 						nAudioChannels, nAudioBitsPerSample, nAudioSampleFrequency);
 					qcap2_audio_decoder_set_audio_property(pAdec, pAencProp.get());
 				}
-				qcap2_audio_decoder_set_payload_type(pAdec, 98);
+				// qcap2_audio_decoder_set_payload_type(pAdec, 96);
 
 				qres = qcap2_muxer_play(pMuxer);
 				if(qres != QCAP_RS_SUCCESSFUL) {
