@@ -235,6 +235,9 @@ struct App0 {
 		std::atomic_flag current_audio_info_spinlock = ATOMIC_FLAG_INIT;
 		struct audio_info current_audio_info;
 
+		dau_service* pHdmiRxDauServ;
+		bool bDmxStarted;
+
 		static void _get_cable_status(struct dau_service *dau,
 						 struct DBusMessage *message,
 						 void *ctxt)
@@ -247,26 +250,24 @@ struct App0 {
 		void get_cable_status(struct dau_service *dau,
 						 struct DBusMessage *message)
 		{
-			LOGI("+++tag: %s", __FUNCTION__);
-
-#if 0
-			video_format format;
+			LOGI("---tag---: %s", __FUNCTION__);
 
 			spinlock_lock(current_video_format_spinlock);
-			format = current_video_format;
+			bool locked = current_video_format.locked;
 			spinlock_unlock(current_video_format_spinlock);
 
-			dau_reply_get_cable_status(dau, message, format.locked);
-#else
-			dau_reply_get_cable_status(dau, message, true);
-#endif
+			LOGI("locked: %d", locked);
+
+			dau_reply_get_cable_status(dau, message, locked);
+
+			// StartDmx();
 		}
 
 		static void _get_hdcp(struct dau_service *dau,
 					    struct DBusMessage *message,
 					    void *ctxt)
 		{
-			LOGI("+++tag: %s", __FUNCTION__);
+			LOGI("---tag---: %s", __FUNCTION__);
 
 			struct hdcp hdcp;
 
@@ -283,7 +284,7 @@ struct App0 {
 					    enum hdcp_version version,
 					    void *ctxt)
 		{
-			LOGI("+++tag: %s", __FUNCTION__);
+			LOGI("---tag---: %s", __FUNCTION__);
 
 			dau_reply_success(dau, message);
 		}
@@ -298,7 +299,7 @@ struct App0 {
 		}
 
 		void get_video_format(struct dau_service *dau, struct DBusMessage *message) {
-			LOGI("+++tag: %s", __FUNCTION__);
+			LOGI("---tag---: %s", __FUNCTION__);
 
 			video_format format;
 
@@ -315,11 +316,11 @@ struct App0 {
 		{
 			self_t* pThis = (self_t*)ctxt;
 
-			pThis->get_video_format(dau, message);
+			pThis->get_audio_info(dau, message);
 		}
 
 		void get_audio_info(struct dau_service *dau, struct DBusMessage *message) {
-			LOGI("+++tag: %s", __FUNCTION__);
+			LOGI("---tag---: %s", __FUNCTION__);
 
 			audio_info info;
 
@@ -334,7 +335,7 @@ struct App0 {
 					struct DBusMessage *message,
 					void *ctxt)
 		{
-			LOGI("+++tag: %s", __FUNCTION__);
+			LOGI("---tag---: %s", __FUNCTION__);
 
 			char hdr[HDR_LEN] = { 0x00, 0x01, 0x02 };
 			char dv[DV_LEN] = { 0x04, 0x05, 0x06 };
@@ -354,7 +355,7 @@ struct App0 {
 					    const void *edid,
 					    void *ctxt)
 		{
-			LOGI("+++tag: %s", __FUNCTION__);
+			LOGI("---tag---: %s", __FUNCTION__);
 
 			dau_reply_success(dau, message);
 		}
@@ -363,7 +364,7 @@ struct App0 {
 					   struct DBusMessage *message,
 					   void *ctxt)
 		{
-			LOGI("+++tag: %s", __FUNCTION__);
+			LOGI("---tag---: %s", __FUNCTION__);
 
 			dau_reply_success(dau, message);
 		}
@@ -373,7 +374,7 @@ struct App0 {
 						 const struct video_format *format,
 						 void *ctxt)
 		{
-			LOGI("+++tag: %s", __FUNCTION__);
+			LOGI("---tag---: %s", __FUNCTION__);
 
 			dau_reply_success(dau, message);
 		}
@@ -383,7 +384,7 @@ struct App0 {
 					       const struct audio_info *info,
 					       void *ctxt)
 		{
-			LOGI("+++tag: %s", __FUNCTION__);
+			LOGI("---tag---: %s", __FUNCTION__);
 
 			dau_reply_success(dau, message);
 		}
@@ -393,7 +394,7 @@ struct App0 {
 					const struct hdr_info *hdr,
 					void *ctxt)
 		{
-			LOGI("+++tag: %s", __FUNCTION__);
+			LOGI("---tag---: %s", __FUNCTION__);
 
 			dau_reply_success(dau, message);
 		}
@@ -402,7 +403,7 @@ struct App0 {
 					 struct DBusMessage *message,
 					 void *ctxt)
 		{
-			LOGI("+++tag: %s", __FUNCTION__);
+			LOGI("---tag---: %s", __FUNCTION__);
 
 			unsigned char edid[EDID_LEN];
 			unsigned int i;
@@ -421,6 +422,7 @@ struct App0 {
 			memset(&current_video_format, 0, sizeof(current_video_format));
 			memset(&current_audio_info, 0, sizeof(current_audio_info));
 			nSnapshot = 0;
+			bDmxStarted = false;
 
 			switch(1) { case 1:
 				free_stack_t& _FreeStack_ = _FreeStack_main_;
@@ -452,6 +454,28 @@ struct App0 {
 					case 's': case 'S':
 						LOGD("++nSnapshot=%d", ++nSnapshot);
 						break;
+
+					case 'd': case 'D':
+						StartDmx();
+						break;
+
+					case 'c': case 'C':
+						LOGI("---tag---: +dau_signal_cable_change");
+						dau_signal_cable_change(pHdmiRxDauServ);
+						LOGI("---tag---: -dau_signal_cable_change");
+						break;
+
+					case 'a': case 'A':
+						LOGI("---tag---: +dau_signal_audio_change");
+						dau_signal_audio_change(pHdmiRxDauServ);
+						LOGI("---tag---: -dau_signal_audio_change");
+						break;
+
+					case 'v': case 'V':
+						LOGI("---tag---: +dau_signal_video_change");
+						dau_signal_video_change(pHdmiRxDauServ);
+						LOGI("---tag---: -dau_signal_video_change");
+						break;
 					}
 
 					return true;
@@ -464,34 +488,20 @@ struct App0 {
 		QRETURN OnStart(free_stack_t& _FreeStack_, QRESULT& qres) {
 			switch(1) { case 1:
 				dau_service* pHdmiRxDauServ;
-				qres = StartDauServHdmiRx(_FreeStack_, &pHdmiRxDauServ);
+				qres = StartDauServ(_FreeStack_, &pHdmiRxDauServ);
 				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): StartDauServHdmiRx() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					LOGE("%s(%d): StartDauServ() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
 
-				qcap2_event_t* pDmxEvent;
-				qcap2_demuxer_t* pDmx;
-				qres = StartDmx(_FreeStack_, &pDmx, &pDmxEvent);
-				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): StartDmx() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-					break;
-				}
+				this->pHdmiRxDauServ = pHdmiRxDauServ;
 
-				qres = AddEventHandler(_FreeStack_, pDmxEvent, std::bind(&self_t::OnDmx, this, pDmx, pHdmiRxDauServ));
-				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-					break;
-				}
-
-				_FreeStack_ += [&]() {
-					_FreeStack_vsrc_.flush();
-				};
+				StartDmx();
 			}
 			return QCAP_RT_OK;
 		}
 
-		QRESULT StartDauServHdmiRx(free_stack_t& _FreeStack_, dau_service** ppHdmiRxDauServ) {
+		QRESULT StartDauServ(free_stack_t& _FreeStack_, dau_service** ppHdmiRxDauServ) {
 			QRESULT qres = QCAP_RS_SUCCESSFUL;
 
 			switch(1) { case 1:
@@ -522,10 +532,10 @@ struct App0 {
 					dau_service_unregister(hdmirx);
 				};
 
-				int fd = dau_service_get_fd(hdmirx);
-				LOGD("hdmirx, fd=%d", fd);
+				int fd_hdmirx = dau_service_get_fd(hdmirx);
+				LOGD("fd_hdmirx=%d", fd_hdmirx);
 
-				qres = AddEventHandler(_FreeStack_, fd, std::bind(&self_t::OnDauServEvent, this, hdmirx));
+				qres = AddEventHandler(_FreeStack_, fd_hdmirx, std::bind(&self_t::OnHdmiRxEvent, this, hdmirx));
 				if(qres != QCAP_RS_SUCCESSFUL) {
 					LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
@@ -537,10 +547,40 @@ struct App0 {
 			return qres;
 		}
 
-		QRETURN OnDauServEvent(dau_service* dauserv_hdmirx) {
-			dau_service_dispatch(dauserv_hdmirx, 0);
+		QRETURN OnHdmiRxEvent(dau_service* dauserv) {
+			// LOGI("---tag---: %s +dau_service_dispatch", __FUNCTION__);
+			dau_service_dispatch(dauserv, 0);
+			// LOGI("---tag---: %s -dau_service_dispatch", __FUNCTION__);
 
 			return QCAP_RT_OK;
+		}
+
+		void StartDmx() {
+			QRESULT qres;
+			free_stack_t& _FreeStack_ = _FreeStack_evt_;
+
+			if(! bDmxStarted) switch(1) { case 1:
+				qcap2_event_t* pDmxEvent;
+				qcap2_demuxer_t* pDmx;
+				qres = StartDmx(_FreeStack_, &pDmx, &pDmxEvent);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): StartDmx() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+
+				qres = AddEventHandler(_FreeStack_, pDmxEvent, std::bind(&self_t::OnDmx, this, pDmx,
+					pHdmiRxDauServ));
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+
+				_FreeStack_ += [&]() {
+					_FreeStack_vsrc_.flush();
+				};
+
+				bDmxStarted = true;
+			}
 		}
 
 		QRESULT StartDmx(free_stack_t& _FreeStack_, qcap2_demuxer_t** ppDmx, qcap2_event_t** ppDmxEvent) {
@@ -623,6 +663,9 @@ struct App0 {
 				ULONG nAudioSampleFrequency = 0;
 				const ULONG nAudioEncoderFormat = QCAP_ENCODER_FORMAT_AAC_ADTS;
 
+				qcap2_event_t* pVsrcEvent = NULL;
+				qcap2_event_t* pAsrcEvent = NULL;
+
 				qcap2_video_encoder_t* pVenc = NULL;
 				qcap2_event_t* pVencEvent = NULL;
 				qcap2_audio_encoder_t* pAenc = NULL;
@@ -655,7 +698,6 @@ struct App0 {
 						};
 						spinlock_unlock(current_video_format_spinlock);
 
-						qcap2_event_t* pVsrcEvent;
 						qres = StartVsrc(_FreeStack_, pVsrc, nColorSpaceType,
 							nVideoWidth, nVideoHeight, bVideoIsInterleaved, dVideoFrameRate, &pVsrcEvent);
 						if(qres != QCAP_RS_SUCCESSFUL) {
@@ -671,17 +713,15 @@ struct App0 {
 							break;
 						}
 #endif
-
-						qres = AddEventHandler(_FreeStack_, pVsrcEvent,
-							std::bind(&self_t::OnVsrc, this, pVsrc, pVenc));
-						if(qres != QCAP_RS_SUCCESSFUL) {
-							LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-							break;
-						}
 					}
 
+					// LOGI("---tag---: +dau_signal_cable_change, hdmirx");
 					dau_signal_cable_change(pHdmiRxDauServ);
+					// LOGI("---tag---: -dau_signal_cable_change, hdmirx");
+
+					// LOGI("---tag---: +dau_signal_video_change");
 					dau_signal_video_change(pHdmiRxDauServ);
+					// LOGI("---tag---: -dau_signal_video_change");
 				}
 
 				qcap2_audio_source_t* pAsrc = qcap2_demuxer_get_audio_source(pDmx, nAudioIndex);
@@ -700,7 +740,7 @@ struct App0 {
 						LOGI("a: %ux%u'%u", nAudioChannels, nAudioBitsPerSample, nAudioSampleFrequency);
 
 						spinlock_lock(current_audio_info_spinlock);
-						current_audio_info = (audio_info){
+						current_audio_info = (audio_info) {
 							.channel_count = (unsigned int)nAudioChannels,
 							.speaker_map = AUDIO_SM_FR_FL,
 							.level_shift_value = 0,
@@ -713,12 +753,13 @@ struct App0 {
 						};
 						spinlock_unlock(current_audio_info_spinlock);
 
-						qcap2_event_t* pAsrcEvent;
+#if 1
 						qres = StartAsrc(_FreeStack_, pAsrc, &pAsrcEvent);
 						if(qres != QCAP_RS_SUCCESSFUL) {
 							LOGE("%s(%d): StartAsrc() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 							break;
 						}
+#endif
 
 #if 1
 						qres = StartAenc(_FreeStack_, nAudioChannels, nAudioBitsPerSample,
@@ -728,23 +769,19 @@ struct App0 {
 							break;
 						}
 #endif
-
-						qres = AddEventHandler(_FreeStack_, pAsrcEvent,
-							std::bind(&self_t::OnAsrc, this, pAsrc, pAenc));
-						if(qres != QCAP_RS_SUCCESSFUL) {
-							LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-							break;
-						}
 					}
 
+					// LOGI("---tag---: +dau_signal_audio_change");
 					dau_signal_audio_change(pHdmiRxDauServ);
+					// LOGI("---tag---: -dau_signal_audio_change");
 				}
 
 				// next level muxers
+				qcap2_video_decoder_t* pVdec_rtsp = NULL;
+				qcap2_audio_decoder_t* pAdec_rtsp = NULL;
+				PVOID pDanteServer = NULL;
+				PVOID pDanteSender = NULL;
 				{
-					qcap2_video_decoder_t* pVdec_rtsp = NULL;
-					qcap2_audio_decoder_t* pAdec_rtsp = NULL;
-
 #if 1
 					qcap2_muxer_t* pRTSPMuxer;
 					qres = StartRTSPMuxer(_FreeStack_, nColorSpaceType, nVideoWidth, nVideoHeight,
@@ -757,9 +794,7 @@ struct App0 {
 					}
 #endif
 
-					PVOID pDanteServer = NULL;
-					PVOID pDanteSender = NULL;
-#if 0
+#if 1
 					qres = StartDanteServer(_FreeStack_, nColorSpaceType, nVideoWidth, nVideoHeight,
 						bVideoIsInterleaved, dVideoFrameRate, nVideoEncoderFormat, nVideoBitRate,
 						nAudioChannels, nAudioBitsPerSample, nAudioSampleFrequency, nAudioEncoderFormat,
@@ -769,23 +804,42 @@ struct App0 {
 						break;
 					}
 #endif
+				}
 
-					if(pVenc) {
-						qres = AddEventHandler(_FreeStack_, pVencEvent,
-							std::bind(&self_t::OnVenc, this, pVenc, pVdec_rtsp, pDanteSender));
-						if(qres != QCAP_RS_SUCCESSFUL) {
-							LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-							break;
-						}
+				if(pVsrcEvent) {
+					qres = AddEventHandler(_FreeStack_, pVsrcEvent,
+						std::bind(&self_t::OnVsrc, this, pVsrc, pVenc));
+					if(qres != QCAP_RS_SUCCESSFUL) {
+						LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+						break;
 					}
+				}
 
-					if(pAenc) {
-						qres = AddEventHandler(_FreeStack_, pAencEvent,
-							std::bind(&self_t::OnAenc, this, pAenc, pAdec_rtsp, pDanteSender));
-						if(qres != QCAP_RS_SUCCESSFUL) {
-							LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-							break;
-						}
+				if(pAsrcEvent) {
+					qres = AddEventHandler(_FreeStack_, pAsrcEvent,
+						std::bind(&self_t::OnAsrc, this, pAsrc, pAenc, pDanteSender));
+					if(qres != QCAP_RS_SUCCESSFUL) {
+						LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+						break;
+					}
+				}
+
+
+				if(pVencEvent) {
+					qres = AddEventHandler(_FreeStack_, pVencEvent,
+						std::bind(&self_t::OnVenc, this, pVenc, pVdec_rtsp, pDanteSender));
+					if(qres != QCAP_RS_SUCCESSFUL) {
+						LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+						break;
+					}
+				}
+
+				if(pAencEvent) {
+					qres = AddEventHandler(_FreeStack_, pAencEvent,
+						std::bind(&self_t::OnAenc, this, pAenc, pAdec_rtsp));
+					if(qres != QCAP_RS_SUCCESSFUL) {
+						LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+						break;
 					}
 				}
 			}
@@ -1002,7 +1056,7 @@ struct App0 {
 
 					qres = QCAP_SET_VIDEO_BROADCAST_SERVER_COMPRESSION_BUFFER(pDanteSender, 0, pStreamBuffer, nStreamBufferLen, bIsKeyFrame, dSampleTime);
 					if(qres != QCAP_RS_SUCCESSFUL) {
-						LOGE("%s(%d): qcap2_video_decoder_push() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+						LOGE("%s(%d): QCAP_SET_VIDEO_BROADCAST_SERVER_COMPRESSION_BUFFER() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 						break;
 					}
 				}
@@ -1044,7 +1098,7 @@ struct App0 {
 			return qres;
 		}
 
-		QRETURN OnAsrc(qcap2_audio_source_t* pAsrc, qcap2_audio_encoder_t* pAenc) {
+		QRETURN OnAsrc(qcap2_audio_source_t* pAsrc, qcap2_audio_encoder_t* pAenc, PVOID pDanteSender) {
 			QRESULT qres;
 
 			switch(1) { case 1:
@@ -1064,6 +1118,29 @@ struct App0 {
 						break;
 					}
 				}
+
+#if 1
+				if(pDanteSender) {
+					BYTE * pFrameBuffer;
+					ULONG nFrameBufferLen;
+					qcap2_rcbuffer_to_buffer(pRCBuffer, &pFrameBuffer, &nFrameBufferLen);
+
+					std::shared_ptr<qcap2_av_frame_t> pAVFrame((qcap2_av_frame_t*)qcap2_rcbuffer_lock_data(pRCBuffer),
+						[pRCBuffer](qcap2_av_frame_t*) {
+							qcap2_rcbuffer_unlock_data(pRCBuffer);
+						}
+					);
+
+					double dSampleTime;
+					qcap2_av_frame_get_sample_time(pAVFrame.get(), &dSampleTime);
+
+					qres = QCAP_SET_AUDIO_BROADCAST_SERVER_UNCOMPRESSION_BUFFER(pDanteSender, 0, pFrameBuffer, nFrameBufferLen, dSampleTime);
+					if(qres != QCAP_RS_SUCCESSFUL) {
+						LOGE("%s(%d): QCAP_SET_AUDIO_BROADCAST_SERVER_UNCOMPRESSION_BUFFER() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+						break;
+					}
+				}
+#endif
 			}
 
 			return QCAP_RT_OK;
@@ -1122,7 +1199,7 @@ struct App0 {
 			return qres;
 		}
 
-		QRETURN OnAenc(qcap2_audio_encoder_t* pAenc, qcap2_audio_decoder_t* pAdec_rtsp, PVOID pDanteSender) {
+		QRETURN OnAenc(qcap2_audio_encoder_t* pAenc, qcap2_audio_decoder_t* pAdec_rtsp) {
 			QRESULT qres;
 
 			switch(1) { case 1:
@@ -1142,33 +1219,6 @@ struct App0 {
 						break;
 					}
 				}
-
-#if 0
-				if(pDanteSender) {
-					BYTE * pStreamBuffer;
-					ULONG nStreamBufferLen;
-					qcap2_rcbuffer_to_buffer(pRCBuffer, &pStreamBuffer, &nStreamBufferLen);
-
-					std::shared_ptr<qcap2_av_packet_t> pAVPacket((qcap2_av_packet_t*)qcap2_rcbuffer_lock_data(pRCBuffer),
-						[pRCBuffer](qcap2_av_packet_t*) {
-							qcap2_rcbuffer_unlock_data(pRCBuffer);
-						}
-					);
-
-					int nStreamIndex;
-					BOOL bIsKeyFrame;
-					qcap2_av_packet_get_property(pAVPacket.get(), &nStreamIndex, &bIsKeyFrame);
-
-					double dSampleTime;
-					qcap2_av_packet_get_sample_time(pAVPacket.get(), &dSampleTime);
-
-					qres = QCAP_SET_VIDEO_BROADCAST_SERVER_COMPRESSION_BUFFER(pDanteSender, 0, pStreamBuffer, nStreamBufferLen, bIsKeyFrame, dSampleTime);
-					if(qres != QCAP_RS_SUCCESSFUL) {
-						LOGE("%s(%d): qcap2_video_decoder_push() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-						break;
-					}
-				}
-#endif
 			}
 
 			return QCAP_RT_OK;
@@ -1316,6 +1366,7 @@ struct App0 {
 
 		QRESULT StartDanteServer(free_stack_t& _FreeStack_, ULONG nColorSpaceType, ULONG nVideoWidth, ULONG nVideoHeight,
 			BOOL bVideoIsInterleaved, double dVideoFrameRate, ULONG nEncoderFormat, ULONG nVideoBitRate,
+			ULONG nAudioChannels, ULONG nAudioBitsPerSample, ULONG nAudioSampleFrequency, ULONG nAudioEncoderFormat,
 			PVOID* ppDanteServer, PVOID* ppSender) {
 			QRESULT qres = QCAP_RS_SUCCESSFUL;
 
@@ -1391,9 +1442,16 @@ struct App0 {
 				qres = QCAP_SET_VIDEO_BROADCAST_SERVER_PROPERTY(pSender, 0,
 					QCAP_ENCODER_TYPE_SOFTWARE, nEncoderFormat, nColorSpaceType,
 					nVideoWidth, nVideoHeight, dVideoFrameRate, QCAP_RECORD_MODE_CBR, 6000,
-					nVideoBitRate, 30, 0, 0, NULL, FALSE, FALSE, QCAP_BROADCAST_FLAG_NETWORK | QCAP_BROADCAST_FLAG_VIDEO_ONLY);
+					nVideoBitRate, 30, 0, 0, NULL, FALSE, FALSE, QCAP_BROADCAST_FLAG_NETWORK);
 				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): QCAP_CREATE_DANTE_SENDER() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					LOGE("%s(%d): QCAP_SET_VIDEO_BROADCAST_SERVER_PROPERTY() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+
+				qres = QCAP_SET_AUDIO_BROADCAST_SERVER_PROPERTY(pSender, 0,
+					QCAP_ENCODER_TYPE_SOFTWARE, QCAP_ENCODER_FORMAT_PCM, nAudioChannels, 32, nAudioSampleFrequency);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): QCAP_SET_AUDIO_BROADCAST_SERVER_PROPERTY_EX() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
 
