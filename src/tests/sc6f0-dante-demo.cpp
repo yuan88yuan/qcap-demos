@@ -496,6 +496,8 @@ struct App0 {
 
 				this->pHdmiRxDauServ = pHdmiRxDauServ;
 
+				dau_signal_cable_change(pHdmiRxDauServ);
+
 				StartDmx();
 			}
 			return QCAP_RT_OK;
@@ -749,7 +751,6 @@ struct App0 {
 							.sample_rate = (unsigned int)nAudioSampleFrequency,
 							.encoding = AUDIO_EN_LPCM,
 							.sample_bits = (unsigned int)nAudioBitsPerSample
-							// .sample_bits = (unsigned int)32
 						};
 						spinlock_unlock(current_audio_info_spinlock);
 
@@ -781,7 +782,7 @@ struct App0 {
 				qcap2_audio_decoder_t* pAdec_rtsp = NULL;
 				PVOID pDanteServer = NULL;
 				PVOID pDanteSender = NULL;
-				{
+				if(nSrcColorSpaceType != QCAP_COLORSPACE_TYPE_UNDEFINED && nVideoWidth > 0 && nVideoHeight > 0) {
 #if 1
 					qcap2_muxer_t* pRTSPMuxer;
 					qres = StartRTSPMuxer(_FreeStack_, nColorSpaceType, nVideoWidth, nVideoHeight,
@@ -804,42 +805,42 @@ struct App0 {
 						break;
 					}
 #endif
-				}
 
-				if(pVsrcEvent) {
-					qres = AddEventHandler(_FreeStack_, pVsrcEvent,
-						std::bind(&self_t::OnVsrc, this, pVsrc, pVenc));
-					if(qres != QCAP_RS_SUCCESSFUL) {
-						LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-						break;
+					if(pVsrcEvent) {
+						qres = AddEventHandler(_FreeStack_, pVsrcEvent,
+							std::bind(&self_t::OnVsrc, this, pVsrc, pVenc));
+						if(qres != QCAP_RS_SUCCESSFUL) {
+							LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+							break;
+						}
 					}
-				}
 
-				if(pAsrcEvent) {
-					qres = AddEventHandler(_FreeStack_, pAsrcEvent,
-						std::bind(&self_t::OnAsrc, this, pAsrc, pAenc, pDanteSender));
-					if(qres != QCAP_RS_SUCCESSFUL) {
-						LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-						break;
+					if(pAsrcEvent) {
+						qres = AddEventHandler(_FreeStack_, pAsrcEvent,
+							std::bind(&self_t::OnAsrc, this, pAsrc, pAenc, pDanteSender));
+						if(qres != QCAP_RS_SUCCESSFUL) {
+							LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+							break;
+						}
 					}
-				}
 
 
-				if(pVencEvent) {
-					qres = AddEventHandler(_FreeStack_, pVencEvent,
-						std::bind(&self_t::OnVenc, this, pVenc, pVdec_rtsp, pDanteSender));
-					if(qres != QCAP_RS_SUCCESSFUL) {
-						LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-						break;
+					if(pVencEvent) {
+						qres = AddEventHandler(_FreeStack_, pVencEvent,
+							std::bind(&self_t::OnVenc, this, pVenc, pVdec_rtsp, pDanteSender));
+						if(qres != QCAP_RS_SUCCESSFUL) {
+							LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+							break;
+						}
 					}
-				}
 
-				if(pAencEvent) {
-					qres = AddEventHandler(_FreeStack_, pAencEvent,
-						std::bind(&self_t::OnAenc, this, pAenc, pAdec_rtsp));
-					if(qres != QCAP_RS_SUCCESSFUL) {
-						LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-						break;
+					if(pAencEvent) {
+						qres = AddEventHandler(_FreeStack_, pAencEvent,
+							std::bind(&self_t::OnAenc, this, pAenc, pAdec_rtsp));
+						if(qres != QCAP_RS_SUCCESSFUL) {
+							LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+							break;
+						}
 					}
 				}
 			}
