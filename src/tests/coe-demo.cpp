@@ -237,7 +237,7 @@ struct App0 {
 				}
 
 				qcap2_video_source_set_frame_count(pVsrc, 4);
-				qcap2_video_source_set_config_file(pVsrc, "yuan_config.json");
+				qcap2_video_source_set_config_file(pVsrc, "/opt/yuan/yuan_config.json");
 				qcap2_video_source_set_verbosity(pVsrc, 1);
 
 				qres = qcap2_video_source_start(pVsrc);
@@ -361,7 +361,7 @@ struct App0 {
 				}
 #endif
 
-#if 1
+#if 0
 				cudaExternalMemoryHandleDesc memHandleDesc;
 				memset(&memHandleDesc, 0, sizeof(memHandleDesc));
 
@@ -377,11 +377,13 @@ struct App0 {
 				}
 #endif
 
+#if 0
 				ZzUtils::Scoped _extMem([extMem]() {
 					cudaDestroyExternalMemory(extMem);
 				});
 
 				LOGD("extMem=%p", extMem);
+#endif
 
 				if(bSnapshot) {
 					bSnapshot = false;

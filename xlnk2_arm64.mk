@@ -1,3 +1,6 @@
+QCAP_HOME?=/docker/qcap-dev/qcap/build-qcap/_objs/xlnk2_arm64/
+QCAP_3RDPARTY?=/docker/qcap-3rdparty/xlnk2_arm64/
+
 include mkfiles/xlnk2_arm64.mk
 include mkfiles/funcs.mk
 
