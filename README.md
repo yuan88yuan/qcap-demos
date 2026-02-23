@@ -62,3 +62,15 @@ This project integrates various video/audio processing and system-related librar
     *   OpenSSL
     *   Boost
     *   fmt
+
+## Examples
+
+### `example-rcbuffer-custom-payload`
+
+This example shows how to use a **custom payload** container struct that embeds `qcap2_av_frame_t` together with user-owned metadata and image planes, then relies on a callback-based finalizer (`qcap2_rcbuffer_new(..., on_free_callback)`) to safely release payload resources.
+
+Run it from a built target directory:
+
+```bash
+./_objs/<target>/example-rcbuffer-custom-payload
+```
