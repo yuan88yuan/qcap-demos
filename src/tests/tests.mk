@@ -198,3 +198,14 @@ TESTS+=$${TEST_RCBUF_e}
 
 TEST_RCBUF_SRCS+=\
 tests/test-rcbuf.cpp
+
+################## example-rcbuffer-custom-payload ##################
+$(call decl_mod,EXAMPLE_RCBUFFER_CUSTOM_PAYLOAD)
+$(call add_flags_mod,EXAMPLE_RCBUFFER_CUSTOM_PAYLOAD)
+$(call add_mods,EXAMPLE_RCBUFFER_CUSTOM_PAYLOAD,ZZLAB QCAP)
+
+EXAMPLE_RCBUFFER_CUSTOM_PAYLOAD_E=example-rcbuffer-custom-payload
+TESTS+=$${EXAMPLE_RCBUFFER_CUSTOM_PAYLOAD_e}
+
+EXAMPLE_RCBUFFER_CUSTOM_PAYLOAD_SRCS+=\
+tests/example-rcbuffer-custom-payload.cpp
