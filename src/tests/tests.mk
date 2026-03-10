@@ -83,7 +83,7 @@ $(call add_flags_mod,TEST_IPX)
 $(call add_mods,TEST_IPX,ZZLAB QCAP CUDA IPX)
 $(call add_mods,TEST_IPX,NVBUF)
 
-$(info TEST_IPX_FLAGS=${TEST_IPX_FLAGS})
+# $(info TEST_IPX_FLAGS=${TEST_IPX_FLAGS})
 
 TEST_IPX_E=test-ipx
 TESTS+=$${TEST_IPX_e}
@@ -198,3 +198,16 @@ TESTS+=$${TEST_RCBUF_e}
 
 TEST_RCBUF_SRCS+=\
 tests/test-rcbuf.cpp
+
+################## roce-dmabuf-test ##################
+$(call decl_mod,ROCE_DMABUF_TEST)
+$(call add_flags_mod,ROCE_DMABUF_TEST)
+$(call add_mods,ROCE_DMABUF_TEST,ZZLAB QCAP CUDA CUDA_DRIVER)
+
+# $(info ROCE_DMABUF_TEST_FLAGS=${ROCE_DMABUF_TEST_FLAGS})
+
+ROCE_DMABUF_TEST_E=roce-dmabuf-test
+TESTS+=$${ROCE_DMABUF_TEST_e}
+
+ROCE_DMABUF_TEST_SRCS+=\
+tests/roce-dmabuf-test.cpp
