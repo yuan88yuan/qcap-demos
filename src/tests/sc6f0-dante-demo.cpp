@@ -272,7 +272,9 @@ struct App0 {
 						(int)pLineSize[0], (int)pLineSize[1], (int)pLineSize[2], (int)pLineSize[3]);
 
 #if 1
-					qres = qcap2_fill_video_test_pattern(pRCBuffer, (i % 2 == 0 ? QCAP2_TEST_PATTERN_0 : QCAP2_TEST_PATTERN_1));
+					// int nPattern = QCAP2_TEST_PATTERN_0;
+					int nPattern = (i % 2 == 0 ? QCAP2_TEST_PATTERN_0 : QCAP2_TEST_PATTERN_1);
+					qres = qcap2_fill_video_test_pattern(pRCBuffer, nPattern);
 					if(qres != QCAP_RS_SUCCESSFUL) {
 						LOGE("%s(%d): qcap2_fill_video_test_pattern() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 						break;
@@ -280,6 +282,10 @@ struct App0 {
 #else
 					memcpy(pData[0], &strRawImage[0], nRawImageSize);
 #endif
+
+					if(i == 0) {
+						qcap2_save_raw_video_frame(pRCBuffer, "tpg");
+					}
 
 					pBuffers[i] = pRCBuffer;
 				}
@@ -339,10 +345,12 @@ struct App0 {
 						qcap2_rcbuffer_unlock_data(pRCBuffer);
 					});
 
+#if 0
 				uint8_t* pBuffer[4];
 				int pStride[4];
 				qcap2_av_frame_get_buffer1(pAVFrame.get(), pBuffer, pStride);
 				LOGI("OnVsrc: [%p/%p], [%d/%d]", pBuffer[0], pBuffer[1], pStride[0], pStride[1]);
+#endif
 
 				qres = qcap2_video_sink_push(pVsink, pRCBuffer);
 				if(qres != QCAP_RS_SUCCESSFUL) {
@@ -350,10 +358,10 @@ struct App0 {
 					break;
 				}
 
-				if(*pVsinkQueue < 2) {
+				if(*pVsinkQueue < 1) {
 					(*pVsinkQueue)++;
 
-					if(*pVsinkQueue == 2) {
+					if(*pVsinkQueue == 1) {
 						qres = qcap2_video_sink_run(pVsink);
 						if(qres != QCAP_RS_SUCCESSFUL) {
 							LOGE("%s(%d): qcap2_video_sink_run() failed, qres=%d", __FUNCTION__, __LINE__, qres);
