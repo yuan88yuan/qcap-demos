@@ -2,6 +2,10 @@
 #include <time.h>
 
 #include <atomic>
+#include <drm.h>
+#include <xf86drm.h>
+#include <xf86drmMode.h>
+#include <drm_fourcc.h>
 
 #include "qcap2.h"
 #include "qcap2.v4l2.h"
@@ -40,6 +44,22 @@ namespace __sc6f0_dante_demo__ {
 			ZZ_MODULES_UNINIT();
 		}
 	};
+
+	inline float mode_vrefresh(drmModeModeInfo *mode) {
+		return mode->clock * 1000.00 / (mode->htotal * mode->vtotal);
+	}
+
+	static uint32_t get_prop_id(int fd, drmModeObjectProperties *props, std::shared_ptr<drmModePropertyRes>* prop_res, const char *name) {
+		for (uint32_t i = 0; i < props->count_props; i++) {
+			std::shared_ptr<drmModePropertyRes> p(drmModeGetProperty(fd, props->props[i]), drmModeFreeProperty);
+			if (!strcmp(p->name, name)) {
+				if(prop_res) *prop_res = p;
+				return p->prop_id;
+			}
+		}
+
+		return 0;
+	}
 }
 
 using namespace __sc6f0_dante_demo__;
@@ -130,6 +150,10 @@ struct App0 {
 		case 2:
 			mTestCase2.DoWork();
 			break;
+
+		case 3:
+			mTestCase3.DoWork();
+			break;
 		}
 	}
 
@@ -180,7 +204,14 @@ struct App0 {
 		}
 
 		QRETURN OnStart(free_stack_t& _FreeStack_, QRESULT& qres) {
+			int err;
+
 			switch(1) { case 1:
+				const ULONG nVideoFrameWidth = 3840;
+				const ULONG nVideoFrameHeight = 2160;
+				const double dVideoFrameRate = 60.0;
+
+#if 1
 				qcap2_event_t* pEvent_vsrc;
 				qres = NewEvent(_FreeStack_, &pEvent_vsrc);
 				if(qres != QCAP_RS_SUCCESSFUL) {
@@ -214,7 +245,9 @@ struct App0 {
 					LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
+#endif
 			}
+
 			return QCAP_RT_OK;
 		}
 
@@ -354,7 +387,7 @@ struct App0 {
 
 				qres = qcap2_video_sink_push(pVsink, pRCBuffer);
 				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): qcap2_video_sink_push() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					// LOGE("%s(%d): qcap2_video_sink_push() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
 
@@ -430,6 +463,427 @@ struct App0 {
 		typedef TestCase2 self_t;
 		typedef TestCase super_t;
 
+		std::shared_ptr<drmModePlane> mPlane;
+		std::shared_ptr<drmModeCrtc> mCrtc;
+		std::shared_ptr<drmModeConnector> mConnector;
+
+		void DoWork() {
+			QRESULT qres;
+
+			LOGD("%s::%s", typeid(self_t).name(), __FUNCTION__);
+
+			switch(1) { case 1:
+				free_stack_t& _FreeStack_ = _FreeStack_main_;
+
+				qres = StartEventHandlers();
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): StartEventHandlers() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+				ZzUtils::Scoped ZZ_GUARD_NAME([&]() {
+					OnExitEventHandlers();
+				} );
+
+				QRESULT qres_evt = QCAP_RS_SUCCESSFUL;
+				qres = ExecInEventHandlers(std::bind(&self_t::OnStart, this,
+					std::ref(_FreeStack_evt_), std::ref(qres_evt)));
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): ExecInEventHandlers() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+				if(qres_evt != QCAP_RS_SUCCESSFUL) {
+					break;
+				}
+
+				wait_for_test_finish([&](int ch) -> bool {
+					QRESULT qres;
+
+					switch(1) { case 1:
+						break;
+					}
+
+					return true;
+				}, 1000000LL, 10LL);
+			}
+
+			_FreeStack_main_.flush();
+		}
+
+		QRETURN OnStart(free_stack_t& _FreeStack_, QRESULT& qres) {
+			int err;
+
+			switch(1) { case 1:
+				const ULONG nVideoFrameWidth = 3840;
+				const ULONG nVideoFrameHeight = 2160;
+				const double dVideoFrameRate = 60.0;
+
+				int drm_fd = drmOpen("xlnx", NULL);
+				if(drm_fd < 0) {
+					err = errno;
+					LOGE("%s(%d): drmOpen() failed, err=%d", __FUNCTION__, __LINE__, err);
+					break;
+				}
+				_FreeStack_ += [drm_fd]() {
+					drmClose(drm_fd);
+				};
+
+				LOGW("drm_fd=%d", drm_fd);
+
+				err = drmSetClientCap(drm_fd, DRM_CLIENT_CAP_ATOMIC, 1);
+				if(err) {
+					err = errno;
+					LOGE("%s(%d): drmSetClientCap(DRM_CLIENT_CAP_ATOMIC) failed, err=%d", __FUNCTION__, __LINE__, err);
+					break;
+				}
+
+				err = drmSetClientCap(drm_fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1);
+				if(err) {
+					err = errno;
+					LOGE("%s(%d): drmSetClientCap(DRM_CLIENT_CAP_UNIVERSAL_PLANES) failed, err=%d", __FUNCTION__, __LINE__, err);
+					break;
+				}
+
+				uint32_t nConnectorId = (uint32_t)44;
+				uint32_t nCrtcId = (uint32_t)42;
+				uint32_t nPrimaryPlaneId = (uint32_t)36;
+				uint32_t nOverlayPlaneId = (uint32_t)34;
+
+				std::shared_ptr<drmModeRes> pResources(drmModeGetResources(drm_fd), drmModeFreeResources);
+
+				for(int i = 0;i < pResources->count_connectors;i++) {
+					std::shared_ptr<drmModeConnector> pConnector(drmModeGetConnector(drm_fd, pResources->connectors[i]), drmModeFreeConnector);
+					if(! pConnector) {
+						qres = QCAP_RS_ERROR_INVALID_PARAMETER;
+						LOGE("%s(%d): pConnector=%p", __FUNCTION__, __LINE__, pConnector.get());
+						break;
+					}
+
+					if(nConnectorId == pConnector->connector_id) {
+						mConnector = pConnector;
+						break;
+					}
+				}
+				if(! mConnector) {
+					qres = QCAP_RS_ERROR_INVALID_PARAMETER;
+					LOGE("%s(%d): unexpected value, nConnectorId=%u", __FUNCTION__, __LINE__, nConnectorId);
+					break;
+				}
+				_FreeStack_ += [&]() {
+					mConnector.reset();
+				};
+
+				LOGD("connector_id=%d connector_type=%d connector_type_id=%d connection=%d encoder_id=%d",
+					(int)mConnector->connector_id, (int)mConnector->connector_type, (int)mConnector->connector_type_id,
+					(int)mConnector->connection, (int)mConnector->encoder_id);
+
+				if(! (mConnector->connector_type == DRM_MODE_CONNECTOR_HDMIA && mConnector->connection == DRM_MODE_CONNECTED)) {
+					qres = QCAP_RS_ERROR_CONNECT_FAIL;
+					LOGE("%s(%d): unexpected value, connector_type=%d connection=%d", __FUNCTION__, __LINE__,
+						mConnector->connector_type, mConnector->connection);
+					break;
+				}
+
+				drmModeModeInfoPtr pMode = NULL;
+				for(int i = 0;i < mConnector->count_modes;i++) {
+					drmModeModeInfoPtr pMode_ = &mConnector->modes[i];
+
+					if(pMode_->hdisplay == nVideoFrameWidth &&
+						pMode_->vdisplay == nVideoFrameHeight &&
+						fabs(mode_vrefresh(pMode_) - dVideoFrameRate) < 0.005) {
+						pMode = pMode_;
+						break;
+					}
+				}
+				if(! pMode) {
+					qres = QCAP_RS_ERROR_INVALID_PARAMETER;
+					LOGE("%s(%d): unexpected value, pMode=%p", __FUNCTION__, __LINE__, pMode);
+					break;
+				}
+
+				LOGD("[%s] %d x %d @ %d (%.2f)", pMode->name, pMode->hdisplay, pMode->vdisplay, pMode->vrefresh, mode_vrefresh(pMode));
+
+				uint32_t nModeBlobId;
+				err = drmModeCreatePropertyBlob(drm_fd, pMode, sizeof(*pMode), &nModeBlobId);
+				if(err) {
+					err = errno;
+					qres = QCAP_RS_ERROR_GENERAL;
+					LOGE("%s(%d): drmModeCreatePropertyBlob() failed, err=%d", __FUNCTION__, __LINE__, err);
+					break;
+				}
+				_FreeStack_ += [drm_fd, nModeBlobId]() {
+					int err;
+
+					err = drmModeDestroyPropertyBlob(drm_fd, nModeBlobId);
+					if(err) {
+						err = errno;
+						LOGE("%s(%d): drmModeDestroyPropertyBlob() failed, err=%d", __FUNCTION__, __LINE__, err);
+					}
+				};
+
+				for(int i = 0;i < pResources->count_crtcs;i++) {
+					std::shared_ptr<drmModeCrtc> pCrtc(drmModeGetCrtc(drm_fd, pResources->crtcs[i]), drmModeFreeCrtc);
+					if(! pCrtc) {
+						qres = QCAP_RS_ERROR_INVALID_PARAMETER;
+						LOGE("%s(%d): pCrtc=%p", __FUNCTION__, __LINE__, pCrtc.get());
+						break;
+					}
+
+					if(nCrtcId == pCrtc->crtc_id) {
+						mCrtc = pCrtc;
+						break;
+					}
+				}
+				if(! mCrtc) {
+					qres = QCAP_RS_ERROR_INVALID_PARAMETER;
+					LOGE("%s(%d): unexpected value, nCrtcId=%u", __FUNCTION__, __LINE__, nCrtcId);
+					break;
+				}
+
+#if 1
+				{
+					struct drm_mode_create_dumb creq = { .height = nVideoFrameHeight, .width = nVideoFrameWidth, .bpp = 24 };
+					err = drmIoctl(drm_fd, DRM_IOCTL_MODE_CREATE_DUMB, &creq);
+					if(err < 0) {
+						qres = QCAP_RS_ERROR_GENERAL;
+						err = errno;
+						LOGE("%s(%d): drmIoctl(DRM_IOCTL_MODE_CREATE_DUMB) failed, err=%d", __FUNCTION__, __LINE__, err);
+						break;
+					}
+					uint32_t bo = creq.handle;
+					LOGD("bo=%d", bo);
+					_FreeStack_ += [drm_fd, bo]() {
+						int err;
+
+						struct drm_mode_destroy_dumb dreq = { 0 };
+						dreq.handle = bo;
+						err = drmIoctl(drm_fd, DRM_IOCTL_MODE_DESTROY_DUMB, &dreq);
+						if(err < 0) {
+							err = errno;
+							LOGE("%s(%d): drmIoctl(DRM_IOCTL_MODE_DESTROY_DUMB) failed, err=%d", __FUNCTION__, __LINE__, err);
+						}
+					};
+
+					uint32_t handles[4] = { creq.handle, 0, 0, 0 };
+					uint32_t pitches[4] = { creq.width * 3, 0, 0, 0 };
+					uint32_t offsets[4] = { 0, 0, 0, 0 };
+					uint32_t fb;
+					err = drmModeAddFB2(drm_fd, creq.width, creq.height, DRM_FORMAT_BGR888, handles, pitches, offsets, &fb, 0);
+					if(err < 0) {
+						qres = QCAP_RS_ERROR_GENERAL;
+						err = errno;
+						LOGE("%s(%d): drmModeAddFB2() failed, err=%d", __FUNCTION__, __LINE__, err);
+						break;
+					}
+					LOGD("fb=%d", fb);
+					_FreeStack_ += [drm_fd, fb]() {
+						int err;
+
+						err = drmModeRmFB(drm_fd, fb);
+						if(err < 0) {
+							err = errno;
+							LOGE("%s(%d): drmModeRmFB() failed, err=%d", __FUNCTION__, __LINE__, err);
+						}
+					};
+
+					std::shared_ptr<drmModeObjectProperties> props_crtc(
+						drmModeObjectGetProperties(drm_fd, nCrtcId, DRM_MODE_OBJECT_CRTC), drmModeFreeObjectProperties);
+					uint32_t prop_crtc_mode_id = get_prop_id(drm_fd, props_crtc.get(), NULL, "MODE_ID");
+					uint32_t prop_crtc_active_id = get_prop_id(drm_fd, props_crtc.get(), NULL, "ACTIVE");
+
+					std::shared_ptr<drmModeObjectProperties> props_conn(
+						drmModeObjectGetProperties(drm_fd, nConnectorId, DRM_MODE_OBJECT_CONNECTOR), drmModeFreeObjectProperties);
+					uint32_t prop_conn_crtc_id = get_prop_id(drm_fd, props_conn.get(), NULL, "CRTC_ID");
+
+					std::shared_ptr<drmModeObjectProperties> props_plane(
+						drmModeObjectGetProperties(drm_fd, nPrimaryPlaneId, DRM_MODE_OBJECT_PLANE), drmModeFreeObjectProperties);
+					uint32_t prop_plane_crtc_id = get_prop_id(drm_fd, props_plane.get(), NULL, "CRTC_ID");
+					uint32_t prop_plane_fb_id = get_prop_id(drm_fd, props_plane.get(), NULL, "FB_ID");
+					uint32_t prop_plane_crtc_w = get_prop_id(drm_fd, props_plane.get(), NULL, "CRTC_W");
+					uint32_t prop_plane_crtc_h = get_prop_id(drm_fd, props_plane.get(), NULL, "CRTC_H");
+					uint32_t prop_plane_src_w = get_prop_id(drm_fd, props_plane.get(), NULL, "SRC_W");
+					uint32_t prop_plane_src_h = get_prop_id(drm_fd, props_plane.get(), NULL, "SRC_H");
+
+					std::shared_ptr<drmModeAtomicReq> req(drmModeAtomicAlloc(), drmModeAtomicFree);
+					err = drmModeAtomicAddProperty(req.get(), nConnectorId, prop_conn_crtc_id, nCrtcId);
+					LOGD("drmModeAtomicAddProperty(%d, %d, %d) = %d", nConnectorId, prop_conn_crtc_id, nCrtcId, err);
+
+					err = drmModeAtomicAddProperty(req.get(), nCrtcId, prop_crtc_mode_id, nModeBlobId);
+					LOGD("drmModeAtomicAddProperty(%d, %d, %d) = %d", nCrtcId, prop_crtc_mode_id, nModeBlobId, err);
+					err = drmModeAtomicAddProperty(req.get(), nCrtcId, prop_crtc_active_id, 1);
+					LOGD("drmModeAtomicAddProperty(%d, %d, %d) = %d", nCrtcId, prop_crtc_active_id, 1, err);
+
+					err = drmModeAtomicAddProperty(req.get(), nPrimaryPlaneId, prop_plane_crtc_id, nCrtcId);
+					LOGD("drmModeAtomicAddProperty(%d, %d, %d) = %d", nPrimaryPlaneId, prop_plane_crtc_id, nCrtcId, err);
+					err = drmModeAtomicAddProperty(req.get(), nPrimaryPlaneId, prop_plane_fb_id, fb);
+					LOGD("drmModeAtomicAddProperty(%d, %d, %d) = %d", nPrimaryPlaneId, prop_plane_fb_id, fb, err);
+					err = drmModeAtomicAddProperty(req.get(), nPrimaryPlaneId, prop_plane_crtc_w, creq.width);
+					LOGD("drmModeAtomicAddProperty(%d, %d, %d) = %d", nPrimaryPlaneId, prop_plane_crtc_w, creq.width, err);
+					err = drmModeAtomicAddProperty(req.get(), nPrimaryPlaneId, prop_plane_crtc_h, creq.height);
+					LOGD("drmModeAtomicAddProperty(%d, %d, %d) = %d", nPrimaryPlaneId, prop_plane_crtc_h, creq.height, err);
+					err = drmModeAtomicAddProperty(req.get(), nPrimaryPlaneId, prop_plane_src_w, creq.width << 16);
+					LOGD("drmModeAtomicAddProperty(%d, %d, %d) = %d", nPrimaryPlaneId, prop_plane_src_w, creq.width << 16, err);
+					err = drmModeAtomicAddProperty(req.get(), nPrimaryPlaneId, prop_plane_src_h, creq.height << 16);
+					LOGD("drmModeAtomicAddProperty(%d, %d, %d) = %d", nPrimaryPlaneId, prop_plane_src_h, creq.height << 16, err);
+
+					err = drmModeAtomicCommit(drm_fd, req.get(), DRM_MODE_ATOMIC_ALLOW_MODESET, NULL);
+					if(err < 0) {
+						qres = QCAP_RS_ERROR_GENERAL;
+						err = errno;
+						LOGE("%s(%d): drmModeAtomicCommit(DRM_MODE_ATOMIC_ALLOW_MODESET) failed, err=%d", __FUNCTION__, __LINE__, err);
+						break;
+					}
+
+					LOGD("CRTC ACTIVE!");
+
+					// _FreeStack_ += [drm_fd, nPrimaryPlaneId, prop_plane_crtc_id, prop_plane_fb_id,
+					// 	prop_plane_crtc_w, prop_plane_crtc_h, prop_plane_src_w, prop_plane_src_h]()
+					{
+						int err;
+
+						std::shared_ptr<drmModeAtomicReq> req(drmModeAtomicAlloc(), drmModeAtomicFree);
+
+						err = drmModeAtomicAddProperty(req.get(), nPrimaryPlaneId, prop_plane_crtc_id, 0);
+						LOGD("drmModeAtomicAddProperty(%d, %d, %d) = %d", nPrimaryPlaneId, prop_plane_crtc_id, 0, err);
+						err = drmModeAtomicAddProperty(req.get(), nPrimaryPlaneId, prop_plane_crtc_w, 0);
+						LOGD("drmModeAtomicAddProperty(%d, %d, %d) = %d", nPrimaryPlaneId, prop_plane_crtc_w, 0, err);
+						err = drmModeAtomicAddProperty(req.get(), nPrimaryPlaneId, prop_plane_crtc_h, 0);
+						LOGD("drmModeAtomicAddProperty(%d, %d, %d) = %d", nPrimaryPlaneId, prop_plane_crtc_h, 0, err);
+						err = drmModeAtomicAddProperty(req.get(), nPrimaryPlaneId, prop_plane_src_w, 0);
+						LOGD("drmModeAtomicAddProperty(%d, %d, %d) = %d", nPrimaryPlaneId, prop_plane_src_w, 0, err);
+						err = drmModeAtomicAddProperty(req.get(), nPrimaryPlaneId, prop_plane_src_h, 0);
+						LOGD("drmModeAtomicAddProperty(%d, %d, %d) = %d", nPrimaryPlaneId, prop_plane_src_h, 0, err);
+						err = drmModeAtomicAddProperty(req.get(), nPrimaryPlaneId, prop_plane_fb_id, 0);
+						LOGD("drmModeAtomicAddProperty(%d, %d, %d) = %d", nPrimaryPlaneId, prop_plane_fb_id, 0, err);
+
+						err = drmModeAtomicCommit(drm_fd, req.get(), DRM_MODE_ATOMIC_ALLOW_MODESET, NULL);
+						if(err < 0) {
+							err = errno;
+							LOGE("%s(%d): drmModeAtomicCommit(DRM_MODE_ATOMIC_ALLOW_MODESET) failed, err=%d", __FUNCTION__, __LINE__, err);
+						}
+
+						LOGD("PLANE DEACTIVE!");
+					};
+				}
+#endif
+
+#if 1
+				{
+					struct drm_mode_create_dumb creq = { .height = nVideoFrameHeight, .width = nVideoFrameWidth, .bpp = 16 };
+					err = drmIoctl(drm_fd, DRM_IOCTL_MODE_CREATE_DUMB, &creq);
+					if(err < 0) {
+						qres = QCAP_RS_ERROR_GENERAL;
+						err = errno;
+						LOGE("%s(%d): drmIoctl(DRM_IOCTL_MODE_CREATE_DUMB) failed, err=%d", __FUNCTION__, __LINE__, err);
+						break;
+					}
+					uint32_t bo = creq.handle;
+					LOGD("bo=%d", bo);
+					_FreeStack_ += [drm_fd, bo]() {
+						int err;
+
+						struct drm_mode_destroy_dumb dreq = { 0 };
+						dreq.handle = bo;
+						err = drmIoctl(drm_fd, DRM_IOCTL_MODE_DESTROY_DUMB, &dreq);
+						if(err < 0) {
+							err = errno;
+							LOGE("%s(%d): drmIoctl(DRM_IOCTL_MODE_DESTROY_DUMB) failed, err=%d", __FUNCTION__, __LINE__, err);
+						}
+					};
+
+					uint32_t handles[4] = { creq.handle, 0, 0, 0 };
+					uint32_t pitches[4] = { creq.width * 2, 0, 0, 0 };
+					uint32_t offsets[4] = { 0, 0, 0, 0 };
+					uint32_t fb;
+					err = drmModeAddFB2(drm_fd, creq.width, creq.height, DRM_FORMAT_YUYV, handles, pitches, offsets, &fb, 0);
+					if(err < 0) {
+						qres = QCAP_RS_ERROR_GENERAL;
+						err = errno;
+						LOGE("%s(%d): drmModeAddFB2() failed, err=%d", __FUNCTION__, __LINE__, err);
+						break;
+					}
+					LOGD("fb=%d", fb);
+					_FreeStack_ += [drm_fd, fb]() {
+						int err;
+
+						err = drmModeRmFB(drm_fd, fb);
+						if(err < 0) {
+							err = errno;
+							LOGE("%s(%d): drmModeRmFB() failed, err=%d", __FUNCTION__, __LINE__, err);
+						}
+					};
+
+					std::shared_ptr<drmModeObjectProperties> props_plane(
+						drmModeObjectGetProperties(drm_fd, nOverlayPlaneId, DRM_MODE_OBJECT_PLANE), drmModeFreeObjectProperties);
+					uint32_t prop_plane_crtc_id = get_prop_id(drm_fd, props_plane.get(), NULL, "CRTC_ID");
+					uint32_t prop_plane_fb_id = get_prop_id(drm_fd, props_plane.get(), NULL, "FB_ID");
+					uint32_t prop_plane_crtc_w = get_prop_id(drm_fd, props_plane.get(), NULL, "CRTC_W");
+					uint32_t prop_plane_crtc_h = get_prop_id(drm_fd, props_plane.get(), NULL, "CRTC_H");
+					uint32_t prop_plane_src_w = get_prop_id(drm_fd, props_plane.get(), NULL, "SRC_W");
+					uint32_t prop_plane_src_h = get_prop_id(drm_fd, props_plane.get(), NULL, "SRC_H");
+
+					std::shared_ptr<drmModeAtomicReq> req(drmModeAtomicAlloc(), drmModeAtomicFree);
+
+					err = drmModeAtomicAddProperty(req.get(), nOverlayPlaneId, prop_plane_crtc_id, nCrtcId);
+					LOGD("drmModeAtomicAddProperty(%d, %d, %d) = %d", nOverlayPlaneId, prop_plane_crtc_id, nCrtcId, err);
+					err = drmModeAtomicAddProperty(req.get(), nOverlayPlaneId, prop_plane_fb_id, fb);
+					LOGD("drmModeAtomicAddProperty(%d, %d, %d) = %d", nOverlayPlaneId, prop_plane_fb_id, fb, err);
+					err = drmModeAtomicAddProperty(req.get(), nOverlayPlaneId, prop_plane_crtc_w, creq.width);
+					LOGD("drmModeAtomicAddProperty(%d, %d, %d) = %d", nOverlayPlaneId, prop_plane_crtc_w, creq.width, err);
+					err = drmModeAtomicAddProperty(req.get(), nOverlayPlaneId, prop_plane_crtc_h, creq.height);
+					LOGD("drmModeAtomicAddProperty(%d, %d, %d) = %d", nOverlayPlaneId, prop_plane_crtc_h, creq.height, err);
+					err = drmModeAtomicAddProperty(req.get(), nOverlayPlaneId, prop_plane_src_w, creq.width << 16);
+					LOGD("drmModeAtomicAddProperty(%d, %d, %d) = %d", nOverlayPlaneId, prop_plane_src_w, creq.width << 16, err);
+					err = drmModeAtomicAddProperty(req.get(), nOverlayPlaneId, prop_plane_src_h, creq.height << 16);
+					LOGD("drmModeAtomicAddProperty(%d, %d, %d) = %d", nOverlayPlaneId, prop_plane_src_h, creq.height << 16, err);
+
+					err = drmModeAtomicCommit(drm_fd, req.get(), DRM_MODE_ATOMIC_ALLOW_MODESET, NULL);
+					if(err < 0) {
+						qres = QCAP_RS_ERROR_GENERAL;
+						err = errno;
+						LOGE("%s(%d): drmModeAtomicCommit(DRM_MODE_ATOMIC_ALLOW_MODESET) failed, err=%d", __FUNCTION__, __LINE__, err);
+						break;
+					}
+
+					LOGD("Overlay ACTIVE!");
+
+					{
+						int err;
+
+						std::shared_ptr<drmModeAtomicReq> req(drmModeAtomicAlloc(), drmModeAtomicFree);
+
+						err = drmModeAtomicAddProperty(req.get(), nOverlayPlaneId, prop_plane_crtc_id, 0);
+						LOGD("drmModeAtomicAddProperty(%d, %d, %d) = %d", nOverlayPlaneId, prop_plane_crtc_id, 0, err);
+						err = drmModeAtomicAddProperty(req.get(), nOverlayPlaneId, prop_plane_crtc_w, 0);
+						LOGD("drmModeAtomicAddProperty(%d, %d, %d) = %d", nOverlayPlaneId, prop_plane_crtc_w, 0, err);
+						err = drmModeAtomicAddProperty(req.get(), nOverlayPlaneId, prop_plane_crtc_h, 0);
+						LOGD("drmModeAtomicAddProperty(%d, %d, %d) = %d", nOverlayPlaneId, prop_plane_crtc_h, 0, err);
+						err = drmModeAtomicAddProperty(req.get(), nOverlayPlaneId, prop_plane_src_w, 0);
+						LOGD("drmModeAtomicAddProperty(%d, %d, %d) = %d", nOverlayPlaneId, prop_plane_src_w, 0, err);
+						err = drmModeAtomicAddProperty(req.get(), nOverlayPlaneId, prop_plane_src_h, 0);
+						LOGD("drmModeAtomicAddProperty(%d, %d, %d) = %d", nOverlayPlaneId, prop_plane_src_h, 0, err);
+						err = drmModeAtomicAddProperty(req.get(), nOverlayPlaneId, prop_plane_fb_id, 0);
+						LOGD("drmModeAtomicAddProperty(%d, %d, %d) = %d", nOverlayPlaneId, prop_plane_fb_id, 0, err);
+
+						err = drmModeAtomicCommit(drm_fd, req.get(), DRM_MODE_ATOMIC_ALLOW_MODESET, NULL);
+						if(err < 0) {
+							err = errno;
+							LOGE("%s(%d): drmModeAtomicCommit(DRM_MODE_ATOMIC_ALLOW_MODESET) failed, err=%d", __FUNCTION__, __LINE__, err);
+						}
+
+						LOGD("Overlay DEACTIVE!");
+					};
+				}
+#endif
+			}
+
+			return QCAP_RT_OK;
+		}
+	} mTestCase2;
+
+	struct TestCase3 : public TestCase {
+		typedef TestCase3 self_t;
+		typedef TestCase super_t;
+
 		free_stack_t _FreeStack_vsrc_;
 
 		int nSnapshot;
@@ -469,8 +923,8 @@ struct App0 {
 		}
 
 		static void _get_hdcp(struct dau_service *dau,
-					    struct DBusMessage *message,
-					    void *ctxt)
+						struct DBusMessage *message,
+						void *ctxt)
 		{
 			LOGI("---tag---: %s", __FUNCTION__);
 
@@ -485,9 +939,9 @@ struct App0 {
 		}
 
 		static void _set_hdcp(struct dau_service *dau,
-					    struct DBusMessage *message,
-					    enum hdcp_version version,
-					    void *ctxt)
+						struct DBusMessage *message,
+						enum hdcp_version version,
+						void *ctxt)
 		{
 			LOGI("---tag---: %s", __FUNCTION__);
 
@@ -516,8 +970,8 @@ struct App0 {
 		}
 
 		static void _get_audio_info(struct dau_service *dau,
-					       struct DBusMessage *message,
-					       void *ctxt)
+						   struct DBusMessage *message,
+						   void *ctxt)
 		{
 			self_t* pThis = (self_t*)ctxt;
 
@@ -556,9 +1010,9 @@ struct App0 {
 		}
 
 		static void _set_edid(struct dau_service *dau,
-					    struct DBusMessage *message,
-					    const void *edid,
-					    void *ctxt)
+						struct DBusMessage *message,
+						const void *edid,
+						void *ctxt)
 		{
 			LOGI("---tag---: %s", __FUNCTION__);
 
@@ -585,9 +1039,9 @@ struct App0 {
 		}
 
 		static void _set_audio_info(struct dau_service *dau,
-					       struct DBusMessage *message,
-					       const struct audio_info *info,
-					       void *ctxt)
+						   struct DBusMessage *message,
+						   const struct audio_info *info,
+						   void *ctxt)
 		{
 			LOGI("---tag---: %s", __FUNCTION__);
 
@@ -1711,7 +2165,7 @@ struct App0 {
 		QRETURN OnDanteServerNoResponse(BOOL bActivate) {
 			return QCAP_RT_OK;
 		}
-	} mTestCase2;
+	} mTestCase3;
 };
 
 int main(int argc, char* argv[]) {
