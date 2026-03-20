@@ -2,7 +2,7 @@
 ################## test-demuxer ##################
 $(call decl_mod,TEST_DEMUXER)
 $(call add_flags_mod,TEST_DEMUXER)
-$(call add_mods,TEST_DEMUXER,ZZLAB QCAP DAUSERVICE)
+$(call add_mods,TEST_DEMUXER,ZZLAB QCAP ALLEGRO2)
 
 # $(info TEST_DEMUXER_FLAGS=${TEST_DEMUXER_FLAGS})
 
