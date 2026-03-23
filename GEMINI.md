@@ -22,13 +22,18 @@ The project is built using `make`. The build system is complex and highly config
 
 **To build the project:**
 
-It is not immediately clear from the provided files what the default make target is. To build the project, you will likely need to specify a target.
+The project is built using the `build.sh` script with the following format: `./build.sh {PLATFORM} {TARGET}`.
 
+For the `xlnk2_arm64` platform, examples of valid `TARGET` values include:
+- `qdemo` (main demonstration application)
+- `test-demuxer` (a test application)
+- `tests` (to build all test applications)
+
+Example builds:
 ```bash
-# TODO: Add build commands here.
-# It is likely that you need to run make with a specific target,
-# for example:
-# make l4t-r36-2
+./build.sh xlnk2_arm64 qdemo
+./build.sh xlnk2_arm64 test-demuxer
+./build.sh xlnk2_arm64 tests
 ```
 
 **To run the application:**
@@ -47,3 +52,11 @@ After a successful build, an executable should be created in the `_objs` directo
 *   **Logging:** A custom logging framework (`ZzLog`) is used, with macros like `LOGI`, `LOGD`, and `LOGE` for logging messages at different severity levels.
 *   **Resource Management:** A `free_stack` class is used for resource management. This is a stack of functions that are called to free resources when an object goes out of scope.
 *   **Testing:** The `src/tests` directory contains test applications. The build system has a `tests.mk` file, suggesting a dedicated build target for tests.
+
+## Project-Specific Notes
+
+*   **Preferred Build Settings:**
+    *   `PLATFORM`: `xlnk2_arm64`
+    *   `TARGET`: `test-demuxer`
+*   **Video/Audio Encoder Pipeline Handling:**
+    The user's preferred approach in `test-demuxer.cpp` involves creating a new event, setting it for the encoder, and then logging a debug message when the event is received. This pattern is applied to both video and audio encoders.

@@ -126,8 +126,8 @@ struct App0 {
 		typedef TestCase super_t;
 
 		free_stack_t _FreeStack_dmx_;
+		free_stack_t _FreeStack_dmx_evt_;
 
-		bool bDmxStarted;
 		int nSnapshot;
 
 		void DoWork() {
@@ -136,7 +136,6 @@ struct App0 {
 			LOGD("%s::%s", typeid(self_t).name(), __FUNCTION__);
 
 			nSnapshot = 0;
-			bDmxStarted = false;
 
 			switch(1) { case 1:
 				free_stack_t& _FreeStack_ = _FreeStack_main_;
@@ -169,8 +168,17 @@ struct App0 {
 						LOGD("++nSnapshot=%d", ++nSnapshot);
 						break;
 
-					case 'd': case 'D':
-						StartDmx();
+					case 'd': case 'D': {
+						QRESULT qres_evt = QCAP_RS_SUCCESSFUL;
+						qres = ExecInEventHandlers(std::bind(&self_t::StartDmx, this, std::ref(qres_evt)));
+						if(qres != QCAP_RS_SUCCESSFUL) {
+							LOGE("%s(%d): ExecInEventHandlers() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+							break;
+						}
+						if(qres_evt != QCAP_RS_SUCCESSFUL) {
+							break;
+						}
+					}
 						break;
 					}
 
@@ -183,20 +191,28 @@ struct App0 {
 
 		QRETURN OnStart(free_stack_t& _FreeStack_, QRESULT& qres) {
 			switch(1) { case 1:
-				StartDmx();
+				StartDmx(qres);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): StartDmx() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+
+				_FreeStack_ += [&]() {
+					_FreeStack_dmx_.flush();
+				};
 			}
 
 			return QCAP_RT_OK;
 		}
 
-		void StartDmx() {
-			QRESULT qres;
-			free_stack_t& _FreeStack_ = _FreeStack_evt_;
+		QRETURN StartDmx(QRESULT& qres) {
+			free_stack_t& _FreeStack_ = _FreeStack_dmx_;
+			_FreeStack_.flush();
 
-			if(! bDmxStarted) switch(1) { case 1:
+			switch(1) { case 1:
 				qcap2_event_t* pDmxEvent;
 				qcap2_demuxer_t* pDmx;
-				qres = StartDmx(_FreeStack_, &pDmx, &pDmxEvent);
+				qres = StartDmxCtx(_FreeStack_, &pDmx, &pDmxEvent);
 				if(qres != QCAP_RS_SUCCESSFUL) {
 					LOGE("%s(%d): StartDmx() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
@@ -207,16 +223,12 @@ struct App0 {
 					LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
-
-				_FreeStack_ += [&]() {
-					_FreeStack_dmx_.flush();
-				};
-
-				bDmxStarted = true;
 			}
+
+			return QCAP_RT_OK;
 		}
 
-		QRESULT StartDmx(free_stack_t& _FreeStack_, qcap2_demuxer_t** ppDmx, qcap2_event_t** ppDmxEvent) {
+		QRESULT StartDmxCtx(free_stack_t& _FreeStack_, qcap2_demuxer_t** ppDmx, qcap2_event_t** ppDmxEvent) {
 			QRESULT qres;
 
 			switch(1) { case 1:
@@ -234,6 +246,10 @@ struct App0 {
 
 				qcap2_demuxer_set_type(pDmx, QCAP2_DEMUXER_TYPE_DEFAULT);
 				qcap2_demuxer_set_event(pDmx, pEvent);
+				qcap2_demuxer_set_live_source(pDmx, false);
+
+				std::string strURL("file:///mnt/dev/zzlee/docker/tmp/test.mp4");
+				qcap2_demuxer_set_url(pDmx, strURL.c_str());
 
 				qres = qcap2_demuxer_start(pDmx);
 				if(qres != QCAP_RS_SUCCESSFUL) {
@@ -249,6 +265,10 @@ struct App0 {
 					}
 				};
 
+				_FreeStack_ += [&]() {
+					_FreeStack_dmx_evt_.flush();
+				};
+
 				*ppDmx = pDmx;
 				*ppDmxEvent = pEvent;
 			}
@@ -260,10 +280,9 @@ struct App0 {
 			QRESULT qres;
 
 			switch(1) {	case 1:
-				free_stack_t& _FreeStack_ = _FreeStack_dmx_;
-
-				// to stop a/v src/codec which are running
+				free_stack_t& _FreeStack_ = _FreeStack_dmx_evt_;
 				_FreeStack_.flush();
+
 
 				qres = qcap2_demuxer_update(pDmx);
 				if(qres != QCAP_RS_SUCCESSFUL) {
@@ -282,10 +301,245 @@ struct App0 {
 
 				LOGD("Prog[%s/%s] Venc:%d, Aenc:%d", qcap2_program_info_get_metadata(pProgram, "service_name"),
 					qcap2_program_info_get_metadata(pProgram, "service_provider"), nVencIndex, nAencIndex);
+
+				qcap2_video_encoder_t* pVenc = qcap2_demuxer_get_video_encoder(pDmx, nVencIndex);
+				{
+					std::shared_ptr<qcap2_video_encoder_property_t> pVencProp(qcap2_video_encoder_property_new(), qcap2_video_encoder_property_delete);
+					qcap2_video_encoder_get_video_property(pVenc, pVencProp.get());
+
+					ULONG nEncoderFormat, nWidth, nHeight;
+					qcap2_video_encoder_property_get_format(pVencProp.get(), &nEncoderFormat);
+					qcap2_video_encoder_property_get_resolution(pVencProp.get(), &nWidth, &nHeight);
+					LOGD("%08X ' %dx%d", nEncoderFormat, nWidth, nHeight);
+				}
+
+				qcap2_event_t* pVencEvent;
+				qres = StartDmx_Venc(_FreeStack_, pVenc, &pVencEvent);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): StartDmx_Venc() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+
+				qcap2_audio_encoder_t* pAenc = qcap2_demuxer_get_audio_encoder(pDmx, nAencIndex);
+				qcap2_audio_decoder_t* pAdec;
+				qcap2_event_t* pAdecEvent;
+				{
+					std::shared_ptr<qcap2_audio_encoder_property_t> pAencProp(qcap2_audio_encoder_property_new(), qcap2_audio_encoder_property_delete);
+					qcap2_audio_encoder_get_audio_property(pAenc, pAencProp.get());
+
+					ULONG nEncoderType, nEncoderFormat, nChannels, nBitsPerSample, nSampleFrequency;
+					qcap2_audio_encoder_property_get_property(pAencProp.get(), &nEncoderType, &nEncoderFormat, &nChannels, &nBitsPerSample, &nSampleFrequency);
+					LOGD("%08X ' %dx%dx%d", nEncoderFormat, nChannels, nBitsPerSample, nSampleFrequency);
+
+					qcap2_audio_encoder_property_set_type(pAencProp.get(), QCAP_ENCODER_TYPE_SOFTWARE);
+
+
+
+					qres = StartAdec(_FreeStack_, pAencProp.get(), &pAdec, &pAdecEvent);
+					if(qres != QCAP_RS_SUCCESSFUL) {
+						LOGE("%s(%d): StartAdec() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+						break;
+					}
+				}
+
+				qcap2_event_t* pAencEvent;
+				qres = StartDmx_Aenc(_FreeStack_, pAenc, &pAencEvent);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): StartDmx_Aenc() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+
+				qres = AddEventHandler(_FreeStack_, pVencEvent, std::bind(&self_t::OnDmx_Venc, this, pVenc));
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+
+				qres = AddEventHandler(_FreeStack_, pAencEvent, std::bind(&self_t::OnDmx_Aenc, this, pAenc, pAdec));
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+
+				qres = AddEventHandler(_FreeStack_, pAdecEvent, std::bind(&self_t::OnAdec, this, pAdec));
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+
+				qres = qcap2_demuxer_play(pDmx);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): qcap2_demuxer_play() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
 			}
 
 			return QCAP_RT_OK;
 		}
+
+		QRESULT StartDmx_Venc(free_stack_t& _FreeStack_, qcap2_video_encoder_t* pVenc, qcap2_event_t** ppVencEvent) {
+			QRESULT qres;
+
+			switch(1) { case 1:
+				qcap2_event_t* pEvent;
+				qres = NewEvent(_FreeStack_, &pEvent);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): NewEvent() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+
+				qcap2_video_encoder_set_event(pVenc, pEvent);
+
+				qres = qcap2_video_encoder_start(pVenc);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGD("%s(%d): qcap2_video_encoder_start() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+				_FreeStack_ += [pVenc]() {
+					QRESULT qres;
+
+					qres = qcap2_video_encoder_stop(pVenc);
+					if(qres != QCAP_RS_SUCCESSFUL) {
+						LOGD("%s(%d): qcap2_video_encoder_stop() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					}
+				};
+
+				*ppVencEvent = pEvent;
+			}
+
+			return qres;
+		}
+
+		QRESULT StartDmx_Aenc(free_stack_t& _FreeStack_, qcap2_audio_encoder_t* pAenc, qcap2_event_t** ppAencEvent) {
+			QRESULT qres;
+
+			switch(1) { case 1:
+				qcap2_event_t* pEvent;
+				qres = NewEvent(_FreeStack_, &pEvent);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): NewEvent() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+
+				qcap2_audio_encoder_set_event(pAenc, pEvent);
+
+				qres = qcap2_audio_encoder_start(pAenc);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGD("%s(%d): qcap2_audio_encoder_start() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+				_FreeStack_ += [pAenc]() {
+					QRESULT qres;
+
+					qres = qcap2_audio_encoder_stop(pAenc);
+					if(qres != QCAP_RS_SUCCESSFUL) {
+						LOGD("%s(%d): qcap2_audio_encoder_stop() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					}
+				};
+
+				*ppAencEvent = pEvent;
+			}
+
+			return qres;
+		}
+
+		QRESULT StartAdec(free_stack_t& _FreeStack_, qcap2_audio_encoder_property_t* pAencProp, qcap2_audio_decoder_t** ppAdec, qcap2_event_t** ppAdecEvent) {
+			QRESULT qres;
+
+			switch(1) { case 1:
+				qcap2_event_t* pEvent;
+				qres = NewEvent(_FreeStack_, &pEvent);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): NewEvent() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+
+				qcap2_audio_decoder_t* pAdec = qcap2_audio_decoder_new();
+				_FreeStack_ += [pAdec]() {
+					qcap2_audio_decoder_delete(pAdec);
+				};
+
+				qcap2_audio_decoder_set_audio_property(pAdec, pAencProp);
+				qcap2_audio_decoder_set_event(pAdec, pEvent);
+
+				qres = qcap2_audio_decoder_start(pAdec);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): qcap2_audio_decoder_start() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+				_FreeStack_ += [pAdec]() {
+					QRESULT qres;
+
+					qres = qcap2_audio_decoder_stop(pAdec);
+					if(qres != QCAP_RS_SUCCESSFUL) {
+						LOGE("%s(%d): qcap2_audio_decoder_stop() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					}
+				};
+
+				*ppAdec = pAdec;
+				*ppAdecEvent = pEvent;
+			}
+
+			return qres;
+		}
+
+		QRETURN OnDmx_Venc(qcap2_video_encoder_t* pVenc) {
+			QRESULT qres;
+
+			switch(1) { case 1:
+				qcap2_rcbuffer_t* pRCBuffer;
+				qres = qcap2_video_encoder_pop(pVenc, &pRCBuffer);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): qcap2_video_encoder_pop() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+				std::shared_ptr<qcap2_rcbuffer_t> pRCBuffer_(pRCBuffer,
+					qcap2_rcbuffer_release);
+			}
+
+			return QCAP_RT_OK;
+		}
+
+		QRETURN OnDmx_Aenc(qcap2_audio_encoder_t* pAenc, qcap2_audio_decoder_t* pAdec) {
+			QRESULT qres;
+
+			switch(1) { case 1:
+				qcap2_rcbuffer_t* pRCBuffer;
+				qres = qcap2_audio_encoder_pop(pAenc, &pRCBuffer);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): qcap2_audio_encoder_pop() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+				std::shared_ptr<qcap2_rcbuffer_t> pRCBuffer_(pRCBuffer,
+					qcap2_rcbuffer_release);
+
+				qres = qcap2_audio_decoder_push(pAdec, pRCBuffer);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): qcap2_audio_decoder_push() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+			}
+
+			return QCAP_RT_OK;
+		}
+
+		QRETURN OnAdec(qcap2_audio_decoder_t* pAdec) {
+			QRESULT qres;
+
+			switch(1) { case 1:
+				qcap2_rcbuffer_t* pRCBuffer;
+				qres = qcap2_audio_decoder_pop(pAdec, &pRCBuffer);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): qcap2_audio_decoder_pop() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+				std::shared_ptr<qcap2_rcbuffer_t> pRCBuffer_(pRCBuffer,
+					qcap2_rcbuffer_release);
+			}
+
+			return QCAP_RT_OK;
+		}
+
 	} mTestCase1;
 };
 
