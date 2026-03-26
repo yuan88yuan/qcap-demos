@@ -484,14 +484,15 @@ namespace __testkit__ {
 			};
 
 			int nSize;
-			uint8_t* pBuffer[4] = { NULL };
-			int pStride[4];
+			uint8_t* pBuffer[4] = { NULL, NULL, NULL, NULL };
+			int pStride[4] = { 0, 0, 0, 0 };
 			switch(nColorSpaceType) {
 			case QCAP_COLORSPACE_TYPE_NV12:
 				pStride[0] = align((int)nWidth, 16);
 				pStride[1] = pStride[0];
 				pBuffer[1] = pBuffer[0] + pStride[0] * (int)nHeight;
-				nSize = pStride[0] * nHeight * 3 / 2;
+				// nSize = pStride[0] * nHeight * 3 / 2;
+				nSize = pStride[0] * nHeight * 3;
 				break;
 
 			case QCAP_COLORSPACE_TYPE_NV16:

@@ -207,10 +207,6 @@ struct App0 {
 			int err;
 
 			switch(1) { case 1:
-				const ULONG nVideoFrameWidth = 3840;
-				const ULONG nVideoFrameHeight = 2160;
-				const double dVideoFrameRate = 60.0;
-
 #if 1
 				qcap2_event_t* pEvent_vsrc;
 				qres = NewEvent(_FreeStack_, &pEvent_vsrc);
@@ -257,8 +253,8 @@ struct App0 {
 			switch(1) { case 1:
 				const int nBuffers = 4;
 				const ULONG nColorSpaceType = QCAP_COLORSPACE_TYPE_NV12;
-				const ULONG nVideoFrameWidth = 3840;
-				const ULONG nVideoFrameHeight = 2160;
+				const ULONG nVideoFrameWidth = 1920;
+				const ULONG nVideoFrameHeight = 1080;
 
 				qcap2_video_source_t* pVsrc = qcap2_video_source_new();
 				_FreeStack_ += [pVsrc]() {
@@ -413,8 +409,8 @@ struct App0 {
 			switch(1) { case 1:
 				const int nBuffers = 4;
 				const ULONG nColorSpaceType = QCAP_COLORSPACE_TYPE_NV12;
-				const ULONG nVideoFrameWidth = 3840;
-				const ULONG nVideoFrameHeight = 2160;
+				const ULONG nVideoFrameWidth = 1920;
+				const ULONG nVideoFrameHeight = 1080;
 
 				qcap2_video_sink_t* pVsink = qcap2_video_sink_new();
 				_FreeStack_ += [pVsink]() {

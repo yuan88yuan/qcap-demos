@@ -312,15 +312,27 @@ struct App0 {
 					ULONG nEncoderFormat, nWidth, nHeight;
 					qcap2_video_encoder_property_get_format(pVencProp.get(), &nEncoderFormat);
 					qcap2_video_encoder_property_get_resolution(pVencProp.get(), &nWidth, &nHeight);
-					LOGD("%08X ' %dx%d", nEncoderFormat, nWidth, nHeight);
+
+					uint8_t* pExtraData;
+					int nExtraDataSize;
+					qcap2_video_encoder_get_extra_data(pVenc, &pExtraData, &nExtraDataSize);
+
+					LOGD("%08X ' %dx%d, extradata(%d)", nEncoderFormat, nWidth, nHeight, nExtraDataSize);
 
 					qcap2_video_encoder_property_set_type(pVencProp.get(), QCAP_ENCODER_TYPE_ALLEGRO2);
 
-					qres = StartVdec(_FreeStack_, pVencProp.get(), &pVdec, &pVdecEvent);
+					qres = StartVdec(_FreeStack_, pVencProp.get(), pExtraData, nExtraDataSize, &pVdec, &pVdecEvent);
 					if(qres != QCAP_RS_SUCCESSFUL) {
 						LOGE("%s(%d): StartVdec() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 						break;
 					}
+				}
+
+				qcap2_video_sink_t* pVsink;
+				qres = StartVsink(_FreeStack_, &pVsink);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): StartVsink() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
 				}
 
 				qcap2_event_t* pVencEvent;
@@ -339,11 +351,15 @@ struct App0 {
 
 					ULONG nEncoderType, nEncoderFormat, nChannels, nBitsPerSample, nSampleFrequency;
 					qcap2_audio_encoder_property_get_property(pAencProp.get(), &nEncoderType, &nEncoderFormat, &nChannels, &nBitsPerSample, &nSampleFrequency);
-					LOGD("%08X ' %dx%dx%d", nEncoderFormat, nChannels, nBitsPerSample, nSampleFrequency);
+
+					uint8_t* pExtraData;
+					int nExtraDataSize;
+					qcap2_audio_encoder_get_extra_data(pAenc, &pExtraData, &nExtraDataSize);
+
+					LOGD("%08X ' %dx%dx%d ' extradata(%d)", nEncoderFormat, nChannels, nBitsPerSample, nSampleFrequency, nExtraDataSize);
 
 					qcap2_audio_encoder_property_set_type(pAencProp.get(), QCAP_ENCODER_TYPE_SOFTWARE);
-
-					qres = StartAdec(_FreeStack_, pAencProp.get(), &pAdec, &pAdecEvent);
+					qres = StartAdec(_FreeStack_, pAencProp.get(), pExtraData, nExtraDataSize, &pAdec, &pAdecEvent);
 					if(qres != QCAP_RS_SUCCESSFUL) {
 						LOGE("%s(%d): StartAdec() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 						break;
@@ -369,7 +385,7 @@ struct App0 {
 					break;
 				}
 
-				qres = AddEventHandler(_FreeStack_, pVdecEvent, std::bind(&self_t::OnVdec, this, pVdec));
+				qres = AddEventHandler(_FreeStack_, pVdecEvent, std::bind(&self_t::OnVdec, this, pVdec, pVsink));
 				if(qres != QCAP_RS_SUCCESSFUL) {
 					LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
@@ -457,7 +473,7 @@ struct App0 {
 			return qres;
 		}
 
-		QRESULT StartVdec(free_stack_t& _FreeStack_, qcap2_video_encoder_property_t* pVencProp, qcap2_video_decoder_t** ppVdec, qcap2_event_t** ppVdecEvent) {
+		QRESULT StartVdec(free_stack_t& _FreeStack_, qcap2_video_encoder_property_t* pVencProp, uint8_t* pExtraData, int nExtraDataSize, qcap2_video_decoder_t** ppVdec, qcap2_event_t** ppVdecEvent) {
 			QRESULT qres;
 
 			switch(1) { case 1:
@@ -475,6 +491,7 @@ struct App0 {
 
 				qcap2_video_decoder_set_video_property(pVdec, pVencProp);
 				qcap2_video_decoder_set_event(pVdec, pEvent);
+				qcap2_video_decoder_set_extra_data(pVdec, pExtraData, nExtraDataSize);
 
 				qres = qcap2_video_decoder_start(pVdec);
 				if(qres != QCAP_RS_SUCCESSFUL) {
@@ -497,7 +514,57 @@ struct App0 {
 			return qres;
 		}
 
-		QRESULT StartAdec(free_stack_t& _FreeStack_, qcap2_audio_encoder_property_t* pAencProp, qcap2_audio_decoder_t** ppAdec, qcap2_event_t** ppAdecEvent) {
+		QRESULT StartVsink(free_stack_t& _FreeStack_, qcap2_video_sink_t** ppVsink) {
+			QRESULT qres = QCAP_RS_SUCCESSFUL;
+
+			switch(1) { case 1:
+				const int nBuffers = 4;
+				const ULONG nColorSpaceType = QCAP_COLORSPACE_TYPE_NV12;
+				const ULONG nVideoFrameWidth = 1920;
+				const ULONG nVideoFrameHeight = 1080;
+
+				qcap2_video_sink_t* pVsink = qcap2_video_sink_new();
+				_FreeStack_ += [pVsink]() {
+					qcap2_video_sink_delete(pVsink);
+				};
+
+				qcap2_video_sink_set_backend_type(pVsink, QCAP2_VIDEO_SINK_BACKEND_TYPE_V4L2);
+				qcap2_video_sink_set_v4l2_name(pVsink, "video0");
+				qcap2_video_sink_set_buf_type(pVsink, V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE);
+				qcap2_video_sink_set_memory(pVsink, V4L2_MEMORY_DMABUF);
+				qcap2_video_sink_set_auto_run(pVsink, false);
+
+				{
+					std::shared_ptr<qcap2_video_format_t> pVideoFormat(
+						qcap2_video_format_new(), qcap2_video_format_delete);
+
+					qcap2_video_format_set_property(pVideoFormat.get(),
+						nColorSpaceType, nVideoFrameWidth, nVideoFrameHeight, FALSE, 60);
+
+					qcap2_video_sink_set_video_format(pVsink, pVideoFormat.get());
+				}
+
+				qres = qcap2_video_sink_start(pVsink);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): qcap2_video_sink_start() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+				_FreeStack_ += [pVsink]() {
+					QRESULT qres;
+
+					qres = qcap2_video_sink_stop(pVsink);
+					if(qres != QCAP_RS_SUCCESSFUL) {
+						LOGE("%s(%d): qcap2_video_sink_start() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					}
+				};
+
+				*ppVsink = pVsink;
+			}
+
+			return qres;
+		}
+
+		QRESULT StartAdec(free_stack_t& _FreeStack_, qcap2_audio_encoder_property_t* pAencProp, uint8_t* pExtraData, int nExtraDataSize, qcap2_audio_decoder_t** ppAdec, qcap2_event_t** ppAdecEvent) {
 			QRESULT qres;
 
 			switch(1) { case 1:
@@ -515,6 +582,7 @@ struct App0 {
 
 				qcap2_audio_decoder_set_audio_property(pAdec, pAencProp);
 				qcap2_audio_decoder_set_event(pAdec, pEvent);
+				qcap2_audio_decoder_set_extra_data(pAdec, pExtraData, nExtraDataSize);
 
 				qres = qcap2_audio_decoder_start(pAdec);
 				if(qres != QCAP_RS_SUCCESSFUL) {
@@ -583,7 +651,7 @@ struct App0 {
 			return QCAP_RT_OK;
 		}
 
-		QRETURN OnVdec(qcap2_video_decoder_t* pVdec) {
+		QRETURN OnVdec(qcap2_video_decoder_t* pVdec, qcap2_video_sink_t* pVsink) {
 			QRESULT qres;
 
 			switch(1) { case 1:
@@ -595,6 +663,14 @@ struct App0 {
 				}
 				std::shared_ptr<qcap2_rcbuffer_t> pRCBuffer_(pRCBuffer,
 					qcap2_rcbuffer_release);
+
+#if 1
+				qres = qcap2_video_sink_push(pVsink, pRCBuffer);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): qcap2_video_sink_push() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+#endif
 			}
 
 			return QCAP_RT_OK;
