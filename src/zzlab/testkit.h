@@ -491,8 +491,7 @@ namespace __testkit__ {
 				pStride[0] = align((int)nWidth, 16);
 				pStride[1] = pStride[0];
 				pBuffer[1] = pBuffer[0] + pStride[0] * (int)nHeight;
-				// nSize = pStride[0] * nHeight * 3 / 2;
-				nSize = pStride[0] * nHeight * 3;
+				nSize = pStride[0] * nHeight * 3 / 2;
 				break;
 
 			case QCAP_COLORSPACE_TYPE_NV16:

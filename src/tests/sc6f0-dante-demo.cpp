@@ -635,7 +635,7 @@ struct App0 {
 					break;
 				}
 
-#if 1
+#if 0
 				{
 					struct drm_mode_create_dumb creq = { .height = nVideoFrameHeight, .width = nVideoFrameWidth, .bpp = 24 };
 					err = drmIoctl(drm_fd, DRM_IOCTL_MODE_CREATE_DUMB, &creq);
@@ -729,8 +729,9 @@ struct App0 {
 						break;
 					}
 
-					LOGD("CRTC ACTIVE!");
+					LOGD("Primary ACTIVE!");
 
+#if 0
 					// _FreeStack_ += [drm_fd, nPrimaryPlaneId, prop_plane_crtc_id, prop_plane_fb_id,
 					// 	prop_plane_crtc_w, prop_plane_crtc_h, prop_plane_src_w, prop_plane_src_h]()
 					{
@@ -757,14 +758,15 @@ struct App0 {
 							LOGE("%s(%d): drmModeAtomicCommit(DRM_MODE_ATOMIC_ALLOW_MODESET) failed, err=%d", __FUNCTION__, __LINE__, err);
 						}
 
-						LOGD("PLANE DEACTIVE!");
+						LOGD("Primary DEACTIVE!");
 					};
+#endif
 				}
 #endif
 
 #if 1
 				{
-					struct drm_mode_create_dumb creq = { .height = nVideoFrameHeight, .width = nVideoFrameWidth, .bpp = 16 };
+					struct drm_mode_create_dumb creq = { .height = 1080, .width = 1920, .bpp = 12 };
 					err = drmIoctl(drm_fd, DRM_IOCTL_MODE_CREATE_DUMB, &creq);
 					if(err < 0) {
 						qres = QCAP_RS_ERROR_GENERAL;
@@ -773,7 +775,7 @@ struct App0 {
 						break;
 					}
 					uint32_t bo = creq.handle;
-					LOGD("bo=%d", bo);
+					LOGD("bo=%d, %dx%d %d", bo, creq.width, creq.height, creq.pitch);
 					_FreeStack_ += [drm_fd, bo]() {
 						int err;
 
@@ -786,11 +788,15 @@ struct App0 {
 						}
 					};
 
-					uint32_t handles[4] = { creq.handle, 0, 0, 0 };
-					uint32_t pitches[4] = { creq.width * 2, 0, 0, 0 };
+					uint32_t handles[4] = { creq.handle, creq.handle, 0, 0 };
+					uint32_t pitches[4] = { creq.width, creq.width, 0, 0 };
 					uint32_t offsets[4] = { 0, 0, 0, 0 };
+
+					LOGD("{%d, %d}, {%d, %d},  {%d, %d}}", handles[0], handles[1],
+						pitches[0], pitches[1], offsets[0], offsets[1]);
+
 					uint32_t fb;
-					err = drmModeAddFB2(drm_fd, creq.width, creq.height, DRM_FORMAT_YUYV, handles, pitches, offsets, &fb, 0);
+					err = drmModeAddFB2(drm_fd, creq.width, creq.height, DRM_FORMAT_NV12, handles, pitches, offsets, &fb, 0);
 					if(err < 0) {
 						qres = QCAP_RS_ERROR_GENERAL;
 						err = errno;
@@ -823,10 +829,10 @@ struct App0 {
 					LOGD("drmModeAtomicAddProperty(%d, %d, %d) = %d", nOverlayPlaneId, prop_plane_crtc_id, nCrtcId, err);
 					err = drmModeAtomicAddProperty(req.get(), nOverlayPlaneId, prop_plane_fb_id, fb);
 					LOGD("drmModeAtomicAddProperty(%d, %d, %d) = %d", nOverlayPlaneId, prop_plane_fb_id, fb, err);
-					err = drmModeAtomicAddProperty(req.get(), nOverlayPlaneId, prop_plane_crtc_w, creq.width);
-					LOGD("drmModeAtomicAddProperty(%d, %d, %d) = %d", nOverlayPlaneId, prop_plane_crtc_w, creq.width, err);
-					err = drmModeAtomicAddProperty(req.get(), nOverlayPlaneId, prop_plane_crtc_h, creq.height);
-					LOGD("drmModeAtomicAddProperty(%d, %d, %d) = %d", nOverlayPlaneId, prop_plane_crtc_h, creq.height, err);
+					err = drmModeAtomicAddProperty(req.get(), nOverlayPlaneId, prop_plane_crtc_w, nVideoFrameWidth);
+					LOGD("drmModeAtomicAddProperty(%d, %d, %d) = %d", nOverlayPlaneId, prop_plane_crtc_w, nVideoFrameWidth, err);
+					err = drmModeAtomicAddProperty(req.get(), nOverlayPlaneId, prop_plane_crtc_h, nVideoFrameHeight);
+					LOGD("drmModeAtomicAddProperty(%d, %d, %d) = %d", nOverlayPlaneId, prop_plane_crtc_h, nVideoFrameHeight, err);
 					err = drmModeAtomicAddProperty(req.get(), nOverlayPlaneId, prop_plane_src_w, creq.width << 16);
 					LOGD("drmModeAtomicAddProperty(%d, %d, %d) = %d", nOverlayPlaneId, prop_plane_src_w, creq.width << 16, err);
 					err = drmModeAtomicAddProperty(req.get(), nOverlayPlaneId, prop_plane_src_h, creq.height << 16);
@@ -842,6 +848,7 @@ struct App0 {
 
 					LOGD("Overlay ACTIVE!");
 
+#if 0
 					{
 						int err;
 
@@ -868,6 +875,7 @@ struct App0 {
 
 						LOGD("Overlay DEACTIVE!");
 					};
+#endif
 				}
 #endif
 			}
