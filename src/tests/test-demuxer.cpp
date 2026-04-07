@@ -389,13 +389,7 @@ struct App0 {
 					break;
 				}
 
-				int* pVsinkQueue = new int;
-				_FreeStack_ += [pVsinkQueue]() {
-					delete pVsinkQueue;
-				};
-				*pVsinkQueue = 0;
-
-				qres = AddEventHandler(_FreeStack_, pVdecEvent, std::bind(&self_t::OnVdec, this, pVdec, pVsink, pVsinkQueue));
+				qres = AddEventHandler(_FreeStack_, pVdecEvent, std::bind(&self_t::OnVdec, this, pVdec, pVsink));
 				if(qres != QCAP_RS_SUCCESSFUL) {
 					LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
@@ -530,19 +524,17 @@ struct App0 {
 			switch(1) { case 1:
 				const int nBuffers = 4;
 				const ULONG nColorSpaceType = QCAP_COLORSPACE_TYPE_NV12;
-				const ULONG nVideoFrameWidth = 1920;
-				const ULONG nVideoFrameHeight = 1088;
+				const ULONG nVideoFrameWidth = 3840;
+				const ULONG nVideoFrameHeight = 2160;
 
 				qcap2_video_sink_t* pVsink = qcap2_video_sink_new();
 				_FreeStack_ += [pVsink]() {
 					qcap2_video_sink_delete(pVsink);
 				};
 
-				qcap2_video_sink_set_backend_type(pVsink, QCAP2_VIDEO_SINK_BACKEND_TYPE_V4L2);
-				qcap2_video_sink_set_v4l2_name(pVsink, "video0");
-				qcap2_video_sink_set_buf_type(pVsink, V4L2_BUF_TYPE_VIDEO_OUTPUT);
-				qcap2_video_sink_set_memory(pVsink, V4L2_MEMORY_DMABUF);
-				qcap2_video_sink_set_auto_run(pVsink, false);
+				qcap2_video_sink_set_backend_type(pVsink, QCAP2_VIDEO_SINK_BACKEND_TYPE_XLNX2);
+				const uint32_t nDrmPlaneId = 34;
+				qcap2_video_sink_set_native_handle(pVsink, QCAP_HWND_DRM_PLANE_ID_MASK | nDrmPlaneId);
 
 				{
 					std::shared_ptr<qcap2_video_format_t> pVideoFormat(
@@ -661,7 +653,7 @@ struct App0 {
 			return QCAP_RT_OK;
 		}
 
-		QRETURN OnVdec(qcap2_video_decoder_t* pVdec, qcap2_video_sink_t* pVsink, int* pVsinkQueue) {
+		QRETURN OnVdec(qcap2_video_decoder_t* pVdec, qcap2_video_sink_t* pVsink) {
 			QRESULT qres;
 
 			switch(1) { case 1:
@@ -681,18 +673,6 @@ struct App0 {
 					break;
 				}
 #endif
-
-				if(*pVsinkQueue < 1) {
-					(*pVsinkQueue)++;
-
-					if(*pVsinkQueue == 1) {
-						qres = qcap2_video_sink_run(pVsink);
-						if(qres != QCAP_RS_SUCCESSFUL) {
-							LOGE("%s(%d): qcap2_video_sink_run() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-							break;
-						}
-					}
-				}
 			}
 
 			return QCAP_RT_OK;

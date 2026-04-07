@@ -635,7 +635,7 @@ struct App0 {
 					break;
 				}
 
-#if 0
+#if 1
 				{
 					struct drm_mode_create_dumb creq = { .height = nVideoFrameHeight, .width = nVideoFrameWidth, .bpp = 24 };
 					err = drmIoctl(drm_fd, DRM_IOCTL_MODE_CREATE_DUMB, &creq);
@@ -764,7 +764,7 @@ struct App0 {
 				}
 #endif
 
-#if 1
+#if 0
 				{
 					struct drm_mode_create_dumb creq = { .height = 1080, .width = 1920, .bpp = 12 };
 					err = drmIoctl(drm_fd, DRM_IOCTL_MODE_CREATE_DUMB, &creq);
@@ -1458,7 +1458,7 @@ struct App0 {
 					}
 #endif
 
-#if 1
+#if 0
 					qres = StartDanteServer(_FreeStack_, nColorSpaceType, nVideoWidth, nVideoHeight,
 						bVideoIsInterleaved, dVideoFrameRate, nVideoEncoderFormat, nVideoBitRate,
 						nAudioChannels, nAudioBitsPerSample, nAudioSampleFrequency, nAudioEncoderFormat,
