@@ -332,12 +332,15 @@ struct App0 {
 					}
 				}
 
-				qcap2_video_sink_t* pVsink;
+				qcap2_video_sink_t* pVsink = NULL;
+
+#if 0
 				qres = StartVsink(_FreeStack_, &pVsink);
 				if(qres != QCAP_RS_SUCCESSFUL) {
 					LOGE("%s(%d): StartVsink() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
+#endif
 
 				qcap2_event_t* pVencEvent;
 				qres = StartDmx_Venc(_FreeStack_, pVenc, &pVencEvent);
@@ -666,13 +669,13 @@ struct App0 {
 				std::shared_ptr<qcap2_rcbuffer_t> pRCBuffer_(pRCBuffer,
 					qcap2_rcbuffer_release);
 
-#if 1
-				qres = qcap2_video_sink_push(pVsink, pRCBuffer);
-				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): qcap2_video_sink_push() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-					break;
+				if(pVsink) {
+					qres = qcap2_video_sink_push(pVsink, pRCBuffer);
+					if(qres != QCAP_RS_SUCCESSFUL) {
+						LOGE("%s(%d): qcap2_video_sink_push() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+						break;
+					}
 				}
-#endif
 			}
 
 			return QCAP_RT_OK;

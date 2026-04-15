@@ -1318,7 +1318,7 @@ struct App0 {
 				ULONG nSrcColorSpaceType = QCAP_COLORSPACE_TYPE_UNDEFINED;
 				const ULONG nColorSpaceType = QCAP_COLORSPACE_TYPE_NV12;
 				const ULONG nVideoEncoderFormat = QCAP_ENCODER_FORMAT_H264;
-				const ULONG nVideoBitRate = 60 * 1000000;
+				const ULONG nVideoBitRate = 10 * 1000000;
 				ULONG nVideoWidth = 0;
 				ULONG nVideoHeight = 0;
 				BOOL bVideoIsInterleaved;
@@ -1625,7 +1625,7 @@ struct App0 {
 					ULONG nHeight = nVideoHeight;
 					double dFrameRate = dVideoFrameRate;
 					ULONG nRecordProfile = QCAP_RECORD_PROFILE_MAIN;
-					ULONG nRecordLevel = QCAP_RECORD_LEVEL_51;
+					ULONG nRecordLevel = QCAP_RECORD_LEVEL_52;
 					ULONG nRecordEntropy = QCAP_RECORD_ENTROPY_CABAC;
 					ULONG nRecordComplexity = QCAP_RECORD_COMPLEXITY_0;
 					ULONG nRecordMode = QCAP_RECORD_MODE_CBR;
@@ -1648,14 +1648,14 @@ struct App0 {
 					ULONG nAspectRatioY = 0;
 
 					qcap2_video_encoder_property_set_property1(pVencProp.get(), nGpuNum, nEncoderType, nEncoderFormat, nColorSpaceType, nWidth, nHeight, dFrameRate, nRecordProfile, nRecordLevel, nRecordEntropy, nRecordComplexity, nRecordMode, nQuality, nBitRate, nGOP, nBFrames, bIsInterleaved, nSlices, nLayers, nSceneCut, bMultiThread, bMBBRC, bExtBRC, nMinQP, nMaxQP, nVBVMaxRate , nVBVBufSize, nAspectRatioX, nAspectRatioY);
-					qcap2_video_encoder_property_set_low_delay(pVencProp.get(), true);
+					qcap2_video_encoder_property_set_low_delay(pVencProp.get(), false);
 					qcap2_video_encoder_property_set_time_scale_factor(pVencProp.get(), 1);
 					qcap2_video_encoder_set_video_property(pVenc, pVencProp.get());
 				}
 
 				qcap2_video_encoder_set_multithread(pVenc, false);
 				qcap2_video_encoder_set_num_cores(pVenc, 4);
-				qcap2_video_encoder_set_filler_ctrl_mode(pVenc, AL_FILLER_ENC);
+				qcap2_video_encoder_set_filler_ctrl_mode(pVenc, AL_FILLER_APP);
 				qcap2_video_encoder_set_event(pVenc, pEvent);
 
 				qres = qcap2_video_encoder_start(pVenc);
@@ -1778,7 +1778,7 @@ struct App0 {
 				if(pAenc) {
 					qres = qcap2_audio_encoder_push(pAenc, pRCBuffer);
 					if(qres != QCAP_RS_SUCCESSFUL) {
-						LOGE("%s(%d): qcap2_audio_encoder_push() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+						// LOGE("%s(%d): qcap2_audio_encoder_push() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 						break;
 					}
 				}
