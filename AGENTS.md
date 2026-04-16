@@ -1,18 +1,10 @@
 # Agent Guidance: qcap-demos
 
 ## Build System
-- **Core**: Custom GNU Make system.
-- **Entry Points**: Use root `.mk` files for target platforms (e.g., `l4t-r36-2.mk`).
-- **Requirement**: `QCAP_HOME` environment variable must point to the platform-specific `qcap` library root.
-- **Commands**:
-  - Build all: `make -f <platform>.mk`
-  - Build utilities: `make -f <platform>.mk utils`
-  - Build tests: `make -f <platform>.mk tests`
-  - Clean: `make -f <platform>.mk clean`
-- **Docker Wrapper**: Use `./build.sh <platform> [target]` to run builds inside a container.
-- **Docker Daemon**: Start a docker container using `../docker-scripts/docker-daemon.sh yuan88yuan/<platform>:v1 <platform>`
-- **Build Process**: ALWAYS build project by `./build.sh`
-- **Check**: Check if docker container is started before build project
+- **Core**: GNU Make. Use root `<platform>.mk` files.
+- **Requirement**: `QCAP_HOME` must point to the platform `qcap` library root.
+- **Commands**: Use `./build.sh <platform> [target]` for all builds (including `utils`, `tests`, and `clean`).
+- **Docker**: Ensure container is running via `../docker-scripts/docker-daemon.sh yuan88yuan/<platform>:v1 <platform>` before building.
 
 ## Project Structure
 - `src/utils/`: Main sample application (`qdemo`).
