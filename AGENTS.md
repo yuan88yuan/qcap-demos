@@ -4,7 +4,7 @@
 - **Core**: GNU Make. Use root `<platform>.mk` files.
 - **Requirement**: `QCAP_HOME` must point to the platform `qcap` library root.
 - **Commands**: Use `./build.sh <platform> [target]` for all builds (including `utils`, `tests`, and `clean`).
-- **Docker**: Ensure container is running via `../docker-scripts/docker-daemon.sh yuan88yuan/<platform>:v1 <platform>` before building.
+- **Docker**: Ensure container is running via `../docker-scripts/docker-daemon.sh yuan88yuan/<platform>:v1 <platform>`. Wait a few seconds for user initialization before building.
 
 ## Project Structure
 - `src/utils/`: Main sample application (`qdemo`).
