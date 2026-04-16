@@ -10,6 +10,9 @@
   - Build tests: `make -f <platform>.mk tests`
   - Clean: `make -f <platform>.mk clean`
 - **Docker Wrapper**: Use `./build.sh <platform> [target]` to run builds inside a container.
+- **Docker Daemon**: Start a docker container using `../docker-scripts/docker-daemon.sh yuan88yuan/<platform>:v1 <platform>`
+- **Build Process**: ALWAYS build project by `./build.sh`
+- **Check**: Check if docker container is started before build project
 
 ## Project Structure
 - `src/utils/`: Main sample application (`qdemo`).
