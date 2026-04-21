@@ -15,3 +15,4 @@ include $(S)/tests/coe-demo.mk
 include $(S)/tests/test-rcbuf.mk
 include $(S)/tests/roce-dmabuf-test.mk
 include $(S)/tests/test-demuxer.mk
+include $(S)/tests/sc6f0-sdi.mk

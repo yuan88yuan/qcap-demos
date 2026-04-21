@@ -16,3 +16,11 @@
 ## Verification
 - **Run Tests**: Binaries are located in `_objs/<platform>/bin/`. Execute them directly from there.
 - **Build Order**: Ensure `QCAP_HOME` is correct before running `make`.
+
+## Demo Creation
+To create a new demo `<name>`:
+1. Copy `src/tests/demo-template.cpp` to `src/tests/<name>.cpp`.
+2. Copy `src/tests/demo-template.mk` to `src/tests/<name>.mk`.
+3. Replace all occurrences of `demo-template` with `<name>` in the new files.
+4. Replace all occurrences of `DEMO_TEMPLATE` with `<NAME>` (uppercase) in the new files.
+5. Add `include $(S)/tests/<name>.mk` to `src/tests/tests.mk`.
