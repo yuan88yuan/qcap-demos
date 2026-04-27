@@ -121,12 +121,13 @@ struct App0 {
 	}
 
 	struct TestCase1 : public TestCase {
-		typedef TestCase1 self_t;
-		typedef TestCase super_t;
+	typedef TestCase1 self_t;
+	typedef TestCase super_t;
 
-		free_stack_t _FreeStack_vsrc_;
+	int nSnapshot = 0;
+	free_stack_t _FreeStack_vsrc_;
 
-		void DoWork() {
+	void DoWork() {
 			QRESULT qres;
 
 			LOGD("%s::%s", typeid(self_t).name(), __FUNCTION__);
@@ -158,6 +159,13 @@ struct App0 {
 					QRESULT qres;
 
 					switch(1) { case 1:
+						switch(ch) {
+						case 's':
+						case 'S':
+							nSnapshot++;
+							LOGI("Snapshot requested. Pending: %d", nSnapshot);
+							break;
+						}
 						break;
 					}
 
@@ -276,9 +284,6 @@ struct App0 {
 
 				qcap2_event_t* pVsrcEvent = NULL;
 
-				qcap2_video_encoder_t* pVenc = NULL;
-				qcap2_event_t* pVencEvent = NULL;
-
 				qcap2_video_source_t* pVsrc = qcap2_demuxer_get_video_source(pDmx, nVideoIndex);
 				std::shared_ptr<qcap2_video_format_t> pVideoFormat(qcap2_video_format_new(), qcap2_video_format_delete);
 				qcap2_video_source_get_video_format(pVsrc, pVideoFormat.get());
@@ -290,12 +295,14 @@ struct App0 {
 					} else {
 						LOGI("v: %08X %ux%u'%u, %.2f", nSrcColorSpaceType, nVideoWidth, nVideoHeight, bVideoIsInterleaved, dVideoFrameRate);
 
+#if 1
 						qres = StartVsrc(_FreeStack_, pVsrc, nColorSpaceType,
 							nVideoWidth, nVideoHeight, bVideoIsInterleaved, dVideoFrameRate, &pVsrcEvent);
 						if(qres != QCAP_RS_SUCCESSFUL) {
 							LOGE("%s(%d): StartVsrc() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 							break;
 						}
+#endif
 					}
 				}
 
@@ -373,6 +380,16 @@ struct App0 {
 				}
 				std::shared_ptr<qcap2_rcbuffer_t> pRCBuffer_(pRCBuffer,
 					qcap2_rcbuffer_release);
+
+				if(nSnapshot > 0) {
+					nSnapshot--;
+					qres = qcap2_save_raw_video_frame(pRCBuffer, "snapshot");
+					if(qres != QCAP_RS_SUCCESSFUL) {
+						LOGE("%s(%d): qcap2_save_raw_video_frame() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					} else {
+						LOGI("Snapshot saved successfully.");
+					}
+				}
 			}
 
 			return QCAP_RT_OK;
