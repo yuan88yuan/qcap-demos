@@ -270,11 +270,13 @@ struct App0 {
 					qcap2_program_info_get_metadata(pProgram, "service_provider"), nVideoIndex, nAudioIndex);
 
 				ULONG nSrcColorSpaceType = QCAP_COLORSPACE_TYPE_UNDEFINED;
-				const ULONG nColorSpaceType = QCAP_COLORSPACE_TYPE_NV12;
+				const ULONG nColorSpaceType = QCAP_COLORSPACE_TYPE_XV15;
+				const ULONG nVideoWidth = 1920;
+				const ULONG nVideoHeight = 1080;
 				const ULONG nVideoEncoderFormat = QCAP_ENCODER_FORMAT_H264;
 				const ULONG nVideoBitRate = 10 * 1000000;
-				ULONG nVideoWidth = 0;
-				ULONG nVideoHeight = 0;
+				ULONG nSrcVideoWidth = 0;
+				ULONG nSrcVideoHeight = 0;
 				BOOL bVideoIsInterleaved;
 				double dVideoFrameRate;
 				ULONG nAudioChannels = 0;
@@ -288,12 +290,12 @@ struct App0 {
 				std::shared_ptr<qcap2_video_format_t> pVideoFormat(qcap2_video_format_new(), qcap2_video_format_delete);
 				qcap2_video_source_get_video_format(pVsrc, pVideoFormat.get());
 				{
-					qcap2_video_format_get_property(pVideoFormat.get(), &nSrcColorSpaceType, &nVideoWidth, &nVideoHeight, &bVideoIsInterleaved, &dVideoFrameRate);
+					qcap2_video_format_get_property(pVideoFormat.get(), &nSrcColorSpaceType, &nSrcVideoWidth, &nSrcVideoHeight, &bVideoIsInterleaved, &dVideoFrameRate);
 
-					if(nSrcColorSpaceType == QCAP_COLORSPACE_TYPE_UNDEFINED || nVideoWidth <= 0 || nVideoHeight <= 0) {
+					if(nSrcColorSpaceType == QCAP_COLORSPACE_TYPE_UNDEFINED || nSrcVideoWidth <= 0 || nSrcVideoHeight <= 0) {
 						LOGI("v: no-link");
 					} else {
-						LOGI("v: %08X %ux%u'%u, %.2f", nSrcColorSpaceType, nVideoWidth, nVideoHeight, bVideoIsInterleaved, dVideoFrameRate);
+						LOGI("v: %08X %ux%u'%u, %.2f", nSrcColorSpaceType, nSrcVideoWidth, nSrcVideoHeight, bVideoIsInterleaved, dVideoFrameRate);
 
 #if 1
 						qres = StartVsrc(_FreeStack_, pVsrc, nColorSpaceType,
@@ -307,7 +309,7 @@ struct App0 {
 				}
 
 				// next level muxers
-				if(nSrcColorSpaceType != QCAP_COLORSPACE_TYPE_UNDEFINED && nVideoWidth > 0 && nVideoHeight > 0) {
+				if(nSrcColorSpaceType != QCAP_COLORSPACE_TYPE_UNDEFINED && nSrcVideoWidth > 0 && nSrcVideoHeight > 0) {
 					if(pVsrcEvent) {
 						qres = AddEventHandler(_FreeStack_, pVsrcEvent,
 							std::bind(&self_t::OnVsrc, this, pVsrc));
