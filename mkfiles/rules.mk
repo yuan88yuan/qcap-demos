@@ -8,7 +8,7 @@ LDFLAGS?=${LDFLAGS}
 CUFLAGS?=${CUFLAGS}
 GIT_COMMIT_HASH=$(shell git log -1 --format=%h)
 GIT_BRANCH_NAME=$(shell git rev-parse --abbrev-ref HEAD)
-DOCKER_HOME?=/docker
+DOCKER_HOME?=..
 
 $(info PLATFORM=${PLATFORM})
 $(info GIT_COMMIT_HASH=${GIT_COMMIT_HASH})

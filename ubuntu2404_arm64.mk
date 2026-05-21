@@ -1,5 +1,5 @@
-QCAP_HOME?=/docker/qcap-dev/qcap/build-qcap/_objs/ubuntu2404_arm64/
-QCAP_3RDPARTY?=/docker/qcap-3rdparty/ubuntu2404_arm64/
+QCAP_HOME?=../qcap-dev/qcap/build-qcap/_objs/ubuntu2404_arm64
+QCAP_3RDPARTY?=../qcap-3rdparty/ubuntu2404_arm64
 
 include mkfiles/ubuntu2404_arm64.mk
 include mkfiles/funcs.mk
