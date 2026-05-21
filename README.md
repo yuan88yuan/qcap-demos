@@ -23,11 +23,17 @@ This project uses `make` for compilation. You need to build for a target platfor
 
 ### 1. Compilation
 
-Choose a target platform and run the `make` command. For example, to compile for the `l4t-r36-2` (NVIDIA Jetson L4T R36.2) platform:
+Choose a target platform and run the build script inside a Docker container. For example, to compile for the `xlnk2_arm64` platform:
 
 ```bash
-# Replace l4t-r36-2 with your target platform and QCAP_HOME with the path to the qcap library
-QCAP_HOME=/your-qcap-root/l4t-r36-2 make -f l4t-r36-2.mk -j4
+# Replace xlnk2_arm64 with your target platform
+./scripts/docker-run.sh qcap-dev:xlnk2_arm64 ./build.sh xlnk2_arm64
+```
+
+To also clean, add the `clean` target:
+
+```bash
+./scripts/docker-run.sh qcap-dev:xlnk2_arm64 ./build.sh xlnk2_arm64 clean
 ```
 
 After a successful compilation, all generated files (including executables) will be placed in the `_objs/<your-target-platform>/` directory.
@@ -38,7 +44,7 @@ The executables are located in the corresponding platform's `_objs` subdirectory
 
 ```bash
 # Run the qdemo sample application
-./_objs/l4t-r36-2/qdemo
+./_objs/<platform>/bin/qdemo
 ```
 
 ## Main Technologies and Dependencies
