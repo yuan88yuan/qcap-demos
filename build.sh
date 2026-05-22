@@ -14,7 +14,9 @@ time make -f ${PLATFORM}.mk -j $(nproc) $@
 
 else
 
-eval "docker exec $1 su $USER -c '/docker/qcap-demos/build.sh $@'"
+echo "Error: build.sh must be run inside the qcap-dev Docker container." >&2
+echo "Use: ./scripts/docker-run.sh qcap-dev:<platform> ./build.sh <platform> [target]" >&2
+exit 1
 
 fi
 
