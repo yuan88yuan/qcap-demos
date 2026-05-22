@@ -277,7 +277,7 @@ struct App0 {
 					qcap2_program_info_get_metadata(pProgram, "service_provider"), nVideoIndex, nAudioIndex);
 
 				ULONG nSrcColorSpaceType = QCAP_COLORSPACE_TYPE_UNDEFINED;
-				const ULONG nColorSpaceType = QCAP_COLORSPACE_TYPE_XV20;
+				const ULONG nColorSpaceType = QCAP_COLORSPACE_TYPE_NV12;
 				const ULONG nVideoWidth = 3840;
 				const ULONG nVideoHeight = 2160;
 				const ULONG nVideoEncoderFormat = QCAP_ENCODER_FORMAT_H264;
@@ -309,6 +309,15 @@ struct App0 {
 						LOGI("v: %08X %ux%u'%u, %.2f", nSrcColorSpaceType, nSrcVideoWidth, nSrcVideoHeight, bVideoIsInterleaved, dVideoFrameRate);
 
 #if 1
+						qres = StartVsrc(_FreeStack_, pVsrc, nColorSpaceType,
+							nVideoWidth, nVideoHeight, bVideoIsInterleaved, dVideoFrameRate, &pVsrcEvent);
+						if(qres != QCAP_RS_SUCCESSFUL) {
+							LOGE("%s(%d): StartVsrc() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+							break;
+						}
+#endif
+
+#if 1
 						qres = StartVsink(_FreeStack_, nVsinkColorSpaceType,
 							nVsinkVideoWidth, nVsinkVideoHeight, bVideoIsInterleaved, dVideoFrameRate, &pVsink);
 						if(qres != QCAP_RS_SUCCESSFUL) {
@@ -317,14 +326,6 @@ struct App0 {
 						}
 #endif
 
-#if 1
-						qres = StartVsrc(_FreeStack_, pVsrc, nColorSpaceType,
-							nVideoWidth, nVideoHeight, bVideoIsInterleaved, dVideoFrameRate, &pVsrcEvent);
-						if(qres != QCAP_RS_SUCCESSFUL) {
-							LOGE("%s(%d): StartVsrc() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-							break;
-						}
-#endif
 					}
 				}
 
