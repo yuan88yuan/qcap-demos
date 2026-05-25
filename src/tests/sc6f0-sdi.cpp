@@ -296,6 +296,7 @@ struct App0 {
 
 				qcap2_event_t* pVsrcEvent = NULL;
 				qcap2_video_sink_t* pVsink = NULL;
+				qcap2_video_sink_t* pVsink1 = NULL;
 
 				qcap2_video_source_t* pVsrc = qcap2_demuxer_get_video_source(pDmx, nVideoIndex);
 				std::shared_ptr<qcap2_video_format_t> pVideoFormat(qcap2_video_format_new(), qcap2_video_format_delete);
@@ -318,7 +319,7 @@ struct App0 {
 #endif
 
 #if 1
-						qres = StartVsink(_FreeStack_, nVsinkColorSpaceType,
+						qres = StartVsink(_FreeStack_, 36, nVsinkColorSpaceType,
 							nVsinkVideoWidth, nVsinkVideoHeight, bVideoIsInterleaved, dVideoFrameRate, &pVsink);
 						if(qres != QCAP_RS_SUCCESSFUL) {
 							LOGE("%s(%d): StartVsink() failed, qres=%d", __FUNCTION__, __LINE__, qres);
@@ -326,14 +327,68 @@ struct App0 {
 						}
 #endif
 
+#if 1
+						qres = StartVsink_overlay(_FreeStack_, 34, nColorSpaceType,
+							nVideoWidth, nVideoHeight, bVideoIsInterleaved, dVideoFrameRate, &pVsink1);
+						if(qres != QCAP_RS_SUCCESSFUL) {
+							LOGE("%s(%d): StartVsink_overlay() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+							break;
+						}
+#endif
+
 					}
 				}
+
+				qcap2_rcbuffer_t* pRCBuffer_overlay = NULL;
+#if 1
+				{
+					qcap2_rcbuffer_t* pRCBuffer;
+					qres = __testkit__::new_video_qdmabuf(_FreeStack_, 3840, 2160, QCAP_COLORSPACE_TYPE_RGBA, PROT_WRITE | PROT_READ, &pRCBuffer);
+					if(qres != QCAP_RS_SUCCESSFUL) {
+						LOGE("%s(%d): new_video_qdmabuf() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+						break;
+					}
+
+					qres = __testkit__::map_video_qdmabuf(pRCBuffer, PROT_WRITE | PROT_READ);
+					ZzUtils::Scoped ZZ_GUARD_NAME([pRCBuffer]() {
+						__testkit__::unmap_video_qdmabuf(pRCBuffer);
+					});
+
+					qcap2_dmabuf_t* pDmabuf;
+					qres = qcap2_rcbuffer_get_qdmabuf(pRCBuffer, &pDmabuf);
+					if(qres != QCAP_RS_SUCCESSFUL) {
+						LOGE("%s(%d): qcap2_rcbuffer_get_qdmabuf() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+						break;
+					}
+
+					std::shared_ptr<qcap2_av_frame_t> pAVFrame(
+						(qcap2_av_frame_t*)qcap2_rcbuffer_lock_data(pRCBuffer),
+						[pRCBuffer](qcap2_av_frame_t*) {
+							qcap2_rcbuffer_unlock_data(pRCBuffer);
+						});
+
+					uint8_t* pData[4];
+					int pLineSize[4];
+					qcap2_av_frame_get_buffer1(pAVFrame.get(), pData, pLineSize);
+
+					LOGD("fd=%d [%p %p %p %p] [%d,%d,%d,%d]", pDmabuf->fd,
+						pData[0], pData[1], pData[2], pData[3],
+						(int)pLineSize[0], (int)pLineSize[1], (int)pLineSize[2], (int)pLineSize[3]);
+
+					pRCBuffer_overlay = pRCBuffer;
+					qcap2_rcbuffer_add_ref(pRCBuffer_overlay);
+
+					_FreeStack_ += [pRCBuffer_overlay]() {
+						qcap2_rcbuffer_release(pRCBuffer_overlay);
+					};
+				}
+#endif
 
 				// next level muxers
 				if(nSrcColorSpaceType != QCAP_COLORSPACE_TYPE_UNDEFINED && nSrcVideoWidth > 0 && nSrcVideoHeight > 0) {
 					if(pVsrcEvent) {
 						qres = AddEventHandler(_FreeStack_, pVsrcEvent,
-							std::bind(&self_t::OnVsrc, this, pVsrc, pVsink));
+							std::bind(&self_t::OnVsrc, this, pVsrc, pVsink, pVsink1, pRCBuffer_overlay));
 						if(qres != QCAP_RS_SUCCESSFUL) {
 							LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 							break;
@@ -392,7 +447,7 @@ struct App0 {
 			return qres;
 		}
 
-		QRETURN OnVsrc(qcap2_video_source_t* pVsrc, qcap2_video_sink_t* pVsink) {
+		QRETURN OnVsrc(qcap2_video_source_t* pVsrc, qcap2_video_sink_t* pVsink, qcap2_video_sink_t* pVsink1, qcap2_rcbuffer_t* pRCBuffer_overlay) {
 			QRESULT qres;
 
 			switch(1) { case 1:
@@ -422,25 +477,73 @@ struct App0 {
 						break;
 					}
 				}
+
+				if(pVsink1 && pRCBuffer_overlay) {
+					qres = qcap2_video_sink_push(pVsink1, pRCBuffer_overlay);
+					if(qres != QCAP_RS_SUCCESSFUL) {
+						LOGE("%s(%d): qcap2_video_sink_push() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+						break;
+					}
+				}
 			}
 
 			return QCAP_RT_OK;
 		}
 
-		QRESULT StartVsink(free_stack_t& _FreeStack_, ULONG nColorSpaceType,
+		QRESULT StartVsink(free_stack_t& _FreeStack_, uint32_t nDrmPlaneId, ULONG nColorSpaceType,
 			ULONG nVideoWidth, ULONG nVideoHeight, BOOL bVideoIsInterleaved, double dVideoFrameRate, qcap2_video_sink_t** ppVsink) {
 			QRESULT qres = QCAP_RS_SUCCESSFUL;
 
 			switch(1) { case 1:
-				const int nBuffers = 4;
-
 				qcap2_video_sink_t* pVsink = qcap2_video_sink_new();
 				_FreeStack_ += [pVsink]() {
 					qcap2_video_sink_delete(pVsink);
 				};
 
 				qcap2_video_sink_set_backend_type(pVsink, QCAP2_VIDEO_SINK_BACKEND_TYPE_XLNX2);
-				const uint32_t nDrmPlaneId = 36;
+				qcap2_video_sink_set_native_handle(pVsink, QCAP_HWND_DRM_PLANE_ID_MASK | nDrmPlaneId);
+
+				{
+					std::shared_ptr<qcap2_video_format_t> pVideoFormat(
+						qcap2_video_format_new(), qcap2_video_format_delete);
+
+					qcap2_video_format_set_property(pVideoFormat.get(),
+						nColorSpaceType, nVideoWidth, nVideoHeight, FALSE, 60);
+
+					qcap2_video_sink_set_video_format(pVsink, pVideoFormat.get());
+				}
+
+				qres = qcap2_video_sink_start(pVsink);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): qcap2_video_sink_start() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+				_FreeStack_ += [pVsink]() {
+					QRESULT qres;
+
+					qres = qcap2_video_sink_stop(pVsink);
+					if(qres != QCAP_RS_SUCCESSFUL) {
+						LOGE("%s(%d): qcap2_video_sink_start() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					}
+				};
+
+				*ppVsink = pVsink;
+			}
+
+			return qres;
+		}
+
+		QRESULT StartVsink_overlay(free_stack_t& _FreeStack_, uint32_t nDrmPlaneId, ULONG nColorSpaceType,
+			ULONG nVideoWidth, ULONG nVideoHeight, BOOL bVideoIsInterleaved, double dVideoFrameRate, qcap2_video_sink_t** ppVsink) {
+			QRESULT qres = QCAP_RS_SUCCESSFUL;
+
+			switch(1) { case 1:
+				qcap2_video_sink_t* pVsink = qcap2_video_sink_new();
+				_FreeStack_ += [pVsink]() {
+					qcap2_video_sink_delete(pVsink);
+				};
+
+				qcap2_video_sink_set_backend_type(pVsink, QCAP2_VIDEO_SINK_BACKEND_TYPE_XLNX2);
 				qcap2_video_sink_set_native_handle(pVsink, QCAP_HWND_DRM_PLANE_ID_MASK | nDrmPlaneId);
 
 				{

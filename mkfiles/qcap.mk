@@ -2,6 +2,8 @@ ifeq (${BUILD_WITH_QCAP},ON)
 
 $(call decl_mod,QCAP)
 
+$(info QCAP_HOME=${QCAP_HOME})
+
 QCAP_F+=\
 -DBUILD_WITH_QCAP=1
 

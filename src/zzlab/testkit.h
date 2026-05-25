@@ -506,6 +506,11 @@ namespace __testkit__ {
 				nSize = pStride[0] * (int)nHeight;
 				break;
 
+			case QCAP_COLORSPACE_TYPE_RGBA:
+				pStride[0] = align((int)(nWidth * 4), 16);
+				nSize = pStride[0] * (int)nHeight;
+				break;
+
 			default:
 				LOGE("%s(%d): unexpected value, nColorSpaceType=0x%08X", __FUNCTION__, __LINE__, nColorSpaceType);
 				qres = QCAP_RS_ERROR_INVALID_PARAMETER;
