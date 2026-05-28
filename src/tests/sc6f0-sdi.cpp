@@ -1,6 +1,7 @@
 #include <stdlib.h>
 
 #include "qcap2.h"
+#include "qcap2.drm.h"
 
 #include "ZzLog.h"
 #include "ZzModules.h"
@@ -277,7 +278,7 @@ struct App0 {
 					qcap2_program_info_get_metadata(pProgram, "service_provider"), nVideoIndex, nAudioIndex);
 
 				ULONG nSrcColorSpaceType = QCAP_COLORSPACE_TYPE_UNDEFINED;
-				const ULONG nColorSpaceType = QCAP_COLORSPACE_TYPE_NV12;
+				const ULONG nColorSpaceType = QCAP_COLORSPACE_TYPE_XV20;
 				const ULONG nVideoWidth = 3840;
 				const ULONG nVideoHeight = 2160;
 				const ULONG nVideoEncoderFormat = QCAP_ENCODER_FORMAT_H264;
@@ -295,55 +296,91 @@ struct App0 {
 				const ULONG nAudioEncoderFormat = QCAP_ENCODER_FORMAT_AAC_ADTS;
 
 				qcap2_event_t* pVsrcEvent = NULL;
+				qcap2_event_t* pAsrcEvent = NULL;
 				qcap2_video_sink_t* pVsink = NULL;
 				qcap2_video_sink_t* pVsink1 = NULL;
 
-				qcap2_video_source_t* pVsrc = qcap2_demuxer_get_video_source(pDmx, nVideoIndex);
-				std::shared_ptr<qcap2_video_format_t> pVideoFormat(qcap2_video_format_new(), qcap2_video_format_delete);
-				qcap2_video_source_get_video_format(pVsrc, pVideoFormat.get());
-				{
-					qcap2_video_format_get_property(pVideoFormat.get(), &nSrcColorSpaceType, &nSrcVideoWidth, &nSrcVideoHeight, &bVideoIsInterleaved, &dVideoFrameRate);
+				qcap2_video_source_t* pVsrc = NULL;
+				if(nVideoIndex >= 0) {
+					pVsrc = qcap2_demuxer_get_video_source(pDmx, nVideoIndex);
+				}
+				if(pVsrc) {
+					std::shared_ptr<qcap2_video_format_t> pVideoFormat(qcap2_video_format_new(), qcap2_video_format_delete);
+					qcap2_video_source_get_video_format(pVsrc, pVideoFormat.get());
+					{
+						qcap2_video_format_get_property(pVideoFormat.get(), &nSrcColorSpaceType, &nSrcVideoWidth, &nSrcVideoHeight, &bVideoIsInterleaved, &dVideoFrameRate);
 
-					if(nSrcColorSpaceType == QCAP_COLORSPACE_TYPE_UNDEFINED || nSrcVideoWidth <= 0 || nSrcVideoHeight <= 0) {
-						LOGI("v: no-link");
-					} else {
-						LOGI("v: %08X %ux%u'%u, %.2f", nSrcColorSpaceType, nSrcVideoWidth, nSrcVideoHeight, bVideoIsInterleaved, dVideoFrameRate);
+						if(nSrcColorSpaceType == QCAP_COLORSPACE_TYPE_UNDEFINED || nSrcVideoWidth <= 0 || nSrcVideoHeight <= 0) {
+							LOGI("v: no-link");
+						} else {
+							LOGI("v: %08X %ux%u'%u, %.2f", nSrcColorSpaceType, nSrcVideoWidth, nSrcVideoHeight, bVideoIsInterleaved, dVideoFrameRate);
 
-#if 1
-						qres = StartVsrc(_FreeStack_, pVsrc, nColorSpaceType,
-							nVideoWidth, nVideoHeight, bVideoIsInterleaved, dVideoFrameRate, &pVsrcEvent);
-						if(qres != QCAP_RS_SUCCESSFUL) {
-							LOGE("%s(%d): StartVsrc() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-							break;
+	#if 1
+							qres = StartVsrc(_FreeStack_, pVsrc, nColorSpaceType,
+								nVideoWidth, nVideoHeight, bVideoIsInterleaved, dVideoFrameRate, &pVsrcEvent);
+							if(qres != QCAP_RS_SUCCESSFUL) {
+								LOGE("%s(%d): StartVsrc() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+								break;
+							}
+	#endif
+
+	#if 1
+							qres = StartVsink(_FreeStack_, 36, nVsinkColorSpaceType,
+								nVsinkVideoWidth, nVsinkVideoHeight, bVideoIsInterleaved, dVideoFrameRate, &pVsink);
+							if(qres != QCAP_RS_SUCCESSFUL) {
+								LOGE("%s(%d): StartVsink() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+								break;
+							}
+	#endif
+
+	#if 1
+							qres = StartVsink_overlay(_FreeStack_, 34, nColorSpaceType,
+								nVideoWidth, nVideoHeight, bVideoIsInterleaved, dVideoFrameRate, &pVsink1);
+							if(qres != QCAP_RS_SUCCESSFUL) {
+								LOGE("%s(%d): StartVsink_overlay() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+								break;
+							}
+	#endif
+
 						}
-#endif
-
-#if 1
-						qres = StartVsink(_FreeStack_, 36, nVsinkColorSpaceType,
-							nVsinkVideoWidth, nVsinkVideoHeight, bVideoIsInterleaved, dVideoFrameRate, &pVsink);
-						if(qres != QCAP_RS_SUCCESSFUL) {
-							LOGE("%s(%d): StartVsink() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-							break;
-						}
-#endif
-
-#if 1
-						qres = StartVsink_overlay(_FreeStack_, 34, nColorSpaceType,
-							nVideoWidth, nVideoHeight, bVideoIsInterleaved, dVideoFrameRate, &pVsink1);
-						if(qres != QCAP_RS_SUCCESSFUL) {
-							LOGE("%s(%d): StartVsink_overlay() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-							break;
-						}
-#endif
-
 					}
+				} else {
+					LOGI("v: no-link");
+				}
+
+				qcap2_audio_source_t* pAsrc = NULL;
+				if(nAudioIndex >= 0) {
+					pAsrc = qcap2_demuxer_get_audio_source(pDmx, nAudioIndex);
+				}
+				if(pAsrc) {
+					std::shared_ptr<qcap2_audio_format_t> pAudioFormat(qcap2_audio_format_new(), qcap2_audio_format_delete);
+					qcap2_audio_source_get_audio_format(pAsrc, pAudioFormat.get());
+					{
+						qcap2_audio_format_get_property(pAudioFormat.get(), &nAudioChannels, &nAudioBitsPerSample, &nAudioSampleFrequency);
+
+						if(nAudioChannels == 0 || nAudioBitsPerSample == 0 || nAudioSampleFrequency == 0) {
+							LOGI("a: no-link");
+						} else {
+							LOGI("a: %ux%u'%u", nAudioChannels, nAudioBitsPerSample, nAudioSampleFrequency);
+
+#if 1
+							qres = StartAsrc(_FreeStack_, pAsrc, &pAsrcEvent);
+							if(qres != QCAP_RS_SUCCESSFUL) {
+								LOGE("%s(%d): StartAsrc() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+								break;
+							}
+#endif
+						}
+					}
+				} else {
+					LOGI("a: no-link");
 				}
 
 				qcap2_rcbuffer_t* pRCBuffer_overlay = NULL;
-#if 1
+#if 0
 				{
 					qcap2_rcbuffer_t* pRCBuffer;
-					qres = __testkit__::new_video_qdmabuf(_FreeStack_, 3840, 2160, QCAP_COLORSPACE_TYPE_RGBA, PROT_WRITE | PROT_READ, &pRCBuffer);
+					qres = __testkit__::new_video_qdmabuf(_FreeStack_, 1920, 1080, QCAP_COLORSPACE_TYPE_RGBA, PROT_WRITE | PROT_READ, &pRCBuffer);
 					if(qres != QCAP_RS_SUCCESSFUL) {
 						LOGE("%s(%d): new_video_qdmabuf() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 						break;
@@ -393,6 +430,15 @@ struct App0 {
 							LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 							break;
 						}
+					}
+				}
+
+				if(pAsrcEvent) {
+					qres = AddEventHandler(_FreeStack_, pAsrcEvent,
+						std::bind(&self_t::OnAsrc, this, pAsrc));
+					if(qres != QCAP_RS_SUCCESSFUL) {
+						LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+						break;
 					}
 				}
 			}
@@ -490,6 +536,56 @@ struct App0 {
 			return QCAP_RT_OK;
 		}
 
+		QRESULT StartAsrc(free_stack_t& _FreeStack_, qcap2_audio_source_t* pAsrc, qcap2_event_t** ppEvent) {
+			QRESULT qres = QCAP_RS_SUCCESSFUL;
+
+			switch(1) { case 1:
+				qcap2_event_t* pEvent;
+				qres = NewEvent(_FreeStack_, &pEvent);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): NewEvent() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+
+				qcap2_audio_source_set_event(pAsrc, pEvent);
+
+				qres = qcap2_audio_source_start(pAsrc);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): qcap2_audio_source_start() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+				_FreeStack_ += [pAsrc]() {
+					QRESULT qres;
+
+					qres = qcap2_audio_source_stop(pAsrc);
+					if(qres != QCAP_RS_SUCCESSFUL) {
+						LOGE("%s(%d): qcap2_audio_source_stop() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					}
+				};
+
+				*ppEvent = pEvent;
+			}
+
+			return qres;
+		}
+
+		QRETURN OnAsrc(qcap2_audio_source_t* pAsrc) {
+			QRESULT qres;
+
+			switch(1) { case 1:
+				qcap2_rcbuffer_t* pRCBuffer;
+				qres = qcap2_audio_source_pop(pAsrc, &pRCBuffer);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): qcap2_audio_source_pop() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+				std::shared_ptr<qcap2_rcbuffer_t> pRCBuffer_(pRCBuffer,
+					qcap2_rcbuffer_release);
+			}
+
+			return QCAP_RT_OK;
+		}
+
 		QRESULT StartVsink(free_stack_t& _FreeStack_, uint32_t nDrmPlaneId, ULONG nColorSpaceType,
 			ULONG nVideoWidth, ULONG nVideoHeight, BOOL bVideoIsInterleaved, double dVideoFrameRate, qcap2_video_sink_t** ppVsink) {
 			QRESULT qres = QCAP_RS_SUCCESSFUL;
@@ -555,6 +651,8 @@ struct App0 {
 
 					qcap2_video_sink_set_video_format(pVsink, pVideoFormat.get());
 				}
+
+				qcap2_video_sink_set_drm_alpha(pVsink, 128);
 
 				qres = qcap2_video_sink_start(pVsink);
 				if(qres != QCAP_RS_SUCCESSFUL) {
