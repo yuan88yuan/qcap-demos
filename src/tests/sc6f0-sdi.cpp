@@ -1,6 +1,7 @@
 #include <stdlib.h>
 
 #include "qcap2.h"
+#include "qcap2.alsa.h"
 #include "qcap2.drm.h"
 
 #include "ZzLog.h"
@@ -122,14 +123,29 @@ struct App0 {
 	}
 
 	struct TestCase1 : public TestCase {
-	typedef TestCase1 self_t;
-	typedef TestCase super_t;
+		typedef TestCase1 self_t;
+		typedef TestCase super_t;
 
-	int nSnapshot = 0;
-	bool bPause = false;
-	free_stack_t _FreeStack_vsrc_;
+		int nSnapshot = 0;
+		bool bPause = false;
+		free_stack_t _FreeStack_vsrc_;
+		free_stack_t _FreeStack_vsink_;
+		free_stack_t _FreeStack_asink_;
 
-	void DoWork() {
+		qcap2_video_source_t* pVsrc_ = NULL;
+		qcap2_audio_source_t* pAsrc_ = NULL;
+		qcap2_video_sink_t* pVsink_ = NULL;
+		qcap2_audio_sink_t* pAsink_ = NULL;
+		ULONG nVsinkColorSpaceType_ = QCAP_COLORSPACE_TYPE_XV20;
+		ULONG nVsinkVideoWidth_ = 0;
+		ULONG nVsinkVideoHeight_ = 0;
+		BOOL bVsinkInterleaved_ = FALSE;
+		double dVsinkFrameRate_ = 60;
+		ULONG nAsinkChannels_ = 0;
+		ULONG nAsinkBitsPerSample_ = 16;
+		ULONG nAsinkSampleFrequency_ = 0;
+
+		void DoWork() {
 			QRESULT qres;
 
 			LOGD("%s::%s", typeid(self_t).name(), __FUNCTION__);
@@ -168,6 +184,32 @@ struct App0 {
 							LOGI("Snapshot requested. Pending: %d", nSnapshot);
 							break;
 
+						case 'v':
+						case 'V': {
+							QRESULT qres_evt = QCAP_RS_SUCCESSFUL;
+							qres = ExecInEventHandlers(std::bind(&self_t::StartVsinkOnDemand, this,
+								std::ref(_FreeStack_evt_), std::ref(qres_evt)));
+							if(qres != QCAP_RS_SUCCESSFUL) {
+								LOGE("%s(%d): ExecInEventHandlers() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+							} else if(qres_evt != QCAP_RS_SUCCESSFUL) {
+								LOGE("%s(%d): StartVsinkOnDemand() failed, qres=%d", __FUNCTION__, __LINE__, qres_evt);
+							}
+							break;
+						}
+
+						case 'a':
+						case 'A': {
+							QRESULT qres_evt = QCAP_RS_SUCCESSFUL;
+							qres = ExecInEventHandlers(std::bind(&self_t::StartAsinkOnDemand, this,
+								std::ref(_FreeStack_evt_), std::ref(qres_evt)));
+							if(qres != QCAP_RS_SUCCESSFUL) {
+								LOGE("%s(%d): ExecInEventHandlers() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+							} else if(qres_evt != QCAP_RS_SUCCESSFUL) {
+								LOGE("%s(%d): StartAsinkOnDemand() failed, qres=%d", __FUNCTION__, __LINE__, qres_evt);
+							}
+							break;
+						}
+
 						case 'p':
 						case 'P':
 							bPause = !bPause;
@@ -204,6 +246,8 @@ struct App0 {
 
 				_FreeStack_ += [&]() {
 					_FreeStack_vsrc_.flush();
+					_FreeStack_vsink_.flush();
+					_FreeStack_asink_.flush();
 				};
 			}
 
@@ -255,9 +299,19 @@ struct App0 {
 
 			switch(1) {	case 1:
 				free_stack_t& _FreeStack_ = _FreeStack_vsrc_;
+				pVsrc_ = NULL;
+				pAsrc_ = NULL;
+				nVsinkVideoWidth_ = 0;
+				nVsinkVideoHeight_ = 0;
+				nAsinkChannels_ = 0;
+				nAsinkSampleFrequency_ = 0;
+				pVsink_ = NULL;
+				pAsink_ = NULL;
 
-				// to stop a/v src/codec which are running
+				// to stop a/v src/sink which are running
 				_FreeStack_.flush();
+				_FreeStack_vsink_.flush();
+				_FreeStack_asink_.flush();
 
 				qres = qcap2_demuxer_update(pDmx);
 				if(qres != QCAP_RS_SUCCESSFUL) {
@@ -297,8 +351,6 @@ struct App0 {
 
 				qcap2_event_t* pVsrcEvent = NULL;
 				qcap2_event_t* pAsrcEvent = NULL;
-				qcap2_video_sink_t* pVsink = NULL;
-				qcap2_video_sink_t* pVsink1 = NULL;
 
 				qcap2_video_source_t* pVsrc = NULL;
 				if(nVideoIndex >= 0) {
@@ -315,32 +367,20 @@ struct App0 {
 						} else {
 							LOGI("v: %08X %ux%u'%u, %.2f", nSrcColorSpaceType, nSrcVideoWidth, nSrcVideoHeight, bVideoIsInterleaved, dVideoFrameRate);
 
-	#if 1
 							qres = StartVsrc(_FreeStack_, pVsrc, nColorSpaceType,
 								nVideoWidth, nVideoHeight, bVideoIsInterleaved, dVideoFrameRate, &pVsrcEvent);
 							if(qres != QCAP_RS_SUCCESSFUL) {
 								LOGE("%s(%d): StartVsrc() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 								break;
 							}
-	#endif
 
-	#if 1
-							qres = StartVsink(_FreeStack_, 36, nVsinkColorSpaceType,
-								nVsinkVideoWidth, nVsinkVideoHeight, bVideoIsInterleaved, dVideoFrameRate, &pVsink);
-							if(qres != QCAP_RS_SUCCESSFUL) {
-								LOGE("%s(%d): StartVsink() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-								break;
-							}
-	#endif
-
-	#if 1
-							qres = StartVsink_overlay(_FreeStack_, 34, nColorSpaceType,
-								nVideoWidth, nVideoHeight, bVideoIsInterleaved, dVideoFrameRate, &pVsink1);
-							if(qres != QCAP_RS_SUCCESSFUL) {
-								LOGE("%s(%d): StartVsink_overlay() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-								break;
-							}
-	#endif
+							pVsrc_ = pVsrc;
+							nVsinkColorSpaceType_ = nVsinkColorSpaceType;
+							nVsinkVideoWidth_ = nVsinkVideoWidth;
+							nVsinkVideoHeight_ = nVsinkVideoHeight;
+							bVsinkInterleaved_ = bVideoIsInterleaved;
+							dVsinkFrameRate_ = dVideoFrameRate;
+							LOGI("Press 'v' to start vsink.");
 
 						}
 					}
@@ -363,13 +403,19 @@ struct App0 {
 						} else {
 							LOGI("a: %ux%u'%u", nAudioChannels, nAudioBitsPerSample, nAudioSampleFrequency);
 
-#if 1
+							const ULONG nAsinkAudioBitsPerSample = 16;
+
 							qres = StartAsrc(_FreeStack_, pAsrc, &pAsrcEvent);
 							if(qres != QCAP_RS_SUCCESSFUL) {
 								LOGE("%s(%d): StartAsrc() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 								break;
 							}
-#endif
+
+							pAsrc_ = pAsrc;
+							nAsinkChannels_ = nAudioChannels;
+							nAsinkBitsPerSample_ = nAsinkAudioBitsPerSample;
+							nAsinkSampleFrequency_ = nAudioSampleFrequency;
+							LOGI("Press 'a' to start asink.");
 						}
 					}
 				} else {
@@ -425,7 +471,7 @@ struct App0 {
 				if(nSrcColorSpaceType != QCAP_COLORSPACE_TYPE_UNDEFINED && nSrcVideoWidth > 0 && nSrcVideoHeight > 0) {
 					if(pVsrcEvent) {
 						qres = AddEventHandler(_FreeStack_, pVsrcEvent,
-							std::bind(&self_t::OnVsrc, this, pVsrc, pVsink, pVsink1, pRCBuffer_overlay));
+							std::bind(&self_t::OnVsrc, this, pVsrc, pRCBuffer_overlay));
 						if(qres != QCAP_RS_SUCCESSFUL) {
 							LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 							break;
@@ -493,7 +539,7 @@ struct App0 {
 			return qres;
 		}
 
-		QRETURN OnVsrc(qcap2_video_source_t* pVsrc, qcap2_video_sink_t* pVsink, qcap2_video_sink_t* pVsink1, qcap2_rcbuffer_t* pRCBuffer_overlay) {
+		QRETURN OnVsrc(qcap2_video_source_t* pVsrc, qcap2_rcbuffer_t* pRCBuffer_overlay) {
 			QRESULT qres;
 
 			switch(1) { case 1:
@@ -516,16 +562,16 @@ struct App0 {
 					}
 				}
 
-				if(pVsink && ! bPause) {
-					qres = qcap2_video_sink_push(pVsink, pRCBuffer);
+				if(pVsink_ && ! bPause) {
+					qres = qcap2_video_sink_push(pVsink_, pRCBuffer);
 					if(qres != QCAP_RS_SUCCESSFUL) {
 						LOGE("%s(%d): qcap2_video_sink_push() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 						break;
 					}
 				}
 
-				if(pVsink1 && pRCBuffer_overlay) {
-					qres = qcap2_video_sink_push(pVsink1, pRCBuffer_overlay);
+				if(pVsink_ && pRCBuffer_overlay) {
+					qres = qcap2_video_sink_push(pVsink_, pRCBuffer_overlay);
 					if(qres != QCAP_RS_SUCCESSFUL) {
 						LOGE("%s(%d): qcap2_video_sink_push() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 						break;
@@ -548,6 +594,16 @@ struct App0 {
 				}
 
 				qcap2_audio_source_set_event(pAsrc, pEvent);
+
+				std::shared_ptr<qcap2_audio_format_t> pAudioFormat(qcap2_audio_format_new(), qcap2_audio_format_delete);
+				qcap2_audio_source_get_audio_format(pAsrc, pAudioFormat.get());
+				ULONG nAudioChannels = 0;
+				ULONG nAudioBitsPerSample = 0;
+				ULONG nAudioSampleFrequency = 0;
+				qcap2_audio_format_get_property(pAudioFormat.get(), &nAudioChannels, &nAudioBitsPerSample, &nAudioSampleFrequency);
+				nAudioBitsPerSample = 16;
+				qcap2_audio_format_set_property(pAudioFormat.get(), nAudioChannels, nAudioBitsPerSample, nAudioSampleFrequency);
+				qcap2_audio_source_set_audio_format(pAsrc, pAudioFormat.get());
 
 				qres = qcap2_audio_source_start(pAsrc);
 				if(qres != QCAP_RS_SUCCESSFUL) {
@@ -581,6 +637,111 @@ struct App0 {
 				}
 				std::shared_ptr<qcap2_rcbuffer_t> pRCBuffer_(pRCBuffer,
 					qcap2_rcbuffer_release);
+
+				if(pAsink_) {
+					qres = qcap2_audio_sink_push(pAsink_, pRCBuffer);
+					if(qres != QCAP_RS_SUCCESSFUL) {
+						LOGE("%s(%d): qcap2_audio_sink_push() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+						break;
+					}
+				}
+			}
+
+			return QCAP_RT_OK;
+		}
+
+		QRESULT StartAsink(free_stack_t& _FreeStack_, ULONG nAudioChannels,
+			ULONG nAudioBitsPerSample, ULONG nAudioSampleFrequency, qcap2_audio_sink_t** ppAsink) {
+			QRESULT qres = QCAP_RS_SUCCESSFUL;
+
+			switch(1) { case 1:
+				const ULONG nPeriodTime = 20 * 1000; // 20ms
+				const ULONG nBufferTime = nPeriodTime * 8; // 8 periods
+
+				qcap2_audio_sink_t* pAsink = qcap2_audio_sink_new();
+				_FreeStack_ += [pAsink]() {
+					qcap2_audio_sink_delete(pAsink);
+				};
+
+				qcap2_audio_sink_set_backend_type(pAsink, QCAP2_AUDIO_SINK_BACKEND_TYPE_ALSA);
+				qcap2_audio_sink_set_alsa_card(pAsink, 1);
+				qcap2_audio_sink_set_alsa_device(pAsink, 0);
+
+				{
+					std::shared_ptr<qcap2_audio_format_t> pAudioFormat(
+						qcap2_audio_format_new(), qcap2_audio_format_delete);
+
+					qcap2_audio_format_set_property(pAudioFormat.get(),
+						nAudioChannels, nAudioBitsPerSample, nAudioSampleFrequency);
+
+					qcap2_audio_sink_set_audio_format(pAsink, pAudioFormat.get());
+				}
+
+				qcap2_audio_sink_set_period_time(pAsink, nPeriodTime);
+				qcap2_audio_sink_set_buffer_time(pAsink, nBufferTime);
+
+				qres = qcap2_audio_sink_start(pAsink);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): qcap2_audio_sink_start() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+				_FreeStack_ += [pAsink]() {
+					QRESULT qres;
+
+					qres = qcap2_audio_sink_stop(pAsink);
+					if(qres != QCAP_RS_SUCCESSFUL) {
+						LOGE("%s(%d): qcap2_audio_sink_stop() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					}
+				};
+
+				*ppAsink = pAsink;
+			}
+
+			return qres;
+		}
+
+		QRETURN StartVsinkOnDemand(free_stack_t& _FreeStack_, QRESULT& qres) {
+			(void)_FreeStack_;
+
+			if(pVsink_) {
+				LOGI("vsink already started.");
+				qres = QCAP_RS_SUCCESSFUL;
+				return QCAP_RT_OK;
+			}
+
+			if(!pVsrc_ || nVsinkVideoWidth_ == 0 || nVsinkVideoHeight_ == 0) {
+				LOGI("vsink is not ready: video source unavailable.");
+				qres = QCAP_RS_ERROR_GENERAL;
+				return QCAP_RT_OK;
+			}
+
+			qres = StartVsink(_FreeStack_vsink_, 36, nVsinkColorSpaceType_,
+				nVsinkVideoWidth_, nVsinkVideoHeight_, bVsinkInterleaved_, dVsinkFrameRate_, &pVsink_);
+			if(qres == QCAP_RS_SUCCESSFUL) {
+				LOGI("vsink started.");
+			}
+
+			return QCAP_RT_OK;
+		}
+
+		QRETURN StartAsinkOnDemand(free_stack_t& _FreeStack_, QRESULT& qres) {
+			(void)_FreeStack_;
+
+			if(pAsink_) {
+				LOGI("asink already started.");
+				qres = QCAP_RS_SUCCESSFUL;
+				return QCAP_RT_OK;
+			}
+
+			if(!pAsrc_ || nAsinkChannels_ == 0 || nAsinkSampleFrequency_ == 0) {
+				LOGI("asink is not ready: audio source unavailable.");
+				qres = QCAP_RS_ERROR_GENERAL;
+				return QCAP_RT_OK;
+			}
+
+			qres = StartAsink(_FreeStack_asink_, nAsinkChannels_, nAsinkBitsPerSample_, nAsinkSampleFrequency_, &pAsink_);
+			if(qres == QCAP_RS_SUCCESSFUL) {
+				LOGI("asink started.");
 			}
 
 			return QCAP_RT_OK;
