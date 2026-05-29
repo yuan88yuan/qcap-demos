@@ -245,13 +245,25 @@ struct App0 {
 				}
 
 				_FreeStack_ += [&]() {
-					_FreeStack_vsrc_.flush();
-					_FreeStack_vsink_.flush();
-					_FreeStack_asink_.flush();
+					StopAV();
 				};
 			}
 
 			return QCAP_RT_OK;
+		}
+
+		void StopAV() {
+			// Downstream sinks may retain buffers popped from the source.
+			// Detach callbacks from the sinks first, then free consumers before producers.
+			pVsink_ = NULL;
+			pAsink_ = NULL;
+
+			_FreeStack_vsink_.flush();
+			_FreeStack_asink_.flush();
+
+			pVsrc_ = NULL;
+			pAsrc_ = NULL;
+			_FreeStack_vsrc_.flush();
 		}
 
 		QRESULT StartDmx(free_stack_t& _FreeStack_, qcap2_demuxer_t** ppDmx, qcap2_event_t** ppDmxEvent) {
@@ -299,19 +311,13 @@ struct App0 {
 
 			switch(1) {	case 1:
 				free_stack_t& _FreeStack_ = _FreeStack_vsrc_;
-				pVsrc_ = NULL;
-				pAsrc_ = NULL;
+				// to stop a/v src/sink which are running
+				StopAV();
+
 				nVsinkVideoWidth_ = 0;
 				nVsinkVideoHeight_ = 0;
 				nAsinkChannels_ = 0;
 				nAsinkSampleFrequency_ = 0;
-				pVsink_ = NULL;
-				pAsink_ = NULL;
-
-				// to stop a/v src/sink which are running
-				_FreeStack_.flush();
-				_FreeStack_vsink_.flush();
-				_FreeStack_asink_.flush();
 
 				qres = qcap2_demuxer_update(pDmx);
 				if(qres != QCAP_RS_SUCCESSFUL) {
