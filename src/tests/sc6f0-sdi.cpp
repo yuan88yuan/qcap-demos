@@ -142,7 +142,7 @@ struct App0 {
 		BOOL bVsinkInterleaved_ = FALSE;
 		double dVsinkFrameRate_ = 60;
 		ULONG nAsinkChannels_ = 0;
-		ULONG nAsinkBitsPerSample_ = 16;
+		ULONG nAsinkBitsPerSample_ = 0;
 		ULONG nAsinkSampleFrequency_ = 0;
 
 		void DoWork() {
@@ -403,8 +403,6 @@ struct App0 {
 						} else {
 							LOGI("a: %ux%u'%u", nAudioChannels, nAudioBitsPerSample, nAudioSampleFrequency);
 
-							const ULONG nAsinkAudioBitsPerSample = 16;
-
 							qres = StartAsrc(_FreeStack_, pAsrc, &pAsrcEvent);
 							if(qres != QCAP_RS_SUCCESSFUL) {
 								LOGE("%s(%d): StartAsrc() failed, qres=%d", __FUNCTION__, __LINE__, qres);
@@ -413,7 +411,7 @@ struct App0 {
 
 							pAsrc_ = pAsrc;
 							nAsinkChannels_ = nAudioChannels;
-							nAsinkBitsPerSample_ = nAsinkAudioBitsPerSample;
+							nAsinkBitsPerSample_ = nAudioBitsPerSample;
 							nAsinkSampleFrequency_ = nAudioSampleFrequency;
 							LOGI("Press 'a' to start asink.");
 						}
@@ -595,6 +593,7 @@ struct App0 {
 
 				qcap2_audio_source_set_event(pAsrc, pEvent);
 
+#if 0
 				std::shared_ptr<qcap2_audio_format_t> pAudioFormat(qcap2_audio_format_new(), qcap2_audio_format_delete);
 				qcap2_audio_source_get_audio_format(pAsrc, pAudioFormat.get());
 				ULONG nAudioChannels = 0;
@@ -604,6 +603,7 @@ struct App0 {
 				nAudioBitsPerSample = 16;
 				qcap2_audio_format_set_property(pAudioFormat.get(), nAudioChannels, nAudioBitsPerSample, nAudioSampleFrequency);
 				qcap2_audio_source_set_audio_format(pAsrc, pAudioFormat.get());
+#endif
 
 				qres = qcap2_audio_source_start(pAsrc);
 				if(qres != QCAP_RS_SUCCESSFUL) {
