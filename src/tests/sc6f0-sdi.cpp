@@ -417,7 +417,11 @@ struct App0 {
 
 							pAsrc_ = pAsrc;
 							nAsinkChannels_ = nAudioChannels;
+#if 1 // USE_16BIT
+							nAsinkBitsPerSample_ = 16;
+#else
 							nAsinkBitsPerSample_ = nAudioBitsPerSample;
+#endif
 							nAsinkSampleFrequency_ = nAudioSampleFrequency;
 							LOGI("Press 'a' to start asink.");
 						}
@@ -599,7 +603,7 @@ struct App0 {
 
 				qcap2_audio_source_set_event(pAsrc, pEvent);
 
-#if 0
+#if 1 // USE_16BIT
 				std::shared_ptr<qcap2_audio_format_t> pAudioFormat(qcap2_audio_format_new(), qcap2_audio_format_delete);
 				qcap2_audio_source_get_audio_format(pAsrc, pAudioFormat.get());
 				ULONG nAudioChannels = 0;
