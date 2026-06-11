@@ -154,6 +154,10 @@ struct App0 {
 		case 3:
 			mTestCase3.DoWork();
 			break;
+
+		case 4:
+			mTestCase4.DoWork();
+			break;
 		}
 	}
 
@@ -2170,6 +2174,298 @@ struct App0 {
 			return QCAP_RT_OK;
 		}
 	} mTestCase3;
+
+	struct TestCase4 : public TestCase {
+		typedef TestCase4 self_t;
+		typedef TestCase super_t;
+
+		dau_service* pHdmiTxDauServ;
+
+		static void _get_cable_status(struct dau_service *dau,
+						 struct DBusMessage *message,
+						 void *ctxt)
+		{
+			self_t* pThis = (self_t*)ctxt;
+
+			pThis->get_cable_status(dau, message);
+		}
+
+		void get_cable_status(struct dau_service *dau,
+						 struct DBusMessage *message)
+		{
+			LOGI("---tag---: %s", __FUNCTION__);
+
+			dau_reply_get_cable_status(dau, message, true);
+
+			// StartDmx();
+		}
+
+		static void _get_hdcp(struct dau_service *dau,
+						struct DBusMessage *message,
+						void *ctxt)
+		{
+			LOGI("---tag---: %s", __FUNCTION__);
+
+			struct hdcp hdcp;
+
+			memset(&hdcp, 0x00, sizeof(hdcp));
+			hdcp.current = HDCP_VERSION_22;
+			hdcp.hdcp14_supported = false;
+			hdcp.hdcp22_supported = true;
+
+			dau_reply_get_hdcp(dau, message, &hdcp);
+		}
+
+		static void _set_hdcp(struct dau_service *dau,
+						struct DBusMessage *message,
+						enum hdcp_version version,
+						void *ctxt)
+		{
+			LOGI("---tag---: %s", __FUNCTION__);
+
+			dau_reply_success(dau, message);
+		}
+
+		static void _get_video_format(struct dau_service *dau,
+						 struct DBusMessage *message,
+						 void *ctxt)
+		{
+			self_t* pThis = (self_t*)ctxt;
+
+			pThis->get_video_format(dau, message);
+		}
+
+		void get_video_format(struct dau_service *dau, struct DBusMessage *message) {
+			LOGI("---tag---: %s", __FUNCTION__);
+
+			struct video_format format = {
+				.width = 3840,
+				.height = 2160,
+				.framerate = 60,
+				.colorformat = VIDEO_COLORFORMAT_YUV444,
+				.bpp = 8,
+				.interlaced = false,
+				.locked = true
+			};
+
+			dau_reply_get_video_format(dau, message, &format);
+		}
+
+		static void _get_audio_info(struct dau_service *dau,
+						   struct DBusMessage *message,
+						   void *ctxt)
+		{
+			self_t* pThis = (self_t*)ctxt;
+
+			pThis->get_audio_info(dau, message);
+		}
+
+		void get_audio_info(struct dau_service *dau, struct DBusMessage *message) {
+			LOGI("---tag---: %s", __FUNCTION__);
+
+			struct audio_info info = {
+				.channel_count = 2,
+				.speaker_map = AUDIO_SM_FR_FL,
+				.level_shift_value = 0,
+				.downmix_inhibit = false,
+			};
+
+			dau_reply_get_audio_info(dau, message, &info);
+		}
+
+		static void _get_hdr(struct dau_service *dau,
+					struct DBusMessage *message,
+					void *ctxt)
+		{
+			LOGI("---tag---: %s", __FUNCTION__);
+
+			char hdr[HDR_LEN] = { 0x00, 0x01, 0x02 };
+			char dv[DV_LEN] = { 0x04, 0x05, 0x06 };
+			struct hdr_info info = {
+				.avi_c = 1,
+				.avi_ec = 2,
+				.avi_q = 3,
+				.hdr = hdr,
+				.dv = dv
+			};
+
+			dau_reply_get_hdr(dau, message, &info);
+		}
+
+		static void _set_edid(struct dau_service *dau,
+						struct DBusMessage *message,
+						const void *edid,
+						void *ctxt)
+		{
+			LOGI("---tag---: %s", __FUNCTION__);
+
+			dau_reply_success(dau, message);
+		}
+
+		static void _toggle_hpd(struct dau_service *dau,
+					   struct DBusMessage *message,
+					   void *ctxt)
+		{
+			LOGI("---tag---: %s", __FUNCTION__);
+
+			dau_reply_success(dau, message);
+		}
+
+		static void _set_video_format(struct dau_service *dau,
+						 struct DBusMessage *message,
+						 const struct video_format *format,
+						 void *ctxt)
+		{
+			LOGI("---tag---: %s", __FUNCTION__);
+
+			dau_reply_success(dau, message);
+		}
+
+		static void _set_audio_info(struct dau_service *dau,
+						   struct DBusMessage *message,
+						   const struct audio_info *info,
+						   void *ctxt)
+		{
+			LOGI("---tag---: %s", __FUNCTION__);
+
+			dau_reply_success(dau, message);
+		}
+
+		static void _set_hdr(struct dau_service *dau,
+					struct DBusMessage *message,
+					const struct hdr_info *hdr,
+					void *ctxt)
+		{
+			LOGI("---tag---: %s", __FUNCTION__);
+
+			dau_reply_success(dau, message);
+		}
+
+		static void _get_edid(struct dau_service *dau,
+					 struct DBusMessage *message,
+					 void *ctxt)
+		{
+			LOGI("---tag---: %s", __FUNCTION__);
+
+			unsigned char edid[EDID_LEN];
+			unsigned int i;
+
+			for (i = 0; i < sizeof(edid); ++i)
+				edid[i] = i;
+
+			dau_reply_get_edid(dau, message, edid);
+		}
+
+		void DoWork() {
+			QRESULT qres;
+
+			LOGD("%s::%s", typeid(self_t).name(), __FUNCTION__);
+
+			switch(1) { case 1:
+				free_stack_t& _FreeStack_ = _FreeStack_main_;
+
+				qres = StartEventHandlers();
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): StartEventHandlers() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+				ZzUtils::Scoped ZZ_GUARD_NAME([&]() {
+					OnExitEventHandlers();
+				} );
+
+				QRESULT qres_evt = QCAP_RS_SUCCESSFUL;
+				qres = ExecInEventHandlers(std::bind(&self_t::OnStart, this,
+					std::ref(_FreeStack_evt_), std::ref(qres_evt)));
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): ExecInEventHandlers() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+				if(qres_evt != QCAP_RS_SUCCESSFUL) {
+					break;
+				}
+
+				wait_for_test_finish([&](int ch) -> bool {
+					QRESULT qres;
+
+					switch(ch) {
+						break;
+					}
+
+					return true;
+				}, 1000000LL, 10LL);
+			}
+
+			_FreeStack_main_.flush();
+		}
+
+		QRETURN OnStart(free_stack_t& _FreeStack_, QRESULT& qres) {
+			switch(1) { case 1:
+				dau_service* pHdmiTxDauServ;
+				qres = StartDauServ(_FreeStack_, &pHdmiTxDauServ);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): StartDauServ() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+
+				this->pHdmiTxDauServ = pHdmiTxDauServ;
+			}
+			return QCAP_RT_OK;
+		}
+
+		QRESULT StartDauServ(free_stack_t& _FreeStack_, dau_service** ppHdmiTxDauServ) {
+			QRESULT qres = QCAP_RS_SUCCESSFUL;
+
+			switch(1) { case 1:
+				static const struct dau_service_methods methods = {
+					.get_cable_status = _get_cable_status,
+					.get_hdcp = _get_hdcp,
+					.set_hdcp = _set_hdcp,
+
+					.get_video_format = _get_video_format,
+					.get_audio_info = _get_audio_info,
+					.get_hdr = _get_hdr,
+					.set_edid = _set_edid,
+					.toggle_hpd = _toggle_hpd,
+
+					.set_video_format = _set_video_format,
+					.set_audio_info = _set_audio_info,
+					.set_hdr = _set_hdr,
+					.get_edid = _get_edid,
+				};
+
+				struct dau_service* hdmitx = dau_service_register(DAU_SERVICE_SINK, 0, &methods, this);
+				if (! hdmitx) {
+					qres = QCAP_RS_ERROR_GENERAL;
+					LOGE("%s(%d): dau_service_register() failed", __FUNCTION__, __LINE__);
+					break;
+				}
+				_FreeStack_ += [hdmitx]() {
+					dau_service_unregister(hdmitx);
+				};
+
+				int fd_hdmitx = dau_service_get_fd(hdmitx);
+				LOGD("fd_hdmitx=%d", fd_hdmitx);
+
+				qres = AddEventHandler(_FreeStack_, fd_hdmitx, std::bind(&self_t::OnHdmiTxEvent, this, hdmitx));
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+
+				*ppHdmiTxDauServ = hdmitx;
+			}
+
+			return qres;
+		}
+
+		QRETURN OnHdmiTxEvent(dau_service* dauserv) {
+			// LOGI("---tag---: %s +dau_service_dispatch", __FUNCTION__);
+			dau_service_dispatch(dauserv, 0);
+			// LOGI("---tag---: %s -dau_service_dispatch", __FUNCTION__);
+
+			return QCAP_RT_OK;
+		}
+	} mTestCase4;
 };
 
 int main(int argc, char* argv[]) {
