@@ -1,5 +1,8 @@
 #include <stdlib.h>
 #include <time.h>
+#include <errno.h>
+#include <stdio.h>
+#include <string.h>
 
 #include <atomic>
 #include <drm.h>
@@ -2182,6 +2185,84 @@ struct App0 {
 		dau_service* pHdmiTxDauServ;
 		int mDrmFd;
 		uint32_t mConnectorId;
+		bool mLastConnectorConnected;
+		bool mHaveLastConnectorState;
+
+		static const char* video_colorformat_to_string(enum video_colorformat colorformat) {
+			switch(colorformat) {
+			case VIDEO_COLORFORMAT_YUV444: return "YUV444";
+			case VIDEO_COLORFORMAT_YUV422: return "YUV422";
+			case VIDEO_COLORFORMAT_YUV420: return "YUV420";
+			case VIDEO_COLORFORMAT_RGB: return "RGB";
+			default: return "unknown";
+			}
+		}
+
+		static const char* drm_connection_to_string(drmModeConnection connection) {
+			switch(connection) {
+			case DRM_MODE_CONNECTED: return "connected";
+			case DRM_MODE_DISCONNECTED: return "disconnected";
+			case DRM_MODE_UNKNOWNCONNECTION: return "unknown";
+			default: return "invalid";
+			}
+		}
+
+		static void format_bytes(char* dst, size_t dstLen, const char* data, size_t len) {
+			if(dstLen == 0) return;
+
+			dst[0] = '\0';
+			if(! data) return;
+
+			size_t off = 0;
+			for(size_t i = 0; i < len && off < dstLen; i++) {
+				int n = snprintf(dst + off, dstLen - off, "%s%02x", i == 0 ? "" : " ",
+					(unsigned int)(unsigned char)data[i]);
+				if(n < 0) break;
+				if((size_t)n >= dstLen - off) {
+					off = dstLen - 1;
+					break;
+				}
+				off += (size_t)n;
+			}
+		}
+
+		static bool is_valid_edid(const unsigned char* edid, size_t len) {
+			static const unsigned char edidHeader[8] = {
+				0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00
+			};
+
+			if(! edid || len < 128) return false;
+			if(memcmp(edid, edidHeader, sizeof(edidHeader)) != 0) return false;
+
+			size_t blocks = len / 128;
+			if(blocks > EDID_LEN / 128) blocks = EDID_LEN / 128;
+			if(blocks == 0) return false;
+
+			for(size_t block = 0; block < blocks; block++) {
+				unsigned int sum = 0;
+				for(size_t i = 0; i < 128; i++) {
+					sum += edid[block * 128 + i];
+				}
+				if((sum & 0xff) != 0) return false;
+			}
+
+			return true;
+		}
+
+		bool query_connector_connected(bool& connected) {
+			if(mDrmFd < 0 || mConnectorId == 0) return false;
+
+			std::shared_ptr<drmModeConnector> pConnector(
+				drmModeGetConnector(mDrmFd, mConnectorId),
+				drmModeFreeConnector);
+			if(! pConnector) return false;
+
+			connected = (pConnector->connection == DRM_MODE_CONNECTED);
+			LOGD("connector %u connection=%d (%s)", mConnectorId,
+				pConnector->connection, drm_connection_to_string(pConnector->connection));
+
+			return true;
+		}
 
 		static void _get_cable_status(struct dau_service *dau,
 						 struct DBusMessage *message,
@@ -2199,21 +2280,8 @@ struct App0 {
 
 			bool connected = false;
 
-			if(mDrmFd >= 0 && mConnectorId > 0) {
-				std::shared_ptr<drmModeConnector> pConnector(
-					drmModeGetConnector(mDrmFd, mConnectorId),
-					drmModeFreeConnector);
-
-				if(pConnector) {
-					connected = (pConnector->connection == DRM_MODE_CONNECTED);
-					LOGD("connector %u connection=%d (%s)", mConnectorId,
-						pConnector->connection,
-						connected ? "connected" : "disconnected");
-				} else {
-					LOGW("drmModeGetConnector() returned NULL");
-				}
-			} else {
-				LOGW("DRM not available (fd=%d, connector=%u)", mDrmFd, mConnectorId);
+			if(! query_connector_connected(connected)) {
+				LOGW("failed to query DRM connector state (fd=%d, connector=%u)", mDrmFd, mConnectorId);
 			}
 
 			dau_reply_get_cable_status(dau, message, connected);
@@ -2337,6 +2405,17 @@ struct App0 {
 		{
 			LOGI("---tag---: %s", __FUNCTION__);
 
+			if(format) {
+				LOGI("video_format: %ux%u@%uHz, colorformat=%d (%s), bpp=%u, interlaced=%s, locked=%s",
+					format->width, format->height, format->framerate,
+					(int)format->colorformat, video_colorformat_to_string(format->colorformat),
+					format->bpp,
+					format->interlaced ? "true" : "false",
+					format->locked ? "true" : "false");
+			} else {
+				LOGW("video_format is NULL");
+			}
+
 			dau_reply_success(dau, message);
 		}
 
@@ -2383,6 +2462,22 @@ struct App0 {
 		{
 			LOGI("---tag---: %s", __FUNCTION__);
 
+			if(hdr) {
+				char hdrBytes[HDR_LEN * 3] = { 0 };
+				char dvBytes[DV_LEN * 3] = { 0 };
+
+				format_bytes(hdrBytes, sizeof(hdrBytes), hdr->hdr, HDR_LEN);
+				format_bytes(dvBytes, sizeof(dvBytes), hdr->dv, DV_LEN);
+
+				LOGI("hdr_info: avi_c=%u, avi_ec=%u, avi_q=%u, dv_tunneling=%s",
+					(unsigned int)hdr->avi_c, (unsigned int)hdr->avi_ec, (unsigned int)hdr->avi_q,
+					hdr->dv_tunneling ? "true" : "false");
+				LOGD("hdr_info: hdr[%u]=%s", (unsigned int)HDR_LEN, hdrBytes);
+				LOGD("hdr_info: dv[%u]=%s", (unsigned int)DV_LEN, dvBytes);
+			} else {
+				LOGW("hdr_info is NULL");
+			}
+
 			dau_reply_success(dau, message);
 		}
 
@@ -2399,6 +2494,8 @@ struct App0 {
 			LOGI("---tag---: %s", __FUNCTION__);
 
 			unsigned char edid[EDID_LEN] = { 0 };
+			bool edidValid = false;
+			size_t edidLen = 0;
 
 			if(mDrmFd >= 0 && mConnectorId > 0) {
 				LOGD("drm_fd=%d, connector_id=%u", mDrmFd, mConnectorId);
@@ -2427,14 +2524,21 @@ struct App0 {
 										drmModeFreePropertyBlob);
 									if(blob && blob->data && blob->length > 0) {
 										LOGD("EDID blob length=%u", blob->length);
-										LOGD("EDID header: %02x %02x %02x %02x %02x %02x %02x %02x",
-											((unsigned char*)blob->data)[0], ((unsigned char*)blob->data)[1],
-											((unsigned char*)blob->data)[2], ((unsigned char*)blob->data)[3],
-											((unsigned char*)blob->data)[4], ((unsigned char*)blob->data)[5],
-											((unsigned char*)blob->data)[6], ((unsigned char*)blob->data)[7]);
+										if(blob->length >= 8) {
+											LOGD("EDID header: %02x %02x %02x %02x %02x %02x %02x %02x",
+												((unsigned char*)blob->data)[0], ((unsigned char*)blob->data)[1],
+												((unsigned char*)blob->data)[2], ((unsigned char*)blob->data)[3],
+												((unsigned char*)blob->data)[4], ((unsigned char*)blob->data)[5],
+												((unsigned char*)blob->data)[6], ((unsigned char*)blob->data)[7]);
+										}
 
 										size_t copyLen = blob->length < EDID_LEN ? blob->length : EDID_LEN;
 										memcpy(edid, blob->data, copyLen);
+										edidLen = copyLen;
+										edidValid = is_valid_edid(edid, edidLen);
+										if(! edidValid) {
+											LOGW("EDID blob is present but invalid");
+										}
 									} else {
 										LOGW("EDID blob is null or empty");
 									}
@@ -2454,6 +2558,13 @@ struct App0 {
 				LOGW("DRM not available (fd=%d, connector=%u)", mDrmFd, mConnectorId);
 			}
 
+			if(! edidValid) {
+				LOGW("No valid EDID is available");
+				dau_reply_error(dau, message, "No valid EDID is available");
+				return;
+			}
+
+			LOGI("Returning valid EDID (%zu bytes copied, %u bytes returned)", edidLen, (unsigned int)EDID_LEN);
 			dau_reply_get_edid(dau, message, edid);
 		}
 
@@ -2502,14 +2613,19 @@ struct App0 {
 		QRETURN OnStart(free_stack_t& _FreeStack_, QRESULT& qres) {
 			int err;
 
+			qres = QCAP_RS_SUCCESSFUL;
+
 			switch(1) { case 1:
 				mDrmFd = -1;
 				mConnectorId = 0;
+				mLastConnectorConnected = false;
+				mHaveLastConnectorState = false;
 
 				{
 					int drm_fd = drmOpen("xlnx", NULL);
 					if(drm_fd < 0) {
 						err = errno;
+						qres = QCAP_RS_ERROR_GENERAL;
 						LOGE("%s(%d): drmOpen() failed, err=%d", __FUNCTION__, __LINE__, err);
 						break;
 					}
@@ -2520,6 +2636,7 @@ struct App0 {
 
 					std::shared_ptr<drmModeRes> pResources(drmModeGetResources(drm_fd), drmModeFreeResources);
 					if(! pResources) {
+						qres = QCAP_RS_ERROR_GENERAL;
 						LOGE("%s(%d): drmModeGetResources() failed", __FUNCTION__, __LINE__);
 						break;
 					}
@@ -2542,6 +2659,7 @@ struct App0 {
 					}
 
 					if(mConnectorId == 0) {
+						qres = QCAP_RS_ERROR_GENERAL;
 						LOGE("%s(%d): HDMI-A-1 connector not found", __FUNCTION__, __LINE__);
 						break;
 					}
@@ -2557,7 +2675,116 @@ struct App0 {
 				}
 
 				this->pHdmiTxDauServ = pHdmiTxDauServ;
+
+				qres = StartConnectorMonitor(_FreeStack_, pHdmiTxDauServ);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): StartConnectorMonitor() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
 			}
+			return QCAP_RT_OK;
+		}
+
+		QRESULT StartConnectorMonitor(free_stack_t& _FreeStack_, dau_service* dauserv) {
+			QRESULT qres = QCAP_RS_SUCCESSFUL;
+
+			switch(1) { case 1:
+				bool connected = false;
+				if(query_connector_connected(connected)) {
+					mLastConnectorConnected = connected;
+					mHaveLastConnectorState = true;
+					LOGI("Initial DRM connector state: %s", connected ? "connected" : "disconnected");
+				} else {
+					LOGW("Unable to read initial DRM connector state");
+				}
+
+				tick_ctrl_t* pTickCtrl = new tick_ctrl_t();
+				_FreeStack_ += [pTickCtrl]() {
+					delete pTickCtrl;
+				};
+				pTickCtrl->num = 1;
+				pTickCtrl->den = 1;
+
+				qcap2_timer_t* pTimer = qcap2_timer_new();
+				if(! pTimer) {
+					qres = QCAP_RS_ERROR_GENERAL;
+					LOGE("%s(%d): qcap2_timer_new() failed", __FUNCTION__, __LINE__);
+					break;
+				}
+				_FreeStack_ += [pTimer]() {
+					qcap2_timer_delete(pTimer);
+				};
+
+				qres = qcap2_timer_start(pTimer);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): qcap2_timer_start() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+				_FreeStack_ += [pTimer]() {
+					QRESULT qres;
+
+					qres = qcap2_timer_stop(pTimer);
+					if(qres != QCAP_RS_SUCCESSFUL) {
+						LOGE("%s(%d): qcap2_timer_stop() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					}
+				};
+
+				qres = AddTimerHandler(_FreeStack_, pTimer,
+					std::bind(&self_t::OnConnectorMonitor, this, pTimer, pTickCtrl, dauserv));
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): AddTimerHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+
+				pTickCtrl->start(_clk());
+				qres = qcap2_timer_next(pTimer, 4000);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): qcap2_timer_next() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+			}
+
+			return qres;
+		}
+
+		QRETURN OnConnectorMonitor(qcap2_timer_t* pTimer, tick_ctrl_t* pTickCtrl, dau_service* dauserv) {
+			QRESULT qres;
+			int64_t now = _clk();
+
+			switch(1) { case 1:
+				uint64_t nExpirations;
+				qres = qcap2_timer_wait(pTimer, &nExpirations);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): qcap2_timer_wait() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+
+				qres = qcap2_timer_next(pTimer, pTickCtrl->advance(now));
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): qcap2_timer_next() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+
+				bool connected = false;
+				if(! query_connector_connected(connected)) {
+					LOGW("failed to query DRM connector state while monitoring");
+					break;
+				}
+
+				if(! mHaveLastConnectorState || connected != mLastConnectorConnected) {
+					LOGI("DRM connector state changed: %s -> %s",
+						mHaveLastConnectorState ? (mLastConnectorConnected ? "connected" : "disconnected") : "unknown",
+						connected ? "connected" : "disconnected");
+
+					mLastConnectorConnected = connected;
+					mHaveLastConnectorState = true;
+
+					if(dauserv) {
+						dau_signal_cable_change(dauserv);
+					}
+				}
+			}
+
 			return QCAP_RT_OK;
 		}
 
