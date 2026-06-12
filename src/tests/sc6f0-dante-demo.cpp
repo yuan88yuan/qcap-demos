@@ -2180,6 +2180,8 @@ struct App0 {
 		typedef TestCase super_t;
 
 		dau_service* pHdmiTxDauServ;
+		int mDrmFd;
+		uint32_t mConnectorId;
 
 		static void _get_cable_status(struct dau_service *dau,
 						 struct DBusMessage *message,
@@ -2195,9 +2197,26 @@ struct App0 {
 		{
 			LOGI("---tag---: %s", __FUNCTION__);
 
-			dau_reply_get_cable_status(dau, message, true);
+			bool connected = false;
 
-			// StartDmx();
+			if(mDrmFd >= 0 && mConnectorId > 0) {
+				std::shared_ptr<drmModeConnector> pConnector(
+					drmModeGetConnector(mDrmFd, mConnectorId),
+					drmModeFreeConnector);
+
+				if(pConnector) {
+					connected = (pConnector->connection == DRM_MODE_CONNECTED);
+					LOGD("connector %u connection=%d (%s)", mConnectorId,
+						pConnector->connection,
+						connected ? "connected" : "disconnected");
+				} else {
+					LOGW("drmModeGetConnector() returned NULL");
+				}
+			} else {
+				LOGW("DRM not available (fd=%d, connector=%u)", mDrmFd, mConnectorId);
+			}
+
+			dau_reply_get_cable_status(dau, message, connected);
 		}
 
 		static void _get_hdcp(struct dau_service *dau,
@@ -2328,6 +2347,32 @@ struct App0 {
 		{
 			LOGI("---tag---: %s", __FUNCTION__);
 
+			if(info) {
+				LOGD("audio_info: channel_count=%u, speaker_map=%d, level_shift_value=%u",
+					info->channel_count, (int)info->speaker_map, info->level_shift_value);
+				LOGD("audio_info: downmix_inhibit=%s, lfe_playback_level=%u, sample_rate=%u, sample_bits=%u",
+					info->downmix_inhibit ? "true" : "false",
+					info->lfe_playback_level, info->sample_rate, info->sample_bits);
+
+				const char* encoding_str = "unknown";
+				switch(info->encoding) {
+				case AUDIO_EN_LPCM:    encoding_str = "LPCM"; break;
+				case AUDIO_EN_AAC:     encoding_str = "AAC"; break;
+				case AUDIO_EN_DTS:     encoding_str = "DTS"; break;
+				case AUDIO_EN_DTS_HD:  encoding_str = "DTS_HD"; break;
+				case AUDIO_EN_DD_AC3:  encoding_str = "DD_AC3"; break;
+				case AUDIO_EN_DD_P_EAC3: encoding_str = "DD_P_EAC3"; break;
+				case AUDIO_EN_D_THD_MAT: encoding_str = "D_THD_MAT"; break;
+				case AUDIO_EN_MPEG:    encoding_str = "MPEG"; break;
+				case AUDIO_EN_ATRAC:   encoding_str = "ATRAC"; break;
+				case AUDIO_EN_WMA:     encoding_str = "WMA"; break;
+				case AUDIO_EN_MPEG4:   encoding_str = "MPEG4"; break;
+				}
+				LOGD("audio_info: encoding=%d (%s)", (int)info->encoding, encoding_str);
+			} else {
+				LOGW("audio_info is NULL");
+			}
+
 			dau_reply_success(dau, message);
 		}
 
@@ -2345,13 +2390,69 @@ struct App0 {
 					 struct DBusMessage *message,
 					 void *ctxt)
 		{
+			self_t* pThis = (self_t*)ctxt;
+
+			pThis->get_edid(dau, message);
+		}
+
+		void get_edid(struct dau_service *dau, struct DBusMessage *message) {
 			LOGI("---tag---: %s", __FUNCTION__);
 
-			unsigned char edid[EDID_LEN];
-			unsigned int i;
+			unsigned char edid[EDID_LEN] = { 0 };
 
-			for (i = 0; i < sizeof(edid); ++i)
-				edid[i] = i;
+			if(mDrmFd >= 0 && mConnectorId > 0) {
+				LOGD("drm_fd=%d, connector_id=%u", mDrmFd, mConnectorId);
+
+				std::shared_ptr<drmModeObjectProperties> props(
+					drmModeObjectGetProperties(mDrmFd, mConnectorId, DRM_MODE_OBJECT_CONNECTOR),
+					drmModeFreeObjectProperties);
+
+				if(props) {
+					LOGD("connector has %u properties", props->count_props);
+
+					std::shared_ptr<drmModePropertyRes> propRes;
+					uint32_t propId = get_prop_id(mDrmFd, props.get(), &propRes, "EDID");
+
+					if(propId != 0) {
+						LOGD("EDID property found, id=%u", propId);
+
+						for(uint32_t i = 0; i < props->count_props; i++) {
+							if(props->props[i] == propId) {
+								uint64_t blobId = props->prop_values[i];
+								LOGD("EDID blob id=%llu", (unsigned long long)blobId);
+
+								if(blobId > 0) {
+									std::shared_ptr<drmModePropertyBlobRes> blob(
+										drmModeGetPropertyBlob(mDrmFd, blobId),
+										drmModeFreePropertyBlob);
+									if(blob && blob->data && blob->length > 0) {
+										LOGD("EDID blob length=%u", blob->length);
+										LOGD("EDID header: %02x %02x %02x %02x %02x %02x %02x %02x",
+											((unsigned char*)blob->data)[0], ((unsigned char*)blob->data)[1],
+											((unsigned char*)blob->data)[2], ((unsigned char*)blob->data)[3],
+											((unsigned char*)blob->data)[4], ((unsigned char*)blob->data)[5],
+											((unsigned char*)blob->data)[6], ((unsigned char*)blob->data)[7]);
+
+										size_t copyLen = blob->length < EDID_LEN ? blob->length : EDID_LEN;
+										memcpy(edid, blob->data, copyLen);
+									} else {
+										LOGW("EDID blob is null or empty");
+									}
+								} else {
+									LOGW("EDID blob id is zero");
+								}
+								break;
+							}
+						}
+					} else {
+						LOGW("EDID property not found on connector");
+					}
+				} else {
+					LOGW("drmModeObjectGetProperties() returned NULL");
+				}
+			} else {
+				LOGW("DRM not available (fd=%d, connector=%u)", mDrmFd, mConnectorId);
+			}
 
 			dau_reply_get_edid(dau, message, edid);
 		}
@@ -2399,7 +2500,55 @@ struct App0 {
 		}
 
 		QRETURN OnStart(free_stack_t& _FreeStack_, QRESULT& qres) {
+			int err;
+
 			switch(1) { case 1:
+				mDrmFd = -1;
+				mConnectorId = 0;
+
+				{
+					int drm_fd = drmOpen("xlnx", NULL);
+					if(drm_fd < 0) {
+						err = errno;
+						LOGE("%s(%d): drmOpen() failed, err=%d", __FUNCTION__, __LINE__, err);
+						break;
+					}
+					_FreeStack_ += [drm_fd]() {
+						drmClose(drm_fd);
+					};
+					mDrmFd = drm_fd;
+
+					std::shared_ptr<drmModeRes> pResources(drmModeGetResources(drm_fd), drmModeFreeResources);
+					if(! pResources) {
+						LOGE("%s(%d): drmModeGetResources() failed", __FUNCTION__, __LINE__);
+						break;
+					}
+
+					for(int i = 0; i < pResources->count_connectors; i++) {
+						std::shared_ptr<drmModeConnector> pConnector(
+							drmModeGetConnector(drm_fd, pResources->connectors[i]),
+							drmModeFreeConnector);
+						if(! pConnector) continue;
+
+						LOGD("connector: id=%d type=%d type_id=%d",
+							pConnector->connector_id, pConnector->connector_type,
+							pConnector->connector_type_id);
+
+						if(pConnector->connector_type == DRM_MODE_CONNECTOR_HDMIA &&
+							pConnector->connector_type_id == 1) {
+							mConnectorId = pConnector->connector_id;
+							break;
+						}
+					}
+
+					if(mConnectorId == 0) {
+						LOGE("%s(%d): HDMI-A-1 connector not found", __FUNCTION__, __LINE__);
+						break;
+					}
+
+					LOGI("HDMI-A-1 connector found, id=%u", mConnectorId);
+				}
+
 				dau_service* pHdmiTxDauServ;
 				qres = StartDauServ(_FreeStack_, &pHdmiTxDauServ);
 				if(qres != QCAP_RS_SUCCESSFUL) {
