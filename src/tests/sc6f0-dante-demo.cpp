@@ -2676,6 +2676,9 @@ struct App0 {
 
 				this->pHdmiTxDauServ = pHdmiTxDauServ;
 
+				dau_signal_cable_change(pHdmiTxDauServ);
+				dau_signal_video_change(pHdmiTxDauServ);
+
 				qres = StartConnectorMonitor(_FreeStack_, pHdmiTxDauServ);
 				if(qres != QCAP_RS_SUCCESSFUL) {
 					LOGE("%s(%d): StartConnectorMonitor() failed, qres=%d", __FUNCTION__, __LINE__, qres);
