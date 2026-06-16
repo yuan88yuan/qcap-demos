@@ -2185,8 +2185,13 @@ struct App0 {
 		dau_service* pHdmiTxDauServ;
 		int mDrmFd;
 		uint32_t mConnectorId;
+		uint32_t mCrtcId;
+		uint32_t mPrimaryPlaneId;
+		uint32_t mPrimaryFbId;
+		uint32_t mPrimaryBoHandle;
 		bool mLastConnectorConnected;
 		bool mHaveLastConnectorState;
+		struct video_format mCurrentVideoFormat;
 
 		static const char* video_colorformat_to_string(enum video_colorformat colorformat) {
 			switch(colorformat) {
@@ -2247,6 +2252,477 @@ struct App0 {
 			}
 
 			return true;
+		}
+
+		static void init_default_video_format(struct video_format* format) {
+			memset(format, 0x00, sizeof(*format));
+			format->width = 3840;
+			format->height = 2160;
+			format->framerate = 60;
+			format->colorformat = VIDEO_COLORFORMAT_YUV444;
+			format->bpp = 8;
+			format->interlaced = false;
+			format->locked = true;
+		}
+
+		static bool get_prop_value(drmModeObjectProperties *props, uint32_t propId, uint64_t* value) {
+			if(! props || ! value || propId == 0) return false;
+
+			for(uint32_t i = 0; i < props->count_props; i++) {
+				if(props->props[i] == propId) {
+					*value = props->prop_values[i];
+					return true;
+				}
+			}
+
+			return false;
+		}
+
+		static bool atomic_add_property_checked(drmModeAtomicReq* req,
+			uint32_t objectId, uint32_t propId, const char* propName, uint64_t value)
+		{
+			if(! req || propId == 0) {
+				LOGE("%s(%d): missing DRM property %s on object %u",
+					__FUNCTION__, __LINE__, propName ? propName : "(null)", objectId);
+				return false;
+			}
+
+			int err = drmModeAtomicAddProperty(req, objectId, propId, value);
+			LOGD("drmModeAtomicAddProperty(%u, %u:%s, %llu) = %d",
+				objectId, propId, propName ? propName : "", (unsigned long long)value, err);
+			if(err < 0) {
+				LOGE("%s(%d): drmModeAtomicAddProperty(%u, %s) failed, err=%d",
+					__FUNCTION__, __LINE__, objectId, propName ? propName : "(null)", err);
+				return false;
+			}
+
+			return true;
+		}
+
+		static int find_crtc_index(drmModeRes* resources, uint32_t crtcId) {
+			if(! resources) return -1;
+
+			for(int i = 0; i < resources->count_crtcs; i++) {
+				if(resources->crtcs[i] == crtcId) return i;
+			}
+
+			return -1;
+		}
+
+		static QRESULT find_connector_crtc(int fd, drmModeRes* resources,
+			drmModeConnector* connector, uint32_t* crtcId, int* crtcIndex)
+		{
+			if(! resources || ! connector || ! crtcId || ! crtcIndex) return QCAP_RS_ERROR_INVALID_PARAMETER;
+
+			if(connector->encoder_id != 0) {
+				std::shared_ptr<drmModeEncoder> encoder(
+					drmModeGetEncoder(fd, connector->encoder_id), drmModeFreeEncoder);
+				if(encoder && encoder->crtc_id != 0) {
+					int idx = find_crtc_index(resources, encoder->crtc_id);
+					if(idx >= 0) {
+						*crtcId = encoder->crtc_id;
+						*crtcIndex = idx;
+						return QCAP_RS_SUCCESSFUL;
+					}
+				}
+			}
+
+			for(int i = 0; i < connector->count_encoders; i++) {
+				std::shared_ptr<drmModeEncoder> encoder(
+					drmModeGetEncoder(fd, connector->encoders[i]), drmModeFreeEncoder);
+				if(! encoder) continue;
+
+				for(int j = 0; j < resources->count_crtcs; j++) {
+					if(encoder->possible_crtcs & (1 << j)) {
+						*crtcId = resources->crtcs[j];
+						*crtcIndex = j;
+						return QCAP_RS_SUCCESSFUL;
+					}
+				}
+			}
+
+			LOGE("%s(%d): no usable CRTC found for connector %u",
+				__FUNCTION__, __LINE__, connector->connector_id);
+			return QCAP_RS_ERROR_GENERAL;
+		}
+
+		static QRESULT find_matching_mode(drmModeConnector* connector,
+			const struct video_format* format, drmModeModeInfo* mode)
+		{
+			if(! connector || ! format || ! mode) return QCAP_RS_ERROR_INVALID_PARAMETER;
+
+			for(int i = 0; i < connector->count_modes; i++) {
+				drmModeModeInfo* candidate = &connector->modes[i];
+				bool modeInterlaced = (candidate->flags & DRM_MODE_FLAG_INTERLACE) != 0;
+				double refresh = mode_vrefresh(candidate);
+				bool refreshMatched = (format->framerate == 0) ||
+					(fabs(refresh - (double)format->framerate) < 0.5) ||
+					(candidate->vrefresh == (int)format->framerate);
+
+				if(candidate->hdisplay == (int)format->width &&
+					candidate->vdisplay == (int)format->height &&
+					modeInterlaced == format->interlaced &&
+					refreshMatched) {
+					*mode = *candidate;
+					LOGD("selected mode [%s] %d x %d @ %d (%.2f), flags=0x%x",
+						mode->name, mode->hdisplay, mode->vdisplay, mode->vrefresh,
+						mode_vrefresh(mode), mode->flags);
+					return QCAP_RS_SUCCESSFUL;
+				}
+			}
+
+			LOGE("%s(%d): no connector mode matches %ux%u@%uHz interlaced=%s",
+				__FUNCTION__, __LINE__, format->width, format->height, format->framerate,
+				format->interlaced ? "true" : "false");
+			return QCAP_RS_ERROR_INVALID_PARAMETER;
+		}
+
+		static bool plane_is_primary(int fd, drmModeObjectProperties* props) {
+			std::shared_ptr<drmModePropertyRes> typeProp;
+			uint32_t propId = get_prop_id(fd, props, &typeProp, "type");
+			uint64_t value = 0;
+
+			if(propId == 0 || ! typeProp || ! get_prop_value(props, propId, &value)) return false;
+
+			for(int i = 0; i < typeProp->count_enums; i++) {
+				if(typeProp->enums[i].value == value &&
+					strcmp(typeProp->enums[i].name, "Primary") == 0) {
+					return true;
+				}
+			}
+
+			return false;
+		}
+
+		static bool plane_supports_format(drmModePlane* plane, uint32_t drmFormat) {
+			if(! plane) return false;
+
+			for(uint32_t i = 0; i < plane->count_formats; i++) {
+				if(plane->formats[i] == drmFormat) return true;
+			}
+
+			return false;
+		}
+
+		static uint32_t drm_format_bpp(uint32_t drmFormat) {
+			switch(drmFormat) {
+			case DRM_FORMAT_BGR888:
+			case DRM_FORMAT_RGB888:
+			case DRM_FORMAT_VUY888:
+				return 24;
+			default:
+				return 32;
+			}
+		}
+
+		static const char* drm_format_to_string(uint32_t drmFormat) {
+			switch(drmFormat) {
+			case DRM_FORMAT_BGR888: return "BG24";
+			case DRM_FORMAT_RGB888: return "RG24";
+			case DRM_FORMAT_XRGB8888: return "XR24";
+			case DRM_FORMAT_XBGR8888: return "XB24";
+			case DRM_FORMAT_VUY888: return "VU24";
+			case DRM_FORMAT_XYUV8888: return "XY24";
+			case DRM_FORMAT_YUYV: return "YUYV";
+			case DRM_FORMAT_UYVY: return "UYVY";
+			default: return "unknown";
+			}
+		}
+
+		static bool choose_primary_fb_format(drmModePlane* plane,
+			const struct video_format* format, uint32_t* drmFormat, uint32_t* dumbBpp)
+		{
+			(void)format;
+
+			/*
+			 * modetest.txt shows the primary plane only advertises BG24.  The DAU input
+			 * colorformat is therefore intentionally ignored here; modeset the primary
+			 * plane with a BG24 dumb framebuffer for every requested video mode.
+			 */
+			if(! plane_supports_format(plane, DRM_FORMAT_BGR888)) return false;
+
+			*drmFormat = DRM_FORMAT_BGR888;
+			*dumbBpp = 24;
+			return true;
+		}
+
+		static QRESULT find_primary_plane(int fd, int crtcIndex,
+			uint32_t* planeId, std::shared_ptr<drmModePlane>* planeOut)
+		{
+			if(crtcIndex < 0 || ! planeId || ! planeOut) return QCAP_RS_ERROR_INVALID_PARAMETER;
+
+			std::shared_ptr<drmModePlaneRes> planes(
+				drmModeGetPlaneResources(fd), drmModeFreePlaneResources);
+			if(! planes) {
+				LOGE("%s(%d): drmModeGetPlaneResources() failed", __FUNCTION__, __LINE__);
+				return QCAP_RS_ERROR_GENERAL;
+			}
+
+			for(uint32_t i = 0; i < planes->count_planes; i++) {
+				std::shared_ptr<drmModePlane> plane(
+					drmModeGetPlane(fd, planes->planes[i]), drmModeFreePlane);
+				if(! plane) continue;
+				if(! (plane->possible_crtcs & (1 << crtcIndex))) continue;
+
+				std::shared_ptr<drmModeObjectProperties> props(
+					drmModeObjectGetProperties(fd, plane->plane_id, DRM_MODE_OBJECT_PLANE),
+					drmModeFreeObjectProperties);
+				if(! props || ! plane_is_primary(fd, props.get())) continue;
+
+				*planeId = plane->plane_id;
+				*planeOut = plane;
+				return QCAP_RS_SUCCESSFUL;
+			}
+
+			LOGE("%s(%d): no primary plane found for CRTC index %d",
+				__FUNCTION__, __LINE__, crtcIndex);
+			return QCAP_RS_ERROR_GENERAL;
+		}
+
+		static void destroy_dumb_fb(int fd, uint32_t fb, uint32_t bo) {
+			int err;
+
+			if(fd < 0) return;
+
+			if(fb != 0) {
+				err = drmModeRmFB(fd, fb);
+				if(err < 0) {
+					err = errno;
+					LOGE("%s(%d): drmModeRmFB(%u) failed, err=%d", __FUNCTION__, __LINE__, fb, err);
+				}
+			}
+
+			if(bo != 0) {
+				struct drm_mode_destroy_dumb dreq = { 0 };
+				dreq.handle = bo;
+				err = drmIoctl(fd, DRM_IOCTL_MODE_DESTROY_DUMB, &dreq);
+				if(err < 0) {
+					err = errno;
+					LOGE("%s(%d): drmIoctl(DRM_IOCTL_MODE_DESTROY_DUMB, %u) failed, err=%d",
+						__FUNCTION__, __LINE__, bo, err);
+				}
+			}
+		}
+
+		void cleanup_primary_fb() {
+			destroy_dumb_fb(mDrmFd, mPrimaryFbId, mPrimaryBoHandle);
+			mPrimaryFbId = 0;
+			mPrimaryBoHandle = 0;
+		}
+
+		QRESULT apply_drm_video_format(const struct video_format* format) {
+			QRESULT qres = QCAP_RS_SUCCESSFUL;
+			int err;
+			uint32_t modeBlobId = 0;
+			uint32_t fb = 0;
+			uint32_t bo = 0;
+
+			switch(1) { case 1:
+				if(! format) {
+					qres = QCAP_RS_ERROR_INVALID_PARAMETER;
+					LOGE("%s(%d): video_format is NULL", __FUNCTION__, __LINE__);
+					break;
+				}
+				if(mDrmFd < 0 || mConnectorId == 0) {
+					qres = QCAP_RS_ERROR_GENERAL;
+					LOGE("%s(%d): DRM is not initialized (fd=%d, connector=%u)",
+						__FUNCTION__, __LINE__, mDrmFd, mConnectorId);
+					break;
+				}
+
+				err = drmSetClientCap(mDrmFd, DRM_CLIENT_CAP_ATOMIC, 1);
+				if(err) {
+					err = errno;
+					qres = QCAP_RS_ERROR_GENERAL;
+					LOGE("%s(%d): drmSetClientCap(DRM_CLIENT_CAP_ATOMIC) failed, err=%d",
+						__FUNCTION__, __LINE__, err);
+					break;
+				}
+
+				err = drmSetClientCap(mDrmFd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1);
+				if(err) {
+					err = errno;
+					qres = QCAP_RS_ERROR_GENERAL;
+					LOGE("%s(%d): drmSetClientCap(DRM_CLIENT_CAP_UNIVERSAL_PLANES) failed, err=%d",
+						__FUNCTION__, __LINE__, err);
+					break;
+				}
+
+				std::shared_ptr<drmModeRes> resources(drmModeGetResources(mDrmFd), drmModeFreeResources);
+				if(! resources) {
+					qres = QCAP_RS_ERROR_GENERAL;
+					LOGE("%s(%d): drmModeGetResources() failed", __FUNCTION__, __LINE__);
+					break;
+				}
+
+				std::shared_ptr<drmModeConnector> connector(
+					drmModeGetConnector(mDrmFd, mConnectorId), drmModeFreeConnector);
+				if(! connector) {
+					qres = QCAP_RS_ERROR_GENERAL;
+					LOGE("%s(%d): drmModeGetConnector(%u) failed", __FUNCTION__, __LINE__, mConnectorId);
+					break;
+				}
+				if(connector->connection != DRM_MODE_CONNECTED) {
+					qres = QCAP_RS_ERROR_CONNECT_FAIL;
+					LOGE("%s(%d): connector %u is not connected (connection=%d)",
+						__FUNCTION__, __LINE__, mConnectorId, connector->connection);
+					break;
+				}
+
+				drmModeModeInfo mode;
+				qres = find_matching_mode(connector.get(), format, &mode);
+				if(qres != QCAP_RS_SUCCESSFUL) break;
+
+				uint32_t crtcId = 0;
+				int crtcIndex = -1;
+				qres = find_connector_crtc(mDrmFd, resources.get(), connector.get(), &crtcId, &crtcIndex);
+				if(qres != QCAP_RS_SUCCESSFUL) break;
+
+				uint32_t primaryPlaneId = 0;
+				std::shared_ptr<drmModePlane> primaryPlane;
+				qres = find_primary_plane(mDrmFd, crtcIndex, &primaryPlaneId, &primaryPlane);
+				if(qres != QCAP_RS_SUCCESSFUL) break;
+
+				uint32_t drmFormat = 0;
+				uint32_t dumbBpp = 0;
+				if(! choose_primary_fb_format(primaryPlane.get(), format, &drmFormat, &dumbBpp)) {
+					qres = QCAP_RS_ERROR_INVALID_PARAMETER;
+					LOGE("%s(%d): primary plane %u has no supported framebuffer format for %s",
+						__FUNCTION__, __LINE__, primaryPlaneId,
+						video_colorformat_to_string(format->colorformat));
+					break;
+				}
+				LOGI("using primary plane %u, CRTC %u, DRM fb format %s, dumb bpp=%u",
+					primaryPlaneId, crtcId, drm_format_to_string(drmFormat), dumbBpp);
+
+				struct drm_mode_create_dumb creq = { 0 };
+				creq.width = format->width;
+				creq.height = format->height;
+				creq.bpp = dumbBpp;
+				err = drmIoctl(mDrmFd, DRM_IOCTL_MODE_CREATE_DUMB, &creq);
+				if(err < 0) {
+					err = errno;
+					qres = QCAP_RS_ERROR_GENERAL;
+					LOGE("%s(%d): drmIoctl(DRM_IOCTL_MODE_CREATE_DUMB) failed, err=%d",
+						__FUNCTION__, __LINE__, err);
+					break;
+				}
+				bo = creq.handle;
+
+				uint32_t handles[4] = { creq.handle, 0, 0, 0 };
+				uint32_t pitches[4] = { creq.pitch, 0, 0, 0 };
+				uint32_t offsets[4] = { 0, 0, 0, 0 };
+				err = drmModeAddFB2(mDrmFd, creq.width, creq.height, drmFormat,
+					handles, pitches, offsets, &fb, 0);
+				if(err < 0) {
+					err = errno;
+					qres = QCAP_RS_ERROR_GENERAL;
+					LOGE("%s(%d): drmModeAddFB2(%ux%u, %s) failed, err=%d",
+						__FUNCTION__, __LINE__, creq.width, creq.height,
+						drm_format_to_string(drmFormat), err);
+					break;
+				}
+
+				err = drmModeCreatePropertyBlob(mDrmFd, &mode, sizeof(mode), &modeBlobId);
+				if(err) {
+					err = errno;
+					qres = QCAP_RS_ERROR_GENERAL;
+					LOGE("%s(%d): drmModeCreatePropertyBlob() failed, err=%d", __FUNCTION__, __LINE__, err);
+					break;
+				}
+
+				std::shared_ptr<drmModeObjectProperties> propsCrtc(
+					drmModeObjectGetProperties(mDrmFd, crtcId, DRM_MODE_OBJECT_CRTC),
+					drmModeFreeObjectProperties);
+				std::shared_ptr<drmModeObjectProperties> propsConn(
+					drmModeObjectGetProperties(mDrmFd, mConnectorId, DRM_MODE_OBJECT_CONNECTOR),
+					drmModeFreeObjectProperties);
+				std::shared_ptr<drmModeObjectProperties> propsPlane(
+					drmModeObjectGetProperties(mDrmFd, primaryPlaneId, DRM_MODE_OBJECT_PLANE),
+					drmModeFreeObjectProperties);
+				if(! propsCrtc || ! propsConn || ! propsPlane) {
+					qres = QCAP_RS_ERROR_GENERAL;
+					LOGE("%s(%d): failed to get DRM object properties", __FUNCTION__, __LINE__);
+					break;
+				}
+
+				uint32_t propCrtcModeId = get_prop_id(mDrmFd, propsCrtc.get(), NULL, "MODE_ID");
+				uint32_t propCrtcActive = get_prop_id(mDrmFd, propsCrtc.get(), NULL, "ACTIVE");
+				uint32_t propConnCrtcId = get_prop_id(mDrmFd, propsConn.get(), NULL, "CRTC_ID");
+				uint32_t propPlaneCrtcId = get_prop_id(mDrmFd, propsPlane.get(), NULL, "CRTC_ID");
+				uint32_t propPlaneFbId = get_prop_id(mDrmFd, propsPlane.get(), NULL, "FB_ID");
+				uint32_t propPlaneCrtcX = get_prop_id(mDrmFd, propsPlane.get(), NULL, "CRTC_X");
+				uint32_t propPlaneCrtcY = get_prop_id(mDrmFd, propsPlane.get(), NULL, "CRTC_Y");
+				uint32_t propPlaneCrtcW = get_prop_id(mDrmFd, propsPlane.get(), NULL, "CRTC_W");
+				uint32_t propPlaneCrtcH = get_prop_id(mDrmFd, propsPlane.get(), NULL, "CRTC_H");
+				uint32_t propPlaneSrcX = get_prop_id(mDrmFd, propsPlane.get(), NULL, "SRC_X");
+				uint32_t propPlaneSrcY = get_prop_id(mDrmFd, propsPlane.get(), NULL, "SRC_Y");
+				uint32_t propPlaneSrcW = get_prop_id(mDrmFd, propsPlane.get(), NULL, "SRC_W");
+				uint32_t propPlaneSrcH = get_prop_id(mDrmFd, propsPlane.get(), NULL, "SRC_H");
+
+				std::shared_ptr<drmModeAtomicReq> req(drmModeAtomicAlloc(), drmModeAtomicFree);
+				if(! req) {
+					qres = QCAP_RS_ERROR_GENERAL;
+					LOGE("%s(%d): drmModeAtomicAlloc() failed", __FUNCTION__, __LINE__);
+					break;
+				}
+
+				bool addOk = true;
+				addOk &= atomic_add_property_checked(req.get(), mConnectorId, propConnCrtcId, "CRTC_ID", crtcId);
+				addOk &= atomic_add_property_checked(req.get(), crtcId, propCrtcModeId, "MODE_ID", modeBlobId);
+				addOk &= atomic_add_property_checked(req.get(), crtcId, propCrtcActive, "ACTIVE", 1);
+				addOk &= atomic_add_property_checked(req.get(), primaryPlaneId, propPlaneCrtcId, "CRTC_ID", crtcId);
+				addOk &= atomic_add_property_checked(req.get(), primaryPlaneId, propPlaneFbId, "FB_ID", fb);
+				addOk &= atomic_add_property_checked(req.get(), primaryPlaneId, propPlaneCrtcX, "CRTC_X", 0);
+				addOk &= atomic_add_property_checked(req.get(), primaryPlaneId, propPlaneCrtcY, "CRTC_Y", 0);
+				addOk &= atomic_add_property_checked(req.get(), primaryPlaneId, propPlaneCrtcW, "CRTC_W", format->width);
+				addOk &= atomic_add_property_checked(req.get(), primaryPlaneId, propPlaneCrtcH, "CRTC_H", format->height);
+				addOk &= atomic_add_property_checked(req.get(), primaryPlaneId, propPlaneSrcX, "SRC_X", 0);
+				addOk &= atomic_add_property_checked(req.get(), primaryPlaneId, propPlaneSrcY, "SRC_Y", 0);
+				addOk &= atomic_add_property_checked(req.get(), primaryPlaneId, propPlaneSrcW, "SRC_W", (uint64_t)format->width << 16);
+				addOk &= atomic_add_property_checked(req.get(), primaryPlaneId, propPlaneSrcH, "SRC_H", (uint64_t)format->height << 16);
+				if(! addOk) {
+					qres = QCAP_RS_ERROR_GENERAL;
+					break;
+				}
+
+				err = drmModeAtomicCommit(mDrmFd, req.get(), DRM_MODE_ATOMIC_ALLOW_MODESET, NULL);
+				if(err < 0) {
+					err = errno;
+					qres = QCAP_RS_ERROR_GENERAL;
+					LOGE("%s(%d): drmModeAtomicCommit(DRM_MODE_ATOMIC_ALLOW_MODESET) failed, err=%d",
+						__FUNCTION__, __LINE__, err);
+					break;
+				}
+
+				uint32_t oldFb = mPrimaryFbId;
+				uint32_t oldBo = mPrimaryBoHandle;
+				mPrimaryFbId = fb;
+				mPrimaryBoHandle = bo;
+				mCrtcId = crtcId;
+				mPrimaryPlaneId = primaryPlaneId;
+				mCurrentVideoFormat = *format;
+				mCurrentVideoFormat.locked = true;
+				fb = 0;
+				bo = 0;
+				destroy_dumb_fb(mDrmFd, oldFb, oldBo);
+
+				LOGI("DRM modeset complete: connector=%u crtc=%u primary_plane=%u mode=%ux%u@%uHz",
+					mConnectorId, mCrtcId, mPrimaryPlaneId,
+					format->width, format->height, format->framerate);
+			}
+
+			if(modeBlobId != 0) {
+				err = drmModeDestroyPropertyBlob(mDrmFd, modeBlobId);
+				if(err) {
+					err = errno;
+					LOGE("%s(%d): drmModeDestroyPropertyBlob(%u) failed, err=%d",
+						__FUNCTION__, __LINE__, modeBlobId, err);
+				}
+			}
+			destroy_dumb_fb(mDrmFd, fb, bo);
+
+			return qres;
 		}
 
 		bool query_connector_connected(bool& connected) {
@@ -2325,17 +2801,7 @@ struct App0 {
 		void get_video_format(struct dau_service *dau, struct DBusMessage *message) {
 			LOGI("---tag---: %s", __FUNCTION__);
 
-			struct video_format format = {
-				.width = 3840,
-				.height = 2160,
-				.framerate = 60,
-				.colorformat = VIDEO_COLORFORMAT_YUV444,
-				.bpp = 8,
-				.interlaced = false,
-				.locked = true
-			};
-
-			dau_reply_get_video_format(dau, message, &format);
+			dau_reply_get_video_format(dau, message, &mCurrentVideoFormat);
 		}
 
 		static void _get_audio_info(struct dau_service *dau,
@@ -2403,6 +2869,15 @@ struct App0 {
 						 const struct video_format *format,
 						 void *ctxt)
 		{
+			self_t* pThis = (self_t*)ctxt;
+
+			pThis->set_video_format(dau, message, format);
+		}
+
+		void set_video_format(struct dau_service *dau,
+						struct DBusMessage *message,
+						const struct video_format *format)
+		{
 			LOGI("---tag---: %s", __FUNCTION__);
 
 			if(format) {
@@ -2416,7 +2891,15 @@ struct App0 {
 				LOGW("video_format is NULL");
 			}
 
+			QRESULT qres = apply_drm_video_format(format);
+			if(qres != QCAP_RS_SUCCESSFUL) {
+				LOGE("%s(%d): apply_drm_video_format() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+				dau_reply_error(dau, message, "Failed to apply DRM video format");
+				return;
+			}
+
 			dau_reply_success(dau, message);
+			dau_signal_video_change(dau);
 		}
 
 		static void _set_audio_info(struct dau_service *dau,
@@ -2618,8 +3101,13 @@ struct App0 {
 			switch(1) { case 1:
 				mDrmFd = -1;
 				mConnectorId = 0;
+				mCrtcId = 0;
+				mPrimaryPlaneId = 0;
+				mPrimaryFbId = 0;
+				mPrimaryBoHandle = 0;
 				mLastConnectorConnected = false;
 				mHaveLastConnectorState = false;
+				init_default_video_format(&mCurrentVideoFormat);
 
 				{
 					int drm_fd = drmOpen("xlnx", NULL);
@@ -2633,6 +3121,25 @@ struct App0 {
 						drmClose(drm_fd);
 					};
 					mDrmFd = drm_fd;
+					_FreeStack_ += [this]() {
+						cleanup_primary_fb();
+					};
+
+					err = drmSetClientCap(drm_fd, DRM_CLIENT_CAP_ATOMIC, 1);
+					if(err) {
+						err = errno;
+						qres = QCAP_RS_ERROR_GENERAL;
+						LOGE("%s(%d): drmSetClientCap(DRM_CLIENT_CAP_ATOMIC) failed, err=%d", __FUNCTION__, __LINE__, err);
+						break;
+					}
+
+					err = drmSetClientCap(drm_fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1);
+					if(err) {
+						err = errno;
+						qres = QCAP_RS_ERROR_GENERAL;
+						LOGE("%s(%d): drmSetClientCap(DRM_CLIENT_CAP_UNIVERSAL_PLANES) failed, err=%d", __FUNCTION__, __LINE__, err);
+						break;
+					}
 
 					std::shared_ptr<drmModeRes> pResources(drmModeGetResources(drm_fd), drmModeFreeResources);
 					if(! pResources) {
