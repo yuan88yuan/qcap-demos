@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include <atomic>
+#include <sys/mman.h>
 #include <drm.h>
 #include <xf86drm.h>
 #include <xf86drmMode.h>
@@ -2189,6 +2190,9 @@ struct App0 {
 		uint32_t mPrimaryPlaneId;
 		uint32_t mPrimaryFbId;
 		uint32_t mPrimaryBoHandle;
+		uint32_t mOverlayPlaneId;
+		uint32_t mOverlayFbId;
+		uint32_t mOverlayBoHandle;
 		bool mLastConnectorConnected;
 		bool mHaveLastConnectorState;
 		struct video_format mCurrentVideoFormat;
@@ -2406,6 +2410,9 @@ struct App0 {
 
 		static uint32_t drm_format_bpp(uint32_t drmFormat) {
 			switch(drmFormat) {
+			case DRM_FORMAT_YUYV:
+			case DRM_FORMAT_UYVY:
+				return 16;
 			case DRM_FORMAT_BGR888:
 			case DRM_FORMAT_RGB888:
 			case DRM_FORMAT_VUY888:
@@ -2510,12 +2517,75 @@ struct App0 {
 			mPrimaryBoHandle = 0;
 		}
 
+		void cleanup_overlay_fb() {
+			destroy_dumb_fb(mDrmFd, mOverlayFbId, mOverlayBoHandle);
+			mOverlayFbId = 0;
+			mOverlayBoHandle = 0;
+		}
+
+		void cleanup_drm_fbs() {
+			cleanup_overlay_fb();
+			cleanup_primary_fb();
+		}
+
+		static QRESULT fill_yuyv_dumb_fb(int fd, uint32_t bo, uint32_t width, uint32_t height, uint32_t pitch) {
+			QRESULT qres = QCAP_RS_SUCCESSFUL;
+			int err;
+			void* map = MAP_FAILED;
+
+			switch(1) { case 1:
+				if(fd < 0 || bo == 0 || width == 0 || height == 0 || pitch == 0) {
+					qres = QCAP_RS_ERROR_INVALID_PARAMETER;
+					LOGE("%s(%d): invalid YUYV dumb FB parameters", __FUNCTION__, __LINE__);
+					break;
+				}
+
+				struct drm_mode_map_dumb mreq = { 0 };
+				mreq.handle = bo;
+				err = drmIoctl(fd, DRM_IOCTL_MODE_MAP_DUMB, &mreq);
+				if(err < 0) {
+					err = errno;
+					qres = QCAP_RS_ERROR_GENERAL;
+					LOGE("%s(%d): drmIoctl(DRM_IOCTL_MODE_MAP_DUMB, %u) failed, err=%d",
+						__FUNCTION__, __LINE__, bo, err);
+					break;
+				}
+
+				const size_t mapLen = (size_t)pitch * height;
+				map = mmap(NULL, mapLen, PROT_READ | PROT_WRITE, MAP_SHARED, fd, mreq.offset);
+				if(map == MAP_FAILED) {
+					err = errno;
+					qres = QCAP_RS_ERROR_GENERAL;
+					LOGE("%s(%d): mmap(YUYV dumb FB) failed, err=%d", __FUNCTION__, __LINE__, err);
+					break;
+				}
+
+				for(uint32_t y = 0; y < height; y++) {
+					uint8_t* row = (uint8_t*)map + (size_t)y * pitch;
+					for(uint32_t x = 0; x + 1 < width; x += 2) {
+						row[x * 2 + 0] = 0x10; // Y0: limited-range black
+						row[x * 2 + 1] = 0x80; // U
+						row[x * 2 + 2] = 0x10; // Y1
+						row[x * 2 + 3] = 0x80; // V
+					}
+				}
+			}
+
+			if(map != MAP_FAILED) {
+				munmap(map, (size_t)pitch * height);
+			}
+
+			return qres;
+		}
+
 		QRESULT apply_drm_video_format(const struct video_format* format) {
 			QRESULT qres = QCAP_RS_SUCCESSFUL;
 			int err;
 			uint32_t modeBlobId = 0;
 			uint32_t fb = 0;
 			uint32_t bo = 0;
+			uint32_t overlayFb = 0;
+			uint32_t overlayBo = 0;
 
 			switch(1) { case 1:
 				if(! format) {
@@ -2583,6 +2653,27 @@ struct App0 {
 				qres = find_primary_plane(mDrmFd, crtcIndex, &primaryPlaneId, &primaryPlane);
 				if(qres != QCAP_RS_SUCCESSFUL) break;
 
+				const uint32_t overlayPlaneId = 34;
+				std::shared_ptr<drmModePlane> overlayPlane(
+					drmModeGetPlane(mDrmFd, overlayPlaneId), drmModeFreePlane);
+				if(! overlayPlane) {
+					qres = QCAP_RS_ERROR_GENERAL;
+					LOGE("%s(%d): drmModeGetPlane(%u) failed", __FUNCTION__, __LINE__, overlayPlaneId);
+					break;
+				}
+				if(! (overlayPlane->possible_crtcs & (1 << crtcIndex))) {
+					qres = QCAP_RS_ERROR_INVALID_PARAMETER;
+					LOGE("%s(%d): overlay plane %u cannot be used with CRTC index %d",
+						__FUNCTION__, __LINE__, overlayPlaneId, crtcIndex);
+					break;
+				}
+				if(! plane_supports_format(overlayPlane.get(), DRM_FORMAT_YUYV)) {
+					qres = QCAP_RS_ERROR_INVALID_PARAMETER;
+					LOGE("%s(%d): overlay plane %u does not support %s",
+						__FUNCTION__, __LINE__, overlayPlaneId, drm_format_to_string(DRM_FORMAT_YUYV));
+					break;
+				}
+
 				uint32_t drmFormat = 0;
 				uint32_t dumbBpp = 0;
 				if(! choose_primary_fb_format(primaryPlane.get(), format, &drmFormat, &dumbBpp)) {
@@ -2623,6 +2714,47 @@ struct App0 {
 					break;
 				}
 
+				{
+					const uint32_t overlayDrmFormat = DRM_FORMAT_YUYV;
+					const uint32_t overlayBpp = drm_format_bpp(overlayDrmFormat);
+
+					struct drm_mode_create_dumb overlayCreq = { 0 };
+					overlayCreq.width = format->width;
+					overlayCreq.height = format->height;
+					overlayCreq.bpp = overlayBpp;
+					err = drmIoctl(mDrmFd, DRM_IOCTL_MODE_CREATE_DUMB, &overlayCreq);
+					if(err < 0) {
+						err = errno;
+						qres = QCAP_RS_ERROR_GENERAL;
+						LOGE("%s(%d): drmIoctl(DRM_IOCTL_MODE_CREATE_DUMB, overlay %s) failed, err=%d",
+							__FUNCTION__, __LINE__, drm_format_to_string(overlayDrmFormat), err);
+						break;
+					}
+					overlayBo = overlayCreq.handle;
+
+					qres = fill_yuyv_dumb_fb(mDrmFd, overlayBo, overlayCreq.width,
+						overlayCreq.height, overlayCreq.pitch);
+					if(qres != QCAP_RS_SUCCESSFUL) break;
+
+					uint32_t overlayHandles[4] = { overlayCreq.handle, 0, 0, 0 };
+					uint32_t overlayPitches[4] = { overlayCreq.pitch, 0, 0, 0 };
+					uint32_t overlayOffsets[4] = { 0, 0, 0, 0 };
+					err = drmModeAddFB2(mDrmFd, overlayCreq.width, overlayCreq.height,
+						overlayDrmFormat, overlayHandles, overlayPitches, overlayOffsets,
+						&overlayFb, 0);
+					if(err < 0) {
+						err = errno;
+						qres = QCAP_RS_ERROR_GENERAL;
+						LOGE("%s(%d): drmModeAddFB2(%ux%u, overlay %s) failed, err=%d",
+							__FUNCTION__, __LINE__, overlayCreq.width, overlayCreq.height,
+							drm_format_to_string(overlayDrmFormat), err);
+						break;
+					}
+					LOGI("using overlay plane %u, DRM fb format %s, dumb bpp=%u",
+						overlayPlaneId, drm_format_to_string(overlayDrmFormat), overlayBpp);
+				}
+				if(qres != QCAP_RS_SUCCESSFUL) break;
+
 				err = drmModeCreatePropertyBlob(mDrmFd, &mode, sizeof(mode), &modeBlobId);
 				if(err) {
 					err = errno;
@@ -2640,7 +2772,10 @@ struct App0 {
 				std::shared_ptr<drmModeObjectProperties> propsPlane(
 					drmModeObjectGetProperties(mDrmFd, primaryPlaneId, DRM_MODE_OBJECT_PLANE),
 					drmModeFreeObjectProperties);
-				if(! propsCrtc || ! propsConn || ! propsPlane) {
+				std::shared_ptr<drmModeObjectProperties> propsOverlay(
+					drmModeObjectGetProperties(mDrmFd, overlayPlaneId, DRM_MODE_OBJECT_PLANE),
+					drmModeFreeObjectProperties);
+				if(! propsCrtc || ! propsConn || ! propsPlane || ! propsOverlay) {
 					qres = QCAP_RS_ERROR_GENERAL;
 					LOGE("%s(%d): failed to get DRM object properties", __FUNCTION__, __LINE__);
 					break;
@@ -2659,6 +2794,16 @@ struct App0 {
 				uint32_t propPlaneSrcY = get_prop_id(mDrmFd, propsPlane.get(), NULL, "SRC_Y");
 				uint32_t propPlaneSrcW = get_prop_id(mDrmFd, propsPlane.get(), NULL, "SRC_W");
 				uint32_t propPlaneSrcH = get_prop_id(mDrmFd, propsPlane.get(), NULL, "SRC_H");
+				uint32_t propOverlayCrtcId = get_prop_id(mDrmFd, propsOverlay.get(), NULL, "CRTC_ID");
+				uint32_t propOverlayFbId = get_prop_id(mDrmFd, propsOverlay.get(), NULL, "FB_ID");
+				uint32_t propOverlayCrtcX = get_prop_id(mDrmFd, propsOverlay.get(), NULL, "CRTC_X");
+				uint32_t propOverlayCrtcY = get_prop_id(mDrmFd, propsOverlay.get(), NULL, "CRTC_Y");
+				uint32_t propOverlayCrtcW = get_prop_id(mDrmFd, propsOverlay.get(), NULL, "CRTC_W");
+				uint32_t propOverlayCrtcH = get_prop_id(mDrmFd, propsOverlay.get(), NULL, "CRTC_H");
+				uint32_t propOverlaySrcX = get_prop_id(mDrmFd, propsOverlay.get(), NULL, "SRC_X");
+				uint32_t propOverlaySrcY = get_prop_id(mDrmFd, propsOverlay.get(), NULL, "SRC_Y");
+				uint32_t propOverlaySrcW = get_prop_id(mDrmFd, propsOverlay.get(), NULL, "SRC_W");
+				uint32_t propOverlaySrcH = get_prop_id(mDrmFd, propsOverlay.get(), NULL, "SRC_H");
 
 				std::shared_ptr<drmModeAtomicReq> req(drmModeAtomicAlloc(), drmModeAtomicFree);
 				if(! req) {
@@ -2681,6 +2826,16 @@ struct App0 {
 				addOk &= atomic_add_property_checked(req.get(), primaryPlaneId, propPlaneSrcY, "SRC_Y", 0);
 				addOk &= atomic_add_property_checked(req.get(), primaryPlaneId, propPlaneSrcW, "SRC_W", (uint64_t)format->width << 16);
 				addOk &= atomic_add_property_checked(req.get(), primaryPlaneId, propPlaneSrcH, "SRC_H", (uint64_t)format->height << 16);
+				addOk &= atomic_add_property_checked(req.get(), overlayPlaneId, propOverlayCrtcId, "CRTC_ID", crtcId);
+				addOk &= atomic_add_property_checked(req.get(), overlayPlaneId, propOverlayFbId, "FB_ID", overlayFb);
+				addOk &= atomic_add_property_checked(req.get(), overlayPlaneId, propOverlayCrtcX, "CRTC_X", 0);
+				addOk &= atomic_add_property_checked(req.get(), overlayPlaneId, propOverlayCrtcY, "CRTC_Y", 0);
+				addOk &= atomic_add_property_checked(req.get(), overlayPlaneId, propOverlayCrtcW, "CRTC_W", format->width);
+				addOk &= atomic_add_property_checked(req.get(), overlayPlaneId, propOverlayCrtcH, "CRTC_H", format->height);
+				addOk &= atomic_add_property_checked(req.get(), overlayPlaneId, propOverlaySrcX, "SRC_X", 0);
+				addOk &= atomic_add_property_checked(req.get(), overlayPlaneId, propOverlaySrcY, "SRC_Y", 0);
+				addOk &= atomic_add_property_checked(req.get(), overlayPlaneId, propOverlaySrcW, "SRC_W", (uint64_t)format->width << 16);
+				addOk &= atomic_add_property_checked(req.get(), overlayPlaneId, propOverlaySrcH, "SRC_H", (uint64_t)format->height << 16);
 				if(! addOk) {
 					qres = QCAP_RS_ERROR_GENERAL;
 					break;
@@ -2697,18 +2852,26 @@ struct App0 {
 
 				uint32_t oldFb = mPrimaryFbId;
 				uint32_t oldBo = mPrimaryBoHandle;
+				uint32_t oldOverlayFb = mOverlayFbId;
+				uint32_t oldOverlayBo = mOverlayBoHandle;
 				mPrimaryFbId = fb;
 				mPrimaryBoHandle = bo;
+				mOverlayPlaneId = overlayPlaneId;
+				mOverlayFbId = overlayFb;
+				mOverlayBoHandle = overlayBo;
 				mCrtcId = crtcId;
 				mPrimaryPlaneId = primaryPlaneId;
 				mCurrentVideoFormat = *format;
 				mCurrentVideoFormat.locked = true;
 				fb = 0;
 				bo = 0;
+				overlayFb = 0;
+				overlayBo = 0;
 				destroy_dumb_fb(mDrmFd, oldFb, oldBo);
+				destroy_dumb_fb(mDrmFd, oldOverlayFb, oldOverlayBo);
 
-				LOGI("DRM modeset complete: connector=%u crtc=%u primary_plane=%u mode=%ux%u@%uHz",
-					mConnectorId, mCrtcId, mPrimaryPlaneId,
+				LOGI("DRM modeset complete: connector=%u crtc=%u primary_plane=%u overlay_plane=%u mode=%ux%u@%uHz",
+					mConnectorId, mCrtcId, mPrimaryPlaneId, mOverlayPlaneId,
 					format->width, format->height, format->framerate);
 			}
 
@@ -2721,6 +2884,7 @@ struct App0 {
 				}
 			}
 			destroy_dumb_fb(mDrmFd, fb, bo);
+			destroy_dumb_fb(mDrmFd, overlayFb, overlayBo);
 
 			return qres;
 		}
@@ -3105,6 +3269,9 @@ struct App0 {
 				mPrimaryPlaneId = 0;
 				mPrimaryFbId = 0;
 				mPrimaryBoHandle = 0;
+				mOverlayPlaneId = 34;
+				mOverlayFbId = 0;
+				mOverlayBoHandle = 0;
 				mLastConnectorConnected = false;
 				mHaveLastConnectorState = false;
 				init_default_video_format(&mCurrentVideoFormat);
@@ -3122,7 +3289,7 @@ struct App0 {
 					};
 					mDrmFd = drm_fd;
 					_FreeStack_ += [this]() {
-						cleanup_primary_fb();
+						cleanup_drm_fbs();
 					};
 
 					err = drmSetClientCap(drm_fd, DRM_CLIENT_CAP_ATOMIC, 1);

@@ -1,0 +1,312 @@
+Encoders:
+id	crtc	type	possible crtcs	possible clones	
+39	38	TMDS	0x00000001	0x00000001
+
+Connectors:
+id	encoder	status		name		size (mm)	modes	encoders
+40	39	connected	HDMI-A-1       	600x340		65	39
+  modes:
+	index name refresh (Hz) hdisp hss hse htot vdisp vss vse vtot
+  #0 3840x2160 60.00 3840 3888 3920 4000 2160 2163 2168 2222 533250 flags: phsync, nvsync; type: preferred, driver
+  #1 3840x2160 60.00 3840 4016 4104 4400 2160 2168 2178 2250 594000 flags: phsync, pvsync; type: driver
+  #2 3840x2160 59.94 3840 4016 4104 4400 2160 2168 2178 2250 593407 flags: phsync, pvsync; type: driver
+  #3 3840x2160 50.00 3840 4896 4984 5280 2160 2168 2178 2250 594000 flags: phsync, pvsync; type: driver
+  #4 3840x2160 30.00 3840 4016 4104 4400 2160 2168 2178 2250 297000 flags: phsync, pvsync; type: driver
+  #5 3840x2160 29.97 3840 4016 4104 4400 2160 2168 2178 2250 296703 flags: phsync, pvsync; type: driver
+  #6 3840x2160 25.00 3840 4896 4984 5280 2160 2168 2178 2250 297000 flags: phsync, pvsync; type: driver
+  #7 3840x2160 24.00 3840 5116 5204 5500 2160 2168 2178 2250 297000 flags: phsync, pvsync; type: driver
+  #8 3840x2160 23.98 3840 5116 5204 5500 2160 2168 2178 2250 296703 flags: phsync, pvsync; type: driver
+  #9 1920x2160 59.99 1920 1968 2000 2080 2160 2163 2173 2222 277250 flags: phsync, nvsync; type: driver
+  #10 3840x1080 59.97 3840 3888 3920 4000 1080 1083 1093 1111 266500 flags: phsync, nvsync; type: driver
+  #11 2560x1080 60.00 2560 2808 2852 3000 1080 1084 1089 1100 198000 flags: phsync, pvsync; type: driver
+  #12 2560x1080 59.94 2560 2808 2852 3000 1080 1084 1089 1100 197802 flags: phsync, pvsync; type: driver
+  #13 2048x1152 60.00 2048 2074 2154 2250 1152 1153 1156 1200 162000 flags: phsync, pvsync; type: driver
+  #14 1920x1200 59.95 1920 1968 2000 2080 1200 1203 1209 1235 154000 flags: phsync, nvsync; type: driver
+  #15 1920x1080 60.00 1920 2008 2052 2200 1080 1084 1089 1125 148500 flags: nhsync, nvsync; type: driver
+  #16 1920x1080 60.00 1920 2008 2052 2200 1080 1084 1089 1125 148500 flags: phsync, pvsync; type: driver
+  #17 1920x1080 59.94 1920 2008 2052 2200 1080 1084 1089 1125 148352 flags: phsync, pvsync; type: driver
+  #18 1920x1080 50.00 1920 2448 2492 2640 1080 1084 1089 1125 148500 flags: phsync, pvsync; type: driver
+  #19 1920x1080 30.00 1920 2008 2052 2200 1080 1084 1089 1125 74250 flags: phsync, pvsync; type: driver
+  #20 1920x1080 29.97 1920 2008 2052 2200 1080 1084 1089 1125 74176 flags: phsync, pvsync; type: driver
+  #21 1920x1080 25.00 1920 2448 2492 2640 1080 1084 1089 1125 74250 flags: phsync, pvsync; type: driver
+  #22 1920x1080 24.00 1920 2558 2602 2750 1080 1084 1089 1125 74250 flags: phsync, pvsync; type: driver
+  #23 1920x1080 23.98 1920 2558 2602 2750 1080 1084 1089 1125 74176 flags: phsync, pvsync; type: driver
+  #24 1680x1050 59.88 1680 1728 1760 1840 1050 1053 1059 1080 119000 flags: phsync, nvsync; type: driver
+  #25 1600x900 60.00 1600 1624 1704 1800 900 901 904 1000 108000 flags: phsync, pvsync; type: driver
+  #26 1280x1024 75.02 1280 1296 1440 1688 1024 1025 1028 1066 135000 flags: phsync, pvsync; type: driver
+  #27 1440x900 59.90 1440 1488 1520 1600 900 903 909 926 88750 flags: phsync, nvsync; type: driver
+  #28 1920x1080i 30.00 1920 2008 2052 2200 540 1084 1094 1125 74250 flags: phsync, pvsync, interlace; type: driver
+  #29 1920x1080i 29.97 1920 2008 2052 2200 540 1084 1094 1125 74176 flags: phsync, pvsync, interlace; type: driver
+  #30 1920x1080i 25.00 1920 2448 2492 2640 540 1084 1094 1125 74250 flags: phsync, pvsync, interlace; type: driver
+  #31 1280x800 59.91 1280 1328 1360 1440 800 803 809 823 71000 flags: phsync, nvsync; type: driver
+  #32 1152x864 75.00 1152 1216 1344 1600 864 865 868 900 108000 flags: phsync, pvsync; type: driver
+  #33 1280x720 60.00 1280 1390 1430 1650 720 725 730 750 74250 flags: phsync, pvsync; type: driver
+  #34 1280x720 60.00 1280 1390 1430 1650 720 725 730 750 74250 flags: phsync, pvsync; type: driver
+  #35 1280x720 59.94 1280 1390 1430 1650 720 725 730 750 74176 flags: phsync, pvsync; type: driver
+  #36 1280x720 50.00 1280 1720 1760 1980 720 725 730 750 74250 flags: phsync, pvsync; type: driver
+  #37 1440x576 50.00 1440 1464 1592 1728 576 581 586 625 54000 flags: nhsync, nvsync; type: driver
+  #38 1024x768 75.03 1024 1040 1136 1312 768 769 772 800 78750 flags: phsync, pvsync; type: driver
+  #39 1024x768 70.07 1024 1048 1184 1328 768 771 777 806 75000 flags: nhsync, nvsync; type: driver
+  #40 1024x768 60.00 1024 1048 1184 1344 768 771 777 806 65000 flags: nhsync, nvsync; type: driver
+  #41 1440x480 60.00 1440 1472 1596 1716 480 489 495 525 54054 flags: nhsync, nvsync; type: driver
+  #42 1440x480 59.94 1440 1472 1596 1716 480 489 495 525 54000 flags: nhsync, nvsync; type: driver
+  #43 832x624 74.55 832 864 928 1152 624 625 628 667 57284 flags: nhsync, nvsync; type: driver
+  #44 800x600 75.00 800 816 896 1056 600 601 604 625 49500 flags: phsync, pvsync; type: driver
+  #45 800x600 72.19 800 856 976 1040 600 637 643 666 50000 flags: phsync, pvsync; type: driver
+  #46 800x600 60.32 800 840 968 1056 600 601 605 628 40000 flags: phsync, pvsync; type: driver
+  #47 800x600 56.25 800 824 896 1024 600 601 603 625 36000 flags: phsync, pvsync; type: driver
+  #48 720x576 50.00 720 732 796 864 576 581 586 625 27000 flags: nhsync, nvsync; type: driver
+  #49 720x480 60.00 720 736 798 858 480 489 495 525 27027 flags: nhsync, nvsync; type: driver
+  #50 720x480 60.00 720 736 798 858 480 489 495 525 27027 flags: nhsync, nvsync; type: driver
+  #51 720x480 59.94 720 736 798 858 480 489 495 525 27000 flags: nhsync, nvsync; type: driver
+  #52 720x480 59.94 720 736 798 858 480 489 495 525 27000 flags: nhsync, nvsync; type: driver
+  #53 640x480 75.00 640 656 720 840 480 481 484 500 31500 flags: nhsync, nvsync; type: driver
+  #54 640x480 72.81 640 664 704 832 480 489 492 520 31500 flags: nhsync, nvsync; type: driver
+  #55 640x480 66.67 640 704 768 864 480 483 486 525 30240 flags: nhsync, nvsync; type: driver
+  #56 640x480 60.00 640 656 752 800 480 490 492 525 25200 flags: nhsync, nvsync; type: driver
+  #57 640x480 59.94 640 656 752 800 480 490 492 525 25175 flags: nhsync, nvsync; type: driver
+  #58 640x480 59.94 640 656 752 800 480 490 492 525 25175 flags: nhsync, nvsync; type: driver
+  #59 720x400 70.08 720 738 846 900 400 412 414 449 28320 flags: nhsync, pvsync; type: driver
+  #60 720x576i 25.00 720 732 795 864 288 580 586 625 13500 flags: nhsync, nvsync, interlace, dblclk; type: driver
+  #61 720x480i 30.00 720 739 801 858 240 488 494 525 13514 flags: nhsync, nvsync, interlace, dblclk; type: driver
+  #62 720x480i 30.00 720 739 801 858 240 488 494 525 13514 flags: nhsync, nvsync, interlace, dblclk; type: driver
+  #63 720x480i 29.97 720 739 801 858 240 488 494 525 13500 flags: nhsync, nvsync, interlace, dblclk; type: driver
+  #64 720x480i 29.97 720 739 801 858 240 488 494 525 13500 flags: nhsync, nvsync, interlace, dblclk; type: driver
+  props:
+	1 EDID:
+		flags: immutable blob
+		blobs:
+
+		value:
+			00ffffffffffff005a63309c01010101
+			32190103803c22782e5bd5a7554ea226
+			105054bfef80e1c0d100d1c0b300a9c0
+			9500810081c04dd000a0f0703e803020
+			350055502100001a000000ff0055384b
+			3135353030303031310a000000fd0018
+			780fcc3c000a202020202020000000fc
+			00565032373830205345524945530161
+			020344f15a616066655d5e5f5a100504
+			030207060f1f20212214131216011e23
+			097f07830100006d030c003000383c20
+			006001020367d85dc401788800e30500
+			00e20f7f4dd000a0f0703e8030203500
+			55502100001a1a6800a0f0381f403020
+			3a0055502100001a4d6c80a070703e80
+			30203a0055502100001a000000000079
+	2 DPMS:
+		flags: enum
+		enums: On=0 Standby=1 Suspend=2 Off=3
+		value: 0
+	5 link-status:
+		flags: enum
+		enums: Good=0 Bad=1
+		value: 0
+	6 non-desktop:
+		flags: immutable range
+		values: 0 1
+		value: 0
+	4 TILE:
+		flags: immutable blob
+		blobs:
+
+		value:
+	21 CRTC_ID:
+		flags: object
+		value: 38
+	8 GEN_HDR_OUTPUT_METADATA:
+		flags: blob
+		blobs:
+
+		value:
+	41 colorspace:
+		flags: range
+		values: 0 12
+		value: 0
+	42 ycbcr_enc:
+		flags: range
+		values: 0 8
+		value: 0
+	43 xfer_func:
+		flags: range
+		values: 0 7
+		value: 0
+	44 quantization:
+		flags: range
+		values: 0 2
+		value: 0
+	45 height_out:
+		flags: range
+		values: 480 2160
+		value: 0
+	46 width_out:
+		flags: range
+		values: 640 4096
+		value: 0
+	47 in_fmt:
+		flags: range
+		values: 4106 8448
+		value: 0
+	48 out_fmt:
+		flags: range
+		values: 4106 8448
+		value: 0
+	49 aspect_ratio:
+		flags: range
+		values: 0 3
+		value: 0
+
+CRTCs:
+id	fb	pos	size
+38	50	(0,0)	(3840x2160)
+  #0 3840x2160 60.00 3840 3888 3920 4000 2160 2163 2168 2222 533250 flags: phsync, nvsync; type: preferred, driver
+  props:
+	23 ACTIVE:
+		flags: range
+		values: 0 1
+		value: 1
+	24 MODE_ID:
+		flags: blob
+		blobs:
+
+		value:
+			02230800000f300f500fa00f00007008
+			73087808ae0800003c00000009000000
+			48000000333834307832313630000000
+			00000000000000000000000000000000
+			00000000
+	20 OUT_FENCE_PTR:
+		flags: range
+		values: 0 18446744073709551615
+		value: 0
+	25 VRR_ENABLED:
+		flags: range
+		values: 0 1
+		value: 0
+
+Planes:
+id	crtc	fb	CRTC x,y	x,y	gamma size	possible crtcs
+34	38	54	0,0		0,0	0       	0x00000001
+  formats: YUYV
+  props:
+	9 type:
+		flags: immutable enum
+		enums: Overlay=0 Primary=1 Cursor=2
+		value: 0
+	18 FB_ID:
+		flags: object
+		value: 54
+	19 IN_FENCE_FD:
+		flags: signed range
+		values: -1 2147483647
+		value: -1
+	21 CRTC_ID:
+		flags: object
+		value: 38
+	14 CRTC_X:
+		flags: signed range
+		values: -2147483648 2147483647
+		value: 0
+	15 CRTC_Y:
+		flags: signed range
+		values: -2147483648 2147483647
+		value: 0
+	16 CRTC_W:
+		flags: range
+		values: 0 2147483647
+		value: 3840
+	17 CRTC_H:
+		flags: range
+		values: 0 2147483647
+		value: 2160
+	10 SRC_X:
+		flags: range
+		values: 0 4294967295
+		value: 0
+	11 SRC_Y:
+		flags: range
+		values: 0 4294967295
+		value: 0
+	12 SRC_W:
+		flags: range
+		values: 0 4294967295
+		value: 251658240
+	13 SRC_H:
+		flags: range
+		values: 0 4294967295
+		value: 141557760
+	31 IN_FORMATS:
+		flags: immutable blob
+		blobs:
+
+		value:
+			01000000000000000100000018000000
+			01000000200000005955595600000000
+			01000000000000000000000000000000
+			0000000000000000
+		in_formats blob decoded:
+			 YUYV:  LINEAR
+36	38	50	0,0		0,0	0       	0x00000001
+  formats: BG24
+  props:
+	9 type:
+		flags: immutable enum
+		enums: Overlay=0 Primary=1 Cursor=2
+		value: 1
+	18 FB_ID:
+		flags: object
+		value: 50
+	19 IN_FENCE_FD:
+		flags: signed range
+		values: -1 2147483647
+		value: -1
+	21 CRTC_ID:
+		flags: object
+		value: 38
+	14 CRTC_X:
+		flags: signed range
+		values: -2147483648 2147483647
+		value: 0
+	15 CRTC_Y:
+		flags: signed range
+		values: -2147483648 2147483647
+		value: 0
+	16 CRTC_W:
+		flags: range
+		values: 0 2147483647
+		value: 3840
+	17 CRTC_H:
+		flags: range
+		values: 0 2147483647
+		value: 2160
+	10 SRC_X:
+		flags: range
+		values: 0 4294967295
+		value: 0
+	11 SRC_Y:
+		flags: range
+		values: 0 4294967295
+		value: 0
+	12 SRC_W:
+		flags: range
+		values: 0 4294967295
+		value: 251658240
+	13 SRC_H:
+		flags: range
+		values: 0 4294967295
+		value: 141557760
+	31 IN_FORMATS:
+		flags: immutable blob
+		blobs:
+
+		value:
+			01000000000000000100000018000000
+			01000000200000004247323400000000
+			01000000000000000000000000000000
+			0000000000000000
+		in_formats blob decoded:
+			 BG24:  LINEAR
+
+Frame buffers:
+id	size	pitch
+
