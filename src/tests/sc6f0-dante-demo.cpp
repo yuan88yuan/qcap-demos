@@ -5,7 +5,11 @@
 #include <string.h>
 
 #include <atomic>
+#include <fcntl.h>
 #include <sys/mman.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#include <linux/netlink.h>
 #include <drm.h>
 #include <xf86drm.h>
 #include <xf86drmMode.h>
@@ -70,7 +74,6 @@ using namespace __sc6f0_dante_demo__;
 using __testkit__::wait_for_test_finish;
 using __testkit__::TestCase;
 using __testkit__::free_stack_t;
-using __testkit__::tick_ctrl_t;
 using __testkit__::NewEvent;
 using __testkit__::AddEventHandler;
 using __testkit__::spinlock_lock;
@@ -3362,6 +3365,90 @@ struct App0 {
 			return QCAP_RT_OK;
 		}
 
+		static int open_drm_uevent_socket() {
+			int fd = socket(AF_NETLINK, SOCK_DGRAM, NETLINK_KOBJECT_UEVENT);
+			if(fd < 0) return -1;
+
+			int flags = fcntl(fd, F_GETFL, 0);
+			if(flags >= 0) fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+			flags = fcntl(fd, F_GETFD, 0);
+			if(flags >= 0) fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
+
+			struct sockaddr_nl addr;
+			memset(&addr, 0x00, sizeof(addr));
+			addr.nl_family = AF_NETLINK;
+			addr.nl_pid = (uint32_t)getpid();
+			addr.nl_groups = 1;
+
+			if(bind(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+				int err = errno;
+				close(fd);
+				errno = err;
+				return -1;
+			}
+
+			return fd;
+		}
+
+		static bool is_target_connector_uevent(const char* buf, ssize_t len) {
+			bool isDrm = false;
+			bool isHotplug = false;
+			bool hasConnectorName = false;
+			bool connectorMatched = false;
+
+			for(ssize_t off = 0; off < len; ) {
+				const char* s = buf + off;
+				size_t left = (size_t)(len - off);
+				size_t n = strnlen(s, left);
+				if(n == 0) {
+					off++;
+					continue;
+				}
+
+				if(strcmp(s, "SUBSYSTEM=drm") == 0) {
+					isDrm = true;
+				} else if(strcmp(s, "HOTPLUG=1") == 0) {
+					isHotplug = true;
+				} else if(strncmp(s, "CONNECTOR=", 10) == 0) {
+					hasConnectorName = true;
+					connectorMatched = (strcmp(s + 10, "HDMI-A-1") == 0);
+				} else if(strncmp(s, "DEVPATH=", 8) == 0 || strncmp(s, "change@", 7) == 0) {
+					if(strstr(s, "HDMI-A-1") != NULL) {
+						connectorMatched = true;
+					}
+				}
+
+				off += (ssize_t)n + 1;
+			}
+
+			return isDrm && isHotplug && (! hasConnectorName || connectorMatched);
+		}
+
+		void update_connector_state(dau_service* dauserv, const char* reason) {
+			bool connected = false;
+			if(! query_connector_connected(connected)) {
+				LOGW("failed to query DRM connector state (%s)", reason ? reason : "event");
+				return;
+			}
+
+			if(! mHaveLastConnectorState || connected != mLastConnectorConnected) {
+				LOGI("DRM connector state changed: %s -> %s (%s)",
+					mHaveLastConnectorState ? (mLastConnectorConnected ? "connected" : "disconnected") : "unknown",
+					connected ? "connected" : "disconnected",
+					reason ? reason : "event");
+
+				mLastConnectorConnected = connected;
+				mHaveLastConnectorState = true;
+
+				if(dauserv) {
+					dau_signal_cable_change(dauserv);
+				}
+			} else {
+				LOGD("DRM connector state unchanged after %s: %s",
+					reason ? reason : "event", connected ? "connected" : "disconnected");
+			}
+		}
+
 		QRESULT StartConnectorMonitor(free_stack_t& _FreeStack_, dau_service* dauserv) {
 			QRESULT qres = QCAP_RS_SUCCESSFUL;
 
@@ -3375,90 +3462,52 @@ struct App0 {
 					LOGW("Unable to read initial DRM connector state");
 				}
 
-				tick_ctrl_t* pTickCtrl = new tick_ctrl_t();
-				_FreeStack_ += [pTickCtrl]() {
-					delete pTickCtrl;
-				};
-				pTickCtrl->num = 1;
-				pTickCtrl->den = 1;
-
-				qcap2_timer_t* pTimer = qcap2_timer_new();
-				if(! pTimer) {
+				int fdUevent = open_drm_uevent_socket();
+				if(fdUevent < 0) {
+					int err = errno;
 					qres = QCAP_RS_ERROR_GENERAL;
-					LOGE("%s(%d): qcap2_timer_new() failed", __FUNCTION__, __LINE__);
+					LOGE("%s(%d): open_drm_uevent_socket() failed, err=%d", __FUNCTION__, __LINE__, err);
 					break;
 				}
-				_FreeStack_ += [pTimer]() {
-					qcap2_timer_delete(pTimer);
+				_FreeStack_ += [fdUevent]() {
+					close(fdUevent);
 				};
 
-				qres = qcap2_timer_start(pTimer);
+				qres = AddEventHandler(_FreeStack_, fdUevent,
+					std::bind(&self_t::OnConnectorMonitor, this, fdUevent, dauserv));
 				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): qcap2_timer_start() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-					break;
-				}
-				_FreeStack_ += [pTimer]() {
-					QRESULT qres;
-
-					qres = qcap2_timer_stop(pTimer);
-					if(qres != QCAP_RS_SUCCESSFUL) {
-						LOGE("%s(%d): qcap2_timer_stop() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-					}
-				};
-
-				qres = AddTimerHandler(_FreeStack_, pTimer,
-					std::bind(&self_t::OnConnectorMonitor, this, pTimer, pTickCtrl, dauserv));
-				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): AddTimerHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
 
-				pTickCtrl->start(_clk());
-				qres = qcap2_timer_next(pTimer, 4000);
-				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): qcap2_timer_next() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-					break;
-				}
+				LOGI("DRM connector monitor started in event-driven mode (uevent fd=%d)", fdUevent);
 			}
 
 			return qres;
 		}
 
-		QRETURN OnConnectorMonitor(qcap2_timer_t* pTimer, tick_ctrl_t* pTickCtrl, dau_service* dauserv) {
-			QRESULT qres;
-			int64_t now = _clk();
-
+		QRETURN OnConnectorMonitor(int fdUevent, dau_service* dauserv) {
 			switch(1) { case 1:
-				uint64_t nExpirations;
-				qres = qcap2_timer_wait(pTimer, &nExpirations);
-				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): qcap2_timer_wait() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-					break;
-				}
+				bool haveConnectorEvent = false;
 
-				qres = qcap2_timer_next(pTimer, pTickCtrl->advance(now));
-				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): qcap2_timer_next() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-					break;
-				}
-
-				bool connected = false;
-				if(! query_connector_connected(connected)) {
-					LOGW("failed to query DRM connector state while monitoring");
-					break;
-				}
-
-				if(! mHaveLastConnectorState || connected != mLastConnectorConnected) {
-					LOGI("DRM connector state changed: %s -> %s",
-						mHaveLastConnectorState ? (mLastConnectorConnected ? "connected" : "disconnected") : "unknown",
-						connected ? "connected" : "disconnected");
-
-					mLastConnectorConnected = connected;
-					mHaveLastConnectorState = true;
-
-					if(dauserv) {
-						dau_signal_cable_change(dauserv);
+				for(;;) {
+					char buf[4096];
+					ssize_t n = recv(fdUevent, buf, sizeof(buf), 0);
+					if(n < 0) {
+						int err = errno;
+						if(err == EAGAIN || err == EWOULDBLOCK) break;
+						LOGE("%s(%d): recv(uevent) failed, err=%d", __FUNCTION__, __LINE__, err);
+						break;
 					}
+					if(n == 0) break;
+
+					if(is_target_connector_uevent(buf, n)) {
+						haveConnectorEvent = true;
+					}
+				}
+
+				if(haveConnectorEvent) {
+					update_connector_state(dauserv, "DRM hotplug uevent");
 				}
 			}
 
