@@ -911,6 +911,33 @@ struct App0 {
 
 		dau_service* pHdmiRxDauServ;
 		bool bDmxStarted;
+		bool mHavePublishedVideoState;
+		bool mHavePublishedAudioState;
+
+		static bool video_format_equal(const struct video_format& lhs,
+			const struct video_format& rhs)
+		{
+			return lhs.width == rhs.width &&
+				lhs.height == rhs.height &&
+				lhs.framerate == rhs.framerate &&
+				lhs.colorformat == rhs.colorformat &&
+				lhs.bpp == rhs.bpp &&
+				lhs.interlaced == rhs.interlaced &&
+				lhs.locked == rhs.locked;
+		}
+
+		static bool audio_info_equal(const struct audio_info& lhs,
+			const struct audio_info& rhs)
+		{
+			return lhs.channel_count == rhs.channel_count &&
+				lhs.speaker_map == rhs.speaker_map &&
+				lhs.level_shift_value == rhs.level_shift_value &&
+				lhs.downmix_inhibit == rhs.downmix_inhibit &&
+				lhs.lfe_playback_level == rhs.lfe_playback_level &&
+				lhs.sample_rate == rhs.sample_rate &&
+				lhs.encoding == rhs.encoding &&
+				lhs.sample_bits == rhs.sample_bits;
+		}
 
 		static void _get_cable_status(struct dau_service *dau,
 						 struct DBusMessage *message,
@@ -1096,7 +1123,10 @@ struct App0 {
 			memset(&current_video_format, 0, sizeof(current_video_format));
 			memset(&current_audio_info, 0, sizeof(current_audio_info));
 			nSnapshot = 0;
+			pHdmiRxDauServ = NULL;
 			bDmxStarted = false;
+			mHavePublishedVideoState = false;
+			mHavePublishedAudioState = false;
 
 			switch(1) { case 1:
 				free_stack_t& _FreeStack_ = _FreeStack_main_;
@@ -1170,8 +1200,6 @@ struct App0 {
 
 				this->pHdmiRxDauServ = pHdmiRxDauServ;
 
-				dau_signal_cable_change(pHdmiRxDauServ);
-
 				StartDmx();
 			}
 			return QCAP_RT_OK;
@@ -1192,10 +1220,10 @@ struct App0 {
 					.set_edid = _set_edid,
 					.toggle_hpd = _toggle_hpd,
 
-					.set_video_format = _set_video_format,
-					.set_audio_info = _set_audio_info,
-					.set_hdr = _set_hdr,
-					.get_edid = _get_edid,
+					.set_video_format = NULL,
+					.set_audio_info = NULL,
+					.set_hdr = NULL,
+					.get_edid = NULL,
 				};
 
 				struct dau_service* hdmirx = dau_service_register(DAU_SERVICE_SOURCE, 0, &methods, this);
@@ -1346,6 +1374,21 @@ struct App0 {
 				qcap2_event_t* pVencEvent = NULL;
 				qcap2_audio_encoder_t* pAenc = NULL;
 				qcap2_event_t* pAencEvent = NULL;
+				struct video_format oldVideoFormat;
+				struct video_format newVideoFormat;
+				struct audio_info oldAudioInfo;
+				struct audio_info newAudioInfo;
+
+				memset(&newVideoFormat, 0x00, sizeof(newVideoFormat));
+				memset(&newAudioInfo, 0x00, sizeof(newAudioInfo));
+
+				spinlock_lock(current_video_format_spinlock);
+				oldVideoFormat = current_video_format;
+				spinlock_unlock(current_video_format_spinlock);
+
+				spinlock_lock(current_audio_info_spinlock);
+				oldAudioInfo = current_audio_info;
+				spinlock_unlock(current_audio_info_spinlock);
 
 				qcap2_video_source_t* pVsrc = qcap2_demuxer_get_video_source(pDmx, nVideoIndex);
 				std::shared_ptr<qcap2_video_format_t> pVideoFormat(qcap2_video_format_new(), qcap2_video_format_delete);
@@ -1355,15 +1398,10 @@ struct App0 {
 
 					if(nSrcColorSpaceType == QCAP_COLORSPACE_TYPE_UNDEFINED || nVideoWidth <= 0 || nVideoHeight <= 0) {
 						LOGI("v: no-link");
-
-						spinlock_lock(current_video_format_spinlock);
-						memset(&current_video_format, 0, sizeof(current_video_format));
-						spinlock_unlock(current_video_format_spinlock);
 					} else {
 						LOGI("v: %08X %ux%u'%u, %.2f", nSrcColorSpaceType, nVideoWidth, nVideoHeight, bVideoIsInterleaved, dVideoFrameRate);
 
-						spinlock_lock(current_video_format_spinlock);
-						current_video_format = (video_format){
+						newVideoFormat = (video_format){
 							.width = (unsigned int)nVideoWidth,
 							.height = (unsigned int)nVideoHeight,
 							.framerate = (unsigned int)dVideoFrameRate,
@@ -1372,7 +1410,6 @@ struct App0 {
 							.interlaced = (bVideoIsInterleaved != FALSE),
 							.locked = true
 						};
-						spinlock_unlock(current_video_format_spinlock);
 
 						qres = StartVsrc(_FreeStack_, pVsrc, nColorSpaceType,
 							nVideoWidth, nVideoHeight, bVideoIsInterleaved, dVideoFrameRate, &pVsrcEvent);
@@ -1391,13 +1428,24 @@ struct App0 {
 #endif
 					}
 
-					// LOGI("---tag---: +dau_signal_cable_change, hdmirx");
-					dau_signal_cable_change(pHdmiRxDauServ);
-					// LOGI("---tag---: -dau_signal_cable_change, hdmirx");
+					spinlock_lock(current_video_format_spinlock);
+					current_video_format = newVideoFormat;
+					spinlock_unlock(current_video_format_spinlock);
 
-					// LOGI("---tag---: +dau_signal_video_change");
-					dau_signal_video_change(pHdmiRxDauServ);
-					// LOGI("---tag---: -dau_signal_video_change");
+					const bool publishCableChange = (! mHavePublishedVideoState) ||
+						(oldVideoFormat.locked != newVideoFormat.locked);
+					const bool publishVideoChange = (! mHavePublishedVideoState) ||
+						(! video_format_equal(oldVideoFormat, newVideoFormat));
+
+					if(publishCableChange) {
+						dau_signal_cable_change(pHdmiRxDauServ);
+					}
+
+					if(publishVideoChange) {
+						dau_signal_video_change(pHdmiRxDauServ);
+					}
+
+					mHavePublishedVideoState = true;
 				}
 
 				qcap2_audio_source_t* pAsrc = qcap2_demuxer_get_audio_source(pDmx, nAudioIndex);
@@ -1408,15 +1456,10 @@ struct App0 {
 
 					if(nAudioChannels == 0 || nAudioBitsPerSample == 0 || nAudioSampleFrequency == 0) {
 						LOGI("a: no-link");
-
-						spinlock_lock(current_audio_info_spinlock);
-						memset(&current_audio_info, 0, sizeof(current_audio_info));
-						spinlock_unlock(current_audio_info_spinlock);
 					} else {
 						LOGI("a: %ux%u'%u", nAudioChannels, nAudioBitsPerSample, nAudioSampleFrequency);
 
-						spinlock_lock(current_audio_info_spinlock);
-						current_audio_info = (audio_info) {
+						newAudioInfo = (audio_info) {
 							.channel_count = (unsigned int)nAudioChannels,
 							.speaker_map = AUDIO_SM_FR_FL,
 							.level_shift_value = 0,
@@ -1426,7 +1469,6 @@ struct App0 {
 							.encoding = AUDIO_EN_LPCM,
 							.sample_bits = (unsigned int)nAudioBitsPerSample
 						};
-						spinlock_unlock(current_audio_info_spinlock);
 
 #if 1
 						qres = StartAsrc(_FreeStack_, pAsrc, &pAsrcEvent);
@@ -1446,9 +1488,18 @@ struct App0 {
 #endif
 					}
 
-					// LOGI("---tag---: +dau_signal_audio_change");
-					dau_signal_audio_change(pHdmiRxDauServ);
-					// LOGI("---tag---: -dau_signal_audio_change");
+					spinlock_lock(current_audio_info_spinlock);
+					current_audio_info = newAudioInfo;
+					spinlock_unlock(current_audio_info_spinlock);
+
+					const bool publishAudioChange = (! mHavePublishedAudioState) ||
+						(! audio_info_equal(oldAudioInfo, newAudioInfo));
+
+					if(publishAudioChange) {
+						dau_signal_audio_change(pHdmiRxDauServ);
+					}
+
+					mHavePublishedAudioState = true;
 				}
 
 				// next level muxers
