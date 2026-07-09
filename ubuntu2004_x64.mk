@@ -1,3 +1,5 @@
+QCAP_HOME?=../qcap-dev/qcap/build-qcap/_objs/ubuntu2004_x64
+
 include mkfiles/ubuntu2004_x64.mk
 include mkfiles/funcs.mk
 

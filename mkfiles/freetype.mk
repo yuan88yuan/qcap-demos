@@ -6,18 +6,7 @@ FREETYPE_F+=\
 -DBUILD_WITH_FREETYPE=1
 
 FREETYPE_I+=\
--I${QCAP_3RDPARTY}/include/freetype2
-
-FREETYPE_WITH_PNG=\
-l4t-r35-1
-
-ifneq (,$(filter $(FREETYPE_WITH_PNG),$(PLATFORM)))
-$(info !!! freetype built with png !!!)
-
-FREETYPE_L_A+=\
--lpng \
--lz
-endif
+-I/opt/qcap/qcap-3rdparty/${PLATFORM}/include/freetype2
 
 FREETYPE_L_A+=\
 -lfreetype

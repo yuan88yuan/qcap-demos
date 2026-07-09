@@ -11,10 +11,10 @@ BASE_F+=\
 
 BASE_I+=\
 -I${S}/../include \
--I${QCAP_3RDPARTY}/include
+-I/opt/qcap/qcap-3rdparty/${PLATFORM}/include
 
 BASE_L+=$(call _ld_path,${D}/lib)
-BASE_L+=$(call _ld_path,${QCAP_3RDPARTY}/lib)
+BASE_L+=$(call _ld_path,/opt/qcap/qcap-3rdparty/${PLATFORM}/lib)
 
 BASE_L+=\
 -pthread

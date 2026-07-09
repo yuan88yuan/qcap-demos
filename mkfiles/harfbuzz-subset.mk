@@ -1,0 +1,11 @@
+ifeq (${BUILD_WITH_HARFBUZZ_SUBSET},ON)
+
+$(call decl_mod,HARFBUZZ_SUBSET)
+
+HARFBUZZ_SUBSET_F+=\
+-DBUILD_WITH_HARFBUZZ_SUBSET=1
+
+HARFBUZZ_SUBSET_L_A+=\
+-lharfbuzz-subset
+
+endif
