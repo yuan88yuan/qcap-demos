@@ -1,10 +1,8 @@
 # Agent Guidance: qcap-demos
 
 ## Build System
-- **Core**: GNU Make. Use root `<platform>.mk` files.
 - **Requirement**: `QCAP_HOME` must point to the platform `qcap` library root.
-- **Commands**: Use `./scripts/docker-run.sh qcap-dev:<platform> ./build.sh <platform> [target]` for all builds (including `utils`, `tests`, and `clean`).
-- **Docker**: Builds run inside a Docker container via `./scripts/docker-run.sh`. The image tag convention is `qcap-dev:<platform>`. To build a new image, use `./scripts/docker-build.sh <base-image> qcap-dev:<platform>`.
+- **Commands**: Use `./scripts/docker-run.sh <image-tag> ./build.sh <platform> [target]` for all builds (including `utils`, `tests`, and `clean`).
 
 ## Project Structure
 - `src/utils/`: Main sample application (`qdemo`).
