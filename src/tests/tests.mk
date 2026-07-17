@@ -11,6 +11,8 @@ include $(S)/tests/test-aenc.mk
 include $(S)/tests/test-freetype.mk
 include $(S)/tests/test-graphics.mk
 include $(S)/tests/sc6f0-dante-demo.mk
+include $(S)/tests/sc6f0-dante-tx.mk
+include $(S)/tests/sc6f0-dante-rx.mk
 include $(S)/tests/coe-demo.mk
 include $(S)/tests/test-rcbuf.mk
 include $(S)/tests/roce-dmabuf-test.mk
