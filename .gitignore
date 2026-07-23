@@ -1,3 +1,4 @@
 _objs/
 .z-code/
 .plan*.md
+.pi-subagents/

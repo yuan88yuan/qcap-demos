@@ -58,8 +58,15 @@ namespace __sc6f0_dante_rx__ {
 	}
 
 	static uint32_t get_prop_id(int fd, drmModeObjectProperties *props, std::shared_ptr<drmModePropertyRes>* prop_res, const char *name) {
+		if(! props || ! name) return 0;
+
 		for (uint32_t i = 0; i < props->count_props; i++) {
 			std::shared_ptr<drmModePropertyRes> p(drmModeGetProperty(fd, props->props[i]), drmModeFreeProperty);
+			if(! p) {
+				LOGW("drmModeGetProperty(%u) failed while looking up %s",
+					props->props[i], name);
+				continue;
+			}
 			if (!strcmp(p->name, name)) {
 				if(prop_res) *prop_res = p;
 				return p->prop_id;
@@ -106,9 +113,9 @@ struct App0 {
 		uint32_t mPrimaryPlaneId;
 		uint32_t mPrimaryFbId;
 		uint32_t mPrimaryBoHandle;
-		// uint32_t mOverlayPlaneId;
-		// uint32_t mOverlayFbId;
-		// uint32_t mOverlayBoHandle;
+		uint32_t mOverlayPlaneId;
+		uint32_t mOverlayFbId;
+		uint32_t mOverlayBoHandle;
 		bool mLastConnectorConnected;
 		bool mHaveLastConnectorState;
 		struct video_format mCurrentVideoFormat;
@@ -149,6 +156,49 @@ struct App0 {
 				}
 				off += (size_t)n;
 			}
+		}
+
+		static bool write_edid_blob(const void* data, size_t len) {
+			static const char* path = "/tmp/sc6f0-dante-rx-edid.bin";
+
+			if(! data || len == 0) {
+				LOGW("Cannot write EDID blob: empty data");
+				return false;
+			}
+
+			int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NOFOLLOW, 0600);
+			if(fd < 0) {
+				LOGE("open(%s) failed, err=%d", path, errno);
+				return false;
+			}
+
+			const unsigned char* bytes = (const unsigned char*)data;
+			size_t written = 0;
+			bool success = true;
+			while(written < len) {
+				ssize_t n = write(fd, bytes + written, len - written);
+				if(n < 0) {
+					if(errno == EINTR) continue;
+					LOGE("write(%s) failed after %zu/%zu bytes, err=%d",
+						path, written, len, errno);
+					success = false;
+					break;
+				}
+				if(n == 0) {
+					LOGE("write(%s) returned zero after %zu/%zu bytes",
+						path, written, len);
+					success = false;
+					break;
+				}
+				written += (size_t)n;
+			}
+
+			if(close(fd) < 0) {
+				LOGE("close(%s) failed, err=%d", path, errno);
+				success = false;
+			}
+			if(success) LOGI("Wrote EDID blob (%zu bytes) to %s", len, path);
+			return success;
 		}
 
 		static bool is_valid_edid(const unsigned char* edid, size_t len) {
@@ -332,6 +382,7 @@ struct App0 {
 			case DRM_FORMAT_BGR888:
 			case DRM_FORMAT_RGB888:
 			case DRM_FORMAT_VUY888:
+			case DRM_FORMAT_YUV444:
 				return 24;
 			default:
 				return 32;
@@ -433,14 +484,14 @@ struct App0 {
 			mPrimaryBoHandle = 0;
 		}
 
-		// void cleanup_overlay_fb() {
-		// 	destroy_dumb_fb(mDrmFd, mOverlayFbId, mOverlayBoHandle);
-		// 	mOverlayFbId = 0;
-		// 	mOverlayBoHandle = 0;
-		// }
+		void cleanup_overlay_fb() {
+			destroy_dumb_fb(mDrmFd, mOverlayFbId, mOverlayBoHandle);
+			mOverlayFbId = 0;
+			mOverlayBoHandle = 0;
+		}
 
 		void cleanup_drm_fbs() {
-			// cleanup_overlay_fb();
+			cleanup_overlay_fb();
 			cleanup_primary_fb();
 		}
 
@@ -500,8 +551,8 @@ struct App0 {
 			uint32_t modeBlobId = 0;
 			uint32_t fb = 0;
 			uint32_t bo = 0;
-			// uint32_t overlayFb = 0;
-			// uint32_t overlayBo = 0;
+			uint32_t overlayFb = 0;
+			uint32_t overlayBo = 0;
 
 			switch(1) { case 1:
 				if(! format) {
@@ -569,26 +620,26 @@ struct App0 {
 				qres = find_primary_plane(mDrmFd, crtcIndex, &primaryPlaneId, &primaryPlane);
 				if(qres != QCAP_RS_SUCCESSFUL) break;
 
-				// const uint32_t overlayPlaneId = 34;
-				// std::shared_ptr<drmModePlane> overlayPlane(
-				// 	drmModeGetPlane(mDrmFd, overlayPlaneId), drmModeFreePlane);
-				// if(! overlayPlane) {
-				// 	qres = QCAP_RS_ERROR_GENERAL;
-				// 	LOGE("%s(%d): drmModeGetPlane(%u) failed", __FUNCTION__, __LINE__, overlayPlaneId);
-				// 	break;
-				// }
-				// if(! (overlayPlane->possible_crtcs & (1 << crtcIndex))) {
-				// 	qres = QCAP_RS_ERROR_INVALID_PARAMETER;
-				// 	LOGE("%s(%d): overlay plane %u cannot be used with CRTC index %d",
-				// 		__FUNCTION__, __LINE__, overlayPlaneId, crtcIndex);
-				// 	break;
-				// }
-				// if(! plane_supports_format(overlayPlane.get(), DRM_FORMAT_YUYV)) {
-				// 	qres = QCAP_RS_ERROR_INVALID_PARAMETER;
-				// 	LOGE("%s(%d): overlay plane %u does not support %s",
-				// 		__FUNCTION__, __LINE__, overlayPlaneId, drm_format_to_string(DRM_FORMAT_YUYV));
-				// 	break;
-				// }
+				const uint32_t overlayPlaneId = 34;
+				std::shared_ptr<drmModePlane> overlayPlane(
+					drmModeGetPlane(mDrmFd, overlayPlaneId), drmModeFreePlane);
+				if(! overlayPlane) {
+					qres = QCAP_RS_ERROR_GENERAL;
+					LOGE("%s(%d): drmModeGetPlane(%u) failed", __FUNCTION__, __LINE__, overlayPlaneId);
+					break;
+				}
+				if(! (overlayPlane->possible_crtcs & (1 << crtcIndex))) {
+					qres = QCAP_RS_ERROR_INVALID_PARAMETER;
+					LOGE("%s(%d): overlay plane %u cannot be used with CRTC index %d",
+						__FUNCTION__, __LINE__, overlayPlaneId, crtcIndex);
+					break;
+				}
+				if(! plane_supports_format(overlayPlane.get(), DRM_FORMAT_BGR888)) {
+					qres = QCAP_RS_ERROR_INVALID_PARAMETER;
+					LOGE("%s(%d): overlay plane %u does not support %s",
+						__FUNCTION__, __LINE__, overlayPlaneId, drm_format_to_string(DRM_FORMAT_BGR888));
+					break;
+				}
 
 				uint32_t drmFormat = 0;
 				uint32_t dumbBpp = 0;
@@ -630,46 +681,46 @@ struct App0 {
 					break;
 				}
 
-				// {
-				// 	const uint32_t overlayDrmFormat = DRM_FORMAT_YUYV;
-				// 	const uint32_t overlayBpp = drm_format_bpp(overlayDrmFormat);
-				//
-				// 	struct drm_mode_create_dumb overlayCreq = { 0 };
-				// 	overlayCreq.width = format->width;
-				// 	overlayCreq.height = format->height;
-				// 	overlayCreq.bpp = overlayBpp;
-				// 	err = drmIoctl(mDrmFd, DRM_IOCTL_MODE_CREATE_DUMB, &overlayCreq);
-				// 	if(err < 0) {
-				// 		err = errno;
-				// 		qres = QCAP_RS_ERROR_GENERAL;
-				// 		LOGE("%s(%d): drmIoctl(DRM_IOCTL_MODE_CREATE_DUMB, overlay %s) failed, err=%d",
-				// 			__FUNCTION__, __LINE__, drm_format_to_string(overlayDrmFormat), err);
-				// 		break;
-				// 	}
-				// 	overlayBo = overlayCreq.handle;
-				//
-				// 	qres = fill_yuyv_dumb_fb(mDrmFd, overlayBo, overlayCreq.width,
-				// 		overlayCreq.height, overlayCreq.pitch);
-				// 	if(qres != QCAP_RS_SUCCESSFUL) break;
-				//
-				// 	uint32_t overlayHandles[4] = { overlayCreq.handle, 0, 0, 0 };
-				// 	uint32_t overlayPitches[4] = { overlayCreq.pitch, 0, 0, 0 };
-				// 	uint32_t overlayOffsets[4] = { 0, 0, 0, 0 };
-				// 	err = drmModeAddFB2(mDrmFd, overlayCreq.width, overlayCreq.height,
-				// 		overlayDrmFormat, overlayHandles, overlayPitches, overlayOffsets,
-				// 		&overlayFb, 0);
-				// 	if(err < 0) {
-				// 		err = errno;
-				// 		qres = QCAP_RS_ERROR_GENERAL;
-				// 		LOGE("%s(%d): drmModeAddFB2(%ux%u, overlay %s) failed, err=%d",
-				// 			__FUNCTION__, __LINE__, overlayCreq.width, overlayCreq.height,
-				// 			drm_format_to_string(overlayDrmFormat), err);
-				// 		break;
-				// 	}
-				// 	LOGI("using overlay plane %u, DRM fb format %s, dumb bpp=%u",
-				// 		overlayPlaneId, drm_format_to_string(overlayDrmFormat), overlayBpp);
-				// }
-				// if(qres != QCAP_RS_SUCCESSFUL) break;
+				{
+					const uint32_t overlayDrmFormat = DRM_FORMAT_BGR888;
+					const uint32_t overlayBpp = drm_format_bpp(overlayDrmFormat);
+
+					struct drm_mode_create_dumb overlayCreq = { 0 };
+					overlayCreq.width = format->width;
+					overlayCreq.height = format->height;
+					overlayCreq.bpp = overlayBpp;
+					err = drmIoctl(mDrmFd, DRM_IOCTL_MODE_CREATE_DUMB, &overlayCreq);
+					if(err < 0) {
+						err = errno;
+						qres = QCAP_RS_ERROR_GENERAL;
+						LOGE("%s(%d): drmIoctl(DRM_IOCTL_MODE_CREATE_DUMB, overlay %s) failed, err=%d",
+							__FUNCTION__, __LINE__, drm_format_to_string(overlayDrmFormat), err);
+						break;
+					}
+					overlayBo = overlayCreq.handle;
+
+					qres = fill_yuyv_dumb_fb(mDrmFd, overlayBo, overlayCreq.width,
+						overlayCreq.height, overlayCreq.pitch);
+					if(qres != QCAP_RS_SUCCESSFUL) break;
+
+					uint32_t overlayHandles[4] = { overlayCreq.handle, 0, 0, 0 };
+					uint32_t overlayPitches[4] = { overlayCreq.pitch, 0, 0, 0 };
+					uint32_t overlayOffsets[4] = { 0, 0, 0, 0 };
+					err = drmModeAddFB2(mDrmFd, overlayCreq.width, overlayCreq.height,
+						overlayDrmFormat, overlayHandles, overlayPitches, overlayOffsets,
+						&overlayFb, 0);
+					if(err < 0) {
+						err = errno;
+						qres = QCAP_RS_ERROR_GENERAL;
+						LOGE("%s(%d): drmModeAddFB2(%ux%u, overlay %s) failed, err=%d",
+							__FUNCTION__, __LINE__, overlayCreq.width, overlayCreq.height,
+							drm_format_to_string(overlayDrmFormat), err);
+						break;
+					}
+					LOGI("using overlay plane %u, DRM fb format %s, dumb bpp=%u",
+						overlayPlaneId, drm_format_to_string(overlayDrmFormat), overlayBpp);
+				}
+				if(qres != QCAP_RS_SUCCESSFUL) break;
 
 				err = drmModeCreatePropertyBlob(mDrmFd, &mode, sizeof(mode), &modeBlobId);
 				if(err) {
@@ -688,10 +739,10 @@ struct App0 {
 				std::shared_ptr<drmModeObjectProperties> propsPlane(
 					drmModeObjectGetProperties(mDrmFd, primaryPlaneId, DRM_MODE_OBJECT_PLANE),
 					drmModeFreeObjectProperties);
-				// std::shared_ptr<drmModeObjectProperties> propsOverlay(
-				// 	drmModeObjectGetProperties(mDrmFd, overlayPlaneId, DRM_MODE_OBJECT_PLANE),
-				// 	drmModeFreeObjectProperties);
-				if(! propsCrtc || ! propsConn || ! propsPlane /* || ! propsOverlay */) {
+				std::shared_ptr<drmModeObjectProperties> propsOverlay(
+					drmModeObjectGetProperties(mDrmFd, overlayPlaneId, DRM_MODE_OBJECT_PLANE),
+					drmModeFreeObjectProperties);
+				if(! propsCrtc || ! propsConn || ! propsPlane || ! propsOverlay) {
 					qres = QCAP_RS_ERROR_GENERAL;
 					LOGE("%s(%d): failed to get DRM object properties", __FUNCTION__, __LINE__);
 					break;
@@ -710,16 +761,16 @@ struct App0 {
 				uint32_t propPlaneSrcY = get_prop_id(mDrmFd, propsPlane.get(), NULL, "SRC_Y");
 				uint32_t propPlaneSrcW = get_prop_id(mDrmFd, propsPlane.get(), NULL, "SRC_W");
 				uint32_t propPlaneSrcH = get_prop_id(mDrmFd, propsPlane.get(), NULL, "SRC_H");
-				// uint32_t propOverlayCrtcId = get_prop_id(mDrmFd, propsOverlay.get(), NULL, "CRTC_ID");
-				// uint32_t propOverlayFbId = get_prop_id(mDrmFd, propsOverlay.get(), NULL, "FB_ID");
-				// uint32_t propOverlayCrtcX = get_prop_id(mDrmFd, propsOverlay.get(), NULL, "CRTC_X");
-				// uint32_t propOverlayCrtcY = get_prop_id(mDrmFd, propsOverlay.get(), NULL, "CRTC_Y");
-				// uint32_t propOverlayCrtcW = get_prop_id(mDrmFd, propsOverlay.get(), NULL, "CRTC_W");
-				// uint32_t propOverlayCrtcH = get_prop_id(mDrmFd, propsOverlay.get(), NULL, "CRTC_H");
-				// uint32_t propOverlaySrcX = get_prop_id(mDrmFd, propsOverlay.get(), NULL, "SRC_X");
-				// uint32_t propOverlaySrcY = get_prop_id(mDrmFd, propsOverlay.get(), NULL, "SRC_Y");
-				// uint32_t propOverlaySrcW = get_prop_id(mDrmFd, propsOverlay.get(), NULL, "SRC_W");
-				// uint32_t propOverlaySrcH = get_prop_id(mDrmFd, propsOverlay.get(), NULL, "SRC_H");
+				uint32_t propOverlayCrtcId = get_prop_id(mDrmFd, propsOverlay.get(), NULL, "CRTC_ID");
+				uint32_t propOverlayFbId = get_prop_id(mDrmFd, propsOverlay.get(), NULL, "FB_ID");
+				uint32_t propOverlayCrtcX = get_prop_id(mDrmFd, propsOverlay.get(), NULL, "CRTC_X");
+				uint32_t propOverlayCrtcY = get_prop_id(mDrmFd, propsOverlay.get(), NULL, "CRTC_Y");
+				uint32_t propOverlayCrtcW = get_prop_id(mDrmFd, propsOverlay.get(), NULL, "CRTC_W");
+				uint32_t propOverlayCrtcH = get_prop_id(mDrmFd, propsOverlay.get(), NULL, "CRTC_H");
+				uint32_t propOverlaySrcX = get_prop_id(mDrmFd, propsOverlay.get(), NULL, "SRC_X");
+				uint32_t propOverlaySrcY = get_prop_id(mDrmFd, propsOverlay.get(), NULL, "SRC_Y");
+				uint32_t propOverlaySrcW = get_prop_id(mDrmFd, propsOverlay.get(), NULL, "SRC_W");
+				uint32_t propOverlaySrcH = get_prop_id(mDrmFd, propsOverlay.get(), NULL, "SRC_H");
 
 				std::shared_ptr<drmModeAtomicReq> req(drmModeAtomicAlloc(), drmModeAtomicFree);
 				if(! req) {
@@ -742,16 +793,16 @@ struct App0 {
 				addOk &= atomic_add_property_checked(req.get(), primaryPlaneId, propPlaneSrcY, "SRC_Y", 0);
 				addOk &= atomic_add_property_checked(req.get(), primaryPlaneId, propPlaneSrcW, "SRC_W", (uint64_t)format->width << 16);
 				addOk &= atomic_add_property_checked(req.get(), primaryPlaneId, propPlaneSrcH, "SRC_H", (uint64_t)format->height << 16);
-				// addOk &= atomic_add_property_checked(req.get(), overlayPlaneId, propOverlayCrtcId, "CRTC_ID", crtcId);
-				// addOk &= atomic_add_property_checked(req.get(), overlayPlaneId, propOverlayFbId, "FB_ID", overlayFb);
-				// addOk &= atomic_add_property_checked(req.get(), overlayPlaneId, propOverlayCrtcX, "CRTC_X", 0);
-				// addOk &= atomic_add_property_checked(req.get(), overlayPlaneId, propOverlayCrtcY, "CRTC_Y", 0);
-				// addOk &= atomic_add_property_checked(req.get(), overlayPlaneId, propOverlayCrtcW, "CRTC_W", format->width);
-				// addOk &= atomic_add_property_checked(req.get(), overlayPlaneId, propOverlayCrtcH, "CRTC_H", format->height);
-				// addOk &= atomic_add_property_checked(req.get(), overlayPlaneId, propOverlaySrcX, "SRC_X", 0);
-				// addOk &= atomic_add_property_checked(req.get(), overlayPlaneId, propOverlaySrcY, "SRC_Y", 0);
-				// addOk &= atomic_add_property_checked(req.get(), overlayPlaneId, propOverlaySrcW, "SRC_W", (uint64_t)format->width << 16);
-				// addOk &= atomic_add_property_checked(req.get(), overlayPlaneId, propOverlaySrcH, "SRC_H", (uint64_t)format->height << 16);
+				addOk &= atomic_add_property_checked(req.get(), overlayPlaneId, propOverlayCrtcId, "CRTC_ID", crtcId);
+				addOk &= atomic_add_property_checked(req.get(), overlayPlaneId, propOverlayFbId, "FB_ID", overlayFb);
+				addOk &= atomic_add_property_checked(req.get(), overlayPlaneId, propOverlayCrtcX, "CRTC_X", 0);
+				addOk &= atomic_add_property_checked(req.get(), overlayPlaneId, propOverlayCrtcY, "CRTC_Y", 0);
+				addOk &= atomic_add_property_checked(req.get(), overlayPlaneId, propOverlayCrtcW, "CRTC_W", format->width);
+				addOk &= atomic_add_property_checked(req.get(), overlayPlaneId, propOverlayCrtcH, "CRTC_H", format->height);
+				addOk &= atomic_add_property_checked(req.get(), overlayPlaneId, propOverlaySrcX, "SRC_X", 0);
+				addOk &= atomic_add_property_checked(req.get(), overlayPlaneId, propOverlaySrcY, "SRC_Y", 0);
+				addOk &= atomic_add_property_checked(req.get(), overlayPlaneId, propOverlaySrcW, "SRC_W", (uint64_t)format->width << 16);
+				addOk &= atomic_add_property_checked(req.get(), overlayPlaneId, propOverlaySrcH, "SRC_H", (uint64_t)format->height << 16);
 				if(! addOk) {
 					qres = QCAP_RS_ERROR_GENERAL;
 					break;
@@ -768,23 +819,23 @@ struct App0 {
 
 				uint32_t oldFb = mPrimaryFbId;
 				uint32_t oldBo = mPrimaryBoHandle;
-				// uint32_t oldOverlayFb = mOverlayFbId;
-				// uint32_t oldOverlayBo = mOverlayBoHandle;
+				uint32_t oldOverlayFb = mOverlayFbId;
+				uint32_t oldOverlayBo = mOverlayBoHandle;
 				mPrimaryFbId = fb;
 				mPrimaryBoHandle = bo;
-				// mOverlayPlaneId = overlayPlaneId;
-				// mOverlayFbId = overlayFb;
-				// mOverlayBoHandle = overlayBo;
+				mOverlayPlaneId = overlayPlaneId;
+				mOverlayFbId = overlayFb;
+				mOverlayBoHandle = overlayBo;
 				mCrtcId = crtcId;
 				mPrimaryPlaneId = primaryPlaneId;
 				mCurrentVideoFormat = *format;
 				mCurrentVideoFormat.locked = true;
 				fb = 0;
 				bo = 0;
-				// overlayFb = 0;
-				// overlayBo = 0;
+				overlayFb = 0;
+				overlayBo = 0;
 				destroy_dumb_fb(mDrmFd, oldFb, oldBo);
-				// destroy_dumb_fb(mDrmFd, oldOverlayFb, oldOverlayBo);
+				destroy_dumb_fb(mDrmFd, oldOverlayFb, oldOverlayBo);
 
 				LOGI("DRM modeset complete: connector=%u crtc=%u primary_plane=%u mode=%ux%u@%uHz",
 					mConnectorId, mCrtcId, mPrimaryPlaneId,
@@ -800,7 +851,7 @@ struct App0 {
 				}
 			}
 			destroy_dumb_fb(mDrmFd, fb, bo);
-			// destroy_dumb_fb(mDrmFd, overlayFb, overlayBo);
+			destroy_dumb_fb(mDrmFd, overlayFb, overlayBo);
 
 			return qres;
 		}
@@ -988,6 +1039,7 @@ struct App0 {
 		{
 			LOGI("---tag---: %s", __FUNCTION__);
 
+#if 1
 			if(info) {
 				LOGD("audio_info: channel_count=%u, speaker_map=%d, level_shift_value=%u",
 					info->channel_count, (int)info->speaker_map, info->level_shift_value);
@@ -1013,6 +1065,7 @@ struct App0 {
 			} else {
 				LOGW("audio_info is NULL");
 			}
+#endif
 
 			dau_reply_success(dau, message);
 		}
@@ -1065,56 +1118,53 @@ struct App0 {
 				std::shared_ptr<drmModeObjectProperties> props(
 					drmModeObjectGetProperties(mDrmFd, mConnectorId, DRM_MODE_OBJECT_CONNECTOR),
 					drmModeFreeObjectProperties);
-
-				if(props) {
+				if(! props) {
+					LOGW("drmModeObjectGetProperties() returned NULL");
+				} else {
 					LOGD("connector has %u properties", props->count_props);
+					uint32_t propId = get_prop_id(mDrmFd, props.get(), NULL, "EDID");
+					uint64_t blobId = 0;
 
-					std::shared_ptr<drmModePropertyRes> propRes;
-					uint32_t propId = get_prop_id(mDrmFd, props.get(), &propRes, "EDID");
+					if(propId == 0) {
+						LOGW("EDID property not found on connector");
+					} else if(! get_prop_value(props.get(), propId, &blobId)) {
+						LOGW("EDID property value is unavailable");
+					} else {
+						LOGD("EDID property found, id=%u, blob id=%llu",
+							propId, (unsigned long long)blobId);
+						if(blobId == 0) {
+							LOGW("EDID blob id is zero");
+						} else {
+							std::shared_ptr<drmModePropertyBlobRes> blob(
+								drmModeGetPropertyBlob(mDrmFd, blobId),
+								drmModeFreePropertyBlob);
+							if(! blob || ! blob->data || blob->length == 0) {
+								LOGW("EDID blob is null or empty");
+							} else {
+								const unsigned char* blobData = (const unsigned char*)blob->data;
+								size_t blobLen = (size_t)blob->length;
+								LOGD("EDID blob length=%zu", blobLen);
 
-					if(propId != 0) {
-						LOGD("EDID property found, id=%u", propId);
-
-						for(uint32_t i = 0; i < props->count_props; i++) {
-							if(props->props[i] == propId) {
-								uint64_t blobId = props->prop_values[i];
-								LOGD("EDID blob id=%llu", (unsigned long long)blobId);
-
-								if(blobId > 0) {
-									std::shared_ptr<drmModePropertyBlobRes> blob(
-										drmModeGetPropertyBlob(mDrmFd, blobId),
-										drmModeFreePropertyBlob);
-									if(blob && blob->data && blob->length > 0) {
-										LOGD("EDID blob length=%u", blob->length);
-										if(blob->length >= 8) {
-											LOGD("EDID header: %02x %02x %02x %02x %02x %02x %02x %02x",
-												((unsigned char*)blob->data)[0], ((unsigned char*)blob->data)[1],
-												((unsigned char*)blob->data)[2], ((unsigned char*)blob->data)[3],
-												((unsigned char*)blob->data)[4], ((unsigned char*)blob->data)[5],
-												((unsigned char*)blob->data)[6], ((unsigned char*)blob->data)[7]);
-										}
-
-										size_t copyLen = blob->length < EDID_LEN ? blob->length : EDID_LEN;
-										memcpy(edid, blob->data, copyLen);
-										edidLen = copyLen;
-										edidValid = is_valid_edid(edid, edidLen);
-										if(! edidValid) {
-											LOGW("EDID blob is present but invalid");
-										}
-									} else {
-										LOGW("EDID blob is null or empty");
-									}
-								} else {
-									LOGW("EDID blob id is zero");
+								if(blobLen >= 8) {
+									LOGD("EDID header: %02x %02x %02x %02x %02x %02x %02x %02x",
+										blobData[0], blobData[1], blobData[2], blobData[3],
+										blobData[4], blobData[5], blobData[6], blobData[7]);
 								}
-								break;
+
+								if(! write_edid_blob(blobData, blobLen)) {
+									LOGW("Failed to save EDID blob");
+								}
+
+								size_t copyLen = blobLen < sizeof(edid) ? blobLen : sizeof(edid);
+								memcpy(edid, blobData, copyLen);
+								edidLen = copyLen;
+								edidValid = is_valid_edid(edid, edidLen);
+								if(! edidValid) {
+									LOGW("EDID blob is present but invalid");
+								}
 							}
 						}
-					} else {
-						LOGW("EDID property not found on connector");
 					}
-				} else {
-					LOGW("drmModeObjectGetProperties() returned NULL");
 				}
 			} else {
 				LOGW("DRM not available (fd=%d, connector=%u)", mDrmFd, mConnectorId);
@@ -1126,7 +1176,8 @@ struct App0 {
 				return;
 			}
 
-			LOGI("Returning valid EDID (%zu bytes copied, %u bytes returned)", edidLen, (unsigned int)EDID_LEN);
+			LOGI("Returning valid EDID (%zu bytes copied, %u bytes returned)",
+				edidLen, (unsigned int)EDID_LEN);
 			dau_reply_get_edid(dau, message, edid);
 		}
 
@@ -1184,9 +1235,9 @@ struct App0 {
 				mPrimaryPlaneId = 0;
 				mPrimaryFbId = 0;
 				mPrimaryBoHandle = 0;
-				// mOverlayPlaneId = 34;
-				// mOverlayFbId = 0;
-				// mOverlayBoHandle = 0;
+				mOverlayPlaneId = 34;
+				mOverlayFbId = 0;
+				mOverlayBoHandle = 0;
 				mLastConnectorConnected = false;
 				mHaveLastConnectorState = false;
 				init_default_video_format(&mCurrentVideoFormat);
