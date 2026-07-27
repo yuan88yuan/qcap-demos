@@ -19,24 +19,31 @@ This project includes a main sample application (`qdemo`), a utility library (`z
 
 ## Getting Started
 
-This project uses `make` for compilation. You need to build for a target platform defined in the `mkfiles` directory.
+The project is migrating from GNU Make to CMake. CMake is available for the `ubuntu2004_x64` platform while Make remains the default compatibility path during migration. Builds must run inside the qcap build container.
 
 ### 1. Compilation
 
-Choose a target platform and run the build script inside a Docker container. For example, to compile for the `xlnk2_arm64` platform:
+For the first CMake migration gate:
 
 ```bash
-# Replace xlnk2_arm64 with your target platform
-./scripts/docker-run.sh qcap-dev:xlnk2_arm64 ./build.sh xlnk2_arm64
+IMAGE=qcap-build:all3rdparty-ubuntu2004_x64-vaapi-20260720
+
+# Default utilities build
+./scripts/docker-run.sh "$IMAGE" env BUILD_SYSTEM=cmake ./build.sh ubuntu2004_x64
+
+# Build the registered test aggregate
+./scripts/docker-run.sh "$IMAGE" env BUILD_SYSTEM=cmake ./build.sh ubuntu2004_x64 tests
 ```
 
-To also clean, add the `clean` target:
+`QCAP_HOME` may be supplied from the environment or with a CMake cache override. It must contain the prebuilt qcap headers and libraries. The selected build image supplies the platform-specific third-party headers and libraries.
+
+During the transition, the legacy Make build remains available:
 
 ```bash
-./scripts/docker-run.sh qcap-dev:xlnk2_arm64 ./build.sh xlnk2_arm64 clean
+./scripts/docker-run.sh "$IMAGE" ./build.sh ubuntu2004_x64
 ```
 
-After a successful compilation, all generated files (including executables) will be placed in the `_objs/<your-target-platform>/` directory.
+After a successful compilation, generated files (including executables) are placed in `_objs/<your-target-platform>/`.
 
 ### 2. Execution
 

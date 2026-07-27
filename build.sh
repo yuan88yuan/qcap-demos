@@ -4,6 +4,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if test -f "/.dockerenv"; then
 
+if [[ "${BUILD_SYSTEM:-make}" == "cmake" ]]; then
+    exec "${SCRIPT_DIR}/build-cmake.sh" "$@"
+fi
+
 PLATFORM=$1
 shift
 
