@@ -2,9 +2,9 @@
 
 ## Build System
 - Builds must run inside the qcap Docker image.
-- The first CMake migration target is:
-  - image: `qcap-build:all3rdparty-ubuntu2004_x64-vaapi-20260720`
-  - platform: `ubuntu2004_x64`
+- CMake migration targets currently include:
+  - image: `qcap-build:all3rdparty-ubuntu2004_x64-vaapi-20260720`, platform: `ubuntu2004_x64`;
+  - image: `qcap-build:all3rdparty-xlnk2_arm64-20260723`, platform: `xlnk2_arm64`.
 - `QCAP_HOME` must point to the prebuilt platform qcap library root. qcap is imported by CMake and is never built by this repository.
 - The selected Docker image already contains the platform third-party headers and libraries under `/opt/qcap/qcap-3rdparty/<platform>`. Do not add or pass a `QCAP_3RDPARTY` override.
 - Use CMake for the migration build:
@@ -13,6 +13,7 @@
     env BUILD_SYSTEM=cmake ./build.sh ubuntu2004_x64 [target ...]
   ```
 - CMake targets include `utils`, `tests`, individual utilities/tests, `clean`, `clean-bin`, `clean-lib`, `install`, `package`, and `distclean`.
+- The xlnk2 CMake toolchain sources `/opt/qcap-dev-init` through `build-cmake.sh` and uses the image-provided cross compiler/sysroot.
 - GNU Make remains the legacy compatibility build during migration:
   ```bash
   ./scripts/docker-run.sh <image-tag> ./build.sh <platform> [target]

@@ -10,6 +10,7 @@ function(qcap_configure_target target)
   set_target_properties(${target} PROPERTIES POSITION_INDEPENDENT_CODE OFF)
   target_compile_options(${target} PRIVATE -O3
     "$<$<COMPILE_LANGUAGE:CXX>:-fPIC>"
+    "$<$<COMPILE_LANGUAGE:CXX>:-fpermissive>"
     "$<$<COMPILE_LANGUAGE:C>:-fPIC>")
   foreach(flag IN LISTS QCAP_CXX_FLAGS)
     target_compile_options(${target} PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:${flag}>")

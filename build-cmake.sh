@@ -24,6 +24,9 @@ BUILD_DIR="${SCRIPT_DIR}/_objs/${PLATFORM}"
 CMAKE_ARGS=(
     -DQCAP_PLATFORM="${PLATFORM}"
 )
+if [[ "${PLATFORM}" == "xlnk2_arm64" ]]; then
+    CMAKE_ARGS+=("-DCMAKE_TOOLCHAIN_FILE=${SCRIPT_DIR}/cmake/platforms/${PLATFORM}.cmake")
+fi
 if [[ -n "${QCAP_HOME:-}" ]]; then
     CMAKE_ARGS+=("-DQCAP_HOME=${QCAP_HOME}")
 fi

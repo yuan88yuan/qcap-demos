@@ -19,7 +19,7 @@ This project includes a main sample application (`qdemo`), a utility library (`z
 
 ## Getting Started
 
-The project is migrating from GNU Make to CMake. CMake is available for the `ubuntu2004_x64` platform while Make remains the default compatibility path during migration. Builds must run inside the qcap build container.
+The project is migrating from GNU Make to CMake. CMake is available for `ubuntu2004_x64` and `xlnk2_arm64` while Make remains the default compatibility path during migration. Builds must run inside the qcap build container.
 
 ### 1. Compilation
 

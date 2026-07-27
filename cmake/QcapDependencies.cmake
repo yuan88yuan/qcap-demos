@@ -190,8 +190,8 @@ qcap_module_includes(CUDA_DRIVER "${SDKTARGETSYSROOT}/usr/local/cuda/include")
 qcap_module_includes(NVBUF "${SDKTARGETSYSROOT}/usr/src/jetson_multimedia_api/include")
 qcap_module_includes(DRM "${SDKTARGETSYSROOT}/usr/include/drm")
 qcap_module_includes(ALLEGRO2
-  "${DOCKER_HOME}/qcap-3rdparty/${QCAP_PLATFORM}/include/allegro"
-  "${DOCKER_HOME}/qcap-3rdparty/${QCAP_PLATFORM}/include/allegro-omx-il")
+  "${QCAP_IMAGE_THIRDPARTY_DIR}/include/allegro"
+  "${QCAP_IMAGE_THIRDPARTY_DIR}/include/allegro-omx-il")
 qcap_module_includes(SIPL
   "${SDKTARGETSYSROOT}/usr/src/jetson_sipl_api/sipl/include/nvsci"
   "${SDKTARGETSYSROOT}/usr/src/jetson_sipl_api/sipl/include/nvmedia"
