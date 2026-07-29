@@ -21,3 +21,4 @@ include $(S)/tests/sc6f0-sdi.mk
 include $(S)/tests/test-vdec-bench.mk
 include $(S)/tests/test-swdec-bench.mk
 include $(S)/tests/sc6n0-demuxer.mk
+include $(S)/tests/test-rtsp.mk
