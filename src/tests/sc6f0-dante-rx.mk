@@ -2,7 +2,7 @@
 ################## sc6f0-dante-rx ##################
 $(call decl_mod,SC6F0_DANTE_RX)
 $(call add_flags_mod,SC6F0_DANTE_RX)
-$(call add_mods,SC6F0_DANTE_RX,ZZLAB QCAP ALLEGRO2 DAUSERVICE DRM)
+$(call add_mods,SC6F0_DANTE_RX,ZZLAB QCAP ALSA ALLEGRO2 DAUSERVICE DRM)
 
 # $(info SC6F0_DANTE_RX_FLAGS=${SC6F0_DANTE_RX_FLAGS})
 

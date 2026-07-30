@@ -10,6 +10,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <linux/netlink.h>
+#include <alsa/asoundlib.h>
 #include <drm.h>
 #include <xf86drm.h>
 #include <xf86drmMode.h>
@@ -119,6 +120,7 @@ struct App0 {
 		bool mLastConnectorConnected;
 		bool mHaveLastConnectorState;
 		struct video_format mCurrentVideoFormat;
+		snd_pcm_t* mAlsaPcm;
 
 		static const char* video_colorformat_to_string(enum video_colorformat colorformat) {
 			switch(colorformat) {
@@ -403,11 +405,8 @@ struct App0 {
 			}
 		}
 
-		static bool choose_primary_fb_format(drmModePlane* plane,
-			const struct video_format* format, uint32_t* drmFormat, uint32_t* dumbBpp)
+		static bool choose_primary_fb_format(drmModePlane* plane, uint32_t* drmFormat, uint32_t* dumbBpp)
 		{
-			(void)format;
-
 			/*
 			 * modetest.txt shows the primary plane only advertises BG24.  The DAU input
 			 * colorformat is therefore intentionally ignored here; modeset the primary
@@ -495,6 +494,7 @@ struct App0 {
 			cleanup_primary_fb();
 		}
 
+#if 0
 		static QRESULT fill_yuyv_dumb_fb(int fd, uint32_t bo, uint32_t width, uint32_t height, uint32_t pitch) {
 			QRESULT qres = QCAP_RS_SUCCESSFUL;
 			int err;
@@ -544,6 +544,7 @@ struct App0 {
 
 			return qres;
 		}
+#endif
 
 		QRESULT apply_drm_video_format(const struct video_format* format) {
 			QRESULT qres = QCAP_RS_SUCCESSFUL;
@@ -634,20 +635,35 @@ struct App0 {
 						__FUNCTION__, __LINE__, overlayPlaneId, crtcIndex);
 					break;
 				}
-				if(! plane_supports_format(overlayPlane.get(), DRM_FORMAT_BGR888)) {
+
+				uint32_t overlay_drm_format;
+				switch(format->colorformat) {
+				case VIDEO_COLORFORMAT_RGB:
+					overlay_drm_format = DRM_FORMAT_BGR888;
+					break;
+				case VIDEO_COLORFORMAT_YUV444:
+					overlay_drm_format = DRM_FORMAT_YUYV;
+					break;
+				default:
+					qres = QCAP_RS_ERROR_INVALID_PARAMETER;
+					LOGE("%s(%d): unexpected value, format->colorformat=%d (%s)",
+						__FUNCTION__, __LINE__, format->colorformat, video_colorformat_to_string(format->colorformat));
+					break;
+				}
+
+				if(! plane_supports_format(overlayPlane.get(), overlay_drm_format)) {
 					qres = QCAP_RS_ERROR_INVALID_PARAMETER;
 					LOGE("%s(%d): overlay plane %u does not support %s",
-						__FUNCTION__, __LINE__, overlayPlaneId, drm_format_to_string(DRM_FORMAT_BGR888));
+						__FUNCTION__, __LINE__, overlayPlaneId, drm_format_to_string(overlay_drm_format));
 					break;
 				}
 
 				uint32_t drmFormat = 0;
 				uint32_t dumbBpp = 0;
-				if(! choose_primary_fb_format(primaryPlane.get(), format, &drmFormat, &dumbBpp)) {
+				if(! choose_primary_fb_format(primaryPlane.get(), &drmFormat, &dumbBpp)) {
 					qres = QCAP_RS_ERROR_INVALID_PARAMETER;
-					LOGE("%s(%d): primary plane %u has no supported framebuffer format for %s",
-						__FUNCTION__, __LINE__, primaryPlaneId,
-						video_colorformat_to_string(format->colorformat));
+					LOGE("%s(%d): primary plane %u has no supported framebuffer format for DRM_FORMAT_BGR888",
+						__FUNCTION__, __LINE__, primaryPlaneId);
 					break;
 				}
 				LOGI("using primary plane %u, CRTC %u, DRM fb format %s, dumb bpp=%u",
@@ -682,7 +698,7 @@ struct App0 {
 				}
 
 				{
-					const uint32_t overlayDrmFormat = DRM_FORMAT_BGR888;
+					const uint32_t overlayDrmFormat = overlay_drm_format;
 					const uint32_t overlayBpp = drm_format_bpp(overlayDrmFormat);
 
 					struct drm_mode_create_dumb overlayCreq = { 0 };
@@ -699,9 +715,11 @@ struct App0 {
 					}
 					overlayBo = overlayCreq.handle;
 
+#if 0
 					qres = fill_yuyv_dumb_fb(mDrmFd, overlayBo, overlayCreq.width,
 						overlayCreq.height, overlayCreq.pitch);
 					if(qres != QCAP_RS_SUCCESSFUL) break;
+#endif
 
 					uint32_t overlayHandles[4] = { overlayCreq.handle, 0, 0, 0 };
 					uint32_t overlayPitches[4] = { overlayCreq.pitch, 0, 0, 0 };
@@ -1022,7 +1040,14 @@ struct App0 {
 				LOGW("video_format is NULL");
 			}
 
-			QRESULT qres = apply_drm_video_format(format);
+			struct video_format new_video_format = *format;
+
+#if 0
+			new_video_format.colorformat = VIDEO_COLORFORMAT_RGB;
+			LOGW("DEBUG: new_video_format.colorformat=%d (%s)", (int)new_video_format.colorformat, video_colorformat_to_string(new_video_format.colorformat));
+#endif
+
+			QRESULT qres = apply_drm_video_format(&new_video_format);
 			if(qres != QCAP_RS_SUCCESSFUL) {
 				LOGE("%s(%d): apply_drm_video_format() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 				dau_reply_error(dau, message, "Failed to apply DRM video format");
@@ -1037,37 +1062,160 @@ struct App0 {
 						   const struct audio_info *info,
 						   void *ctxt)
 		{
+			self_t* pThis = (self_t*)ctxt;
+
 			LOGI("---tag---: %s", __FUNCTION__);
-
-#if 1
-			if(info) {
-				LOGD("audio_info: channel_count=%u, speaker_map=%d, level_shift_value=%u",
-					info->channel_count, (int)info->speaker_map, info->level_shift_value);
-				LOGD("audio_info: downmix_inhibit=%s, lfe_playback_level=%u, sample_rate=%u, sample_bits=%u",
-					info->downmix_inhibit ? "true" : "false",
-					info->lfe_playback_level, info->sample_rate, info->sample_bits);
-
-				const char* encoding_str = "unknown";
-				switch(info->encoding) {
-				case AUDIO_EN_LPCM:    encoding_str = "LPCM"; break;
-				case AUDIO_EN_AAC:     encoding_str = "AAC"; break;
-				case AUDIO_EN_DTS:     encoding_str = "DTS"; break;
-				case AUDIO_EN_DTS_HD:  encoding_str = "DTS_HD"; break;
-				case AUDIO_EN_DD_AC3:  encoding_str = "DD_AC3"; break;
-				case AUDIO_EN_DD_P_EAC3: encoding_str = "DD_P_EAC3"; break;
-				case AUDIO_EN_D_THD_MAT: encoding_str = "D_THD_MAT"; break;
-				case AUDIO_EN_MPEG:    encoding_str = "MPEG"; break;
-				case AUDIO_EN_ATRAC:   encoding_str = "ATRAC"; break;
-				case AUDIO_EN_WMA:     encoding_str = "WMA"; break;
-				case AUDIO_EN_MPEG4:   encoding_str = "MPEG4"; break;
-				}
-				LOGD("audio_info: encoding=%d (%s)", (int)info->encoding, encoding_str);
-			} else {
-				LOGW("audio_info is NULL");
+			if(! pThis->set_audio_info(info)) {
+				dau_reply_error(dau, message, "Failed to configure ALSA audio output");
+				return;
 			}
-#endif
 
 			dau_reply_success(dau, message);
+		}
+
+		static bool write_sysfs_value(const char* path, const char* value) {
+			int fd = open(path, O_WRONLY | O_CLOEXEC | O_NOFOLLOW);
+			if(fd < 0) {
+				LOGE("open(%s) failed, err=%d", path, errno);
+				return false;
+			}
+
+			size_t len = strlen(value);
+			ssize_t written = write(fd, value, len);
+			int savedErrno = errno;
+			if(close(fd) < 0 && written == (ssize_t)len) {
+				written = -1;
+				savedErrno = errno;
+			}
+			if(written != (ssize_t)len) {
+				LOGE("write(%s) failed, err=%d", path, savedErrno);
+				return false;
+			}
+			return true;
+		}
+
+		void stop_alsa() {
+			if(! mAlsaPcm) return;
+
+			int err = snd_pcm_drop(mAlsaPcm);
+			if(err < 0) {
+				LOGW("snd_pcm_drop() failed while stopping ALSA output: %s", snd_strerror(err));
+			}
+			err = snd_pcm_close(mAlsaPcm);
+			if(err < 0) {
+				LOGW("snd_pcm_close() failed while stopping ALSA output: %s", snd_strerror(err));
+			}
+			mAlsaPcm = NULL;
+		}
+
+		bool set_audio_info(const struct audio_info* info) {
+			static const char* switchRegUpdate =
+				"/sys/devices/platform/amba_pl@0/b00a0000.axis_switch/reg_update_enable";
+			static const char* switchPortEnable =
+				"/sys/devices/platform/amba_pl@0/b00a0000.axis_switch/port_enable";
+			static const char* alsaDevice = "default:CARD=xlnxhdmi1";
+
+			LOGD("audio_info: channel_count=%u, speaker_map=%d, level_shift_value=%u",
+				info->channel_count, (int)info->speaker_map, info->level_shift_value);
+			LOGD("audio_info: downmix_inhibit=%s, lfe_playback_level=%u, sample_rate=%u, sample_bits=%u",
+				info->downmix_inhibit ? "true" : "false",
+				info->lfe_playback_level, info->sample_rate, info->sample_bits);
+
+			const char* encoding_str = "unknown";
+			switch(info->encoding) {
+			case AUDIO_EN_LPCM:      encoding_str = "LPCM"; break;
+			case AUDIO_EN_AAC:       encoding_str = "AAC"; break;
+			case AUDIO_EN_DTS:       encoding_str = "DTS"; break;
+			case AUDIO_EN_DTS_HD:    encoding_str = "DTS_HD"; break;
+			case AUDIO_EN_DD_AC3:    encoding_str = "DD_AC3"; break;
+			case AUDIO_EN_DD_P_EAC3: encoding_str = "DD_P_EAC3"; break;
+			case AUDIO_EN_D_THD_MAT: encoding_str = "D_THD_MAT"; break;
+			case AUDIO_EN_MPEG:      encoding_str = "MPEG"; break;
+			case AUDIO_EN_ATRAC:     encoding_str = "ATRAC"; break;
+			case AUDIO_EN_WMA:       encoding_str = "WMA"; break;
+			case AUDIO_EN_MPEG4:     encoding_str = "MPEG4"; break;
+			}
+			LOGD("audio_info: encoding=%d (%s)", (int)info->encoding, encoding_str);
+
+			// Route the custom IP audio stream from master input 0 to slave input 1.
+			if(! write_sysfs_value(switchRegUpdate, "0") ||
+				! write_sysfs_value(switchPortEnable, "0,1") ||
+				! write_sysfs_value(switchRegUpdate, "1")) {
+				LOGE("Failed to enable audio stream switcher route mi[0] -> si[1]");
+				return false;
+			}
+
+			if(! info) {
+				LOGW("audio_info is NULL or has invalid audio properties");
+				return false;
+			}
+
+			struct audio_info new_info = *info;
+
+			if(new_info.channel_count == 0) {
+				LOGW("invalid channel_count, use default value");
+				new_info.channel_count = 2;
+			}
+
+			if(new_info.sample_rate == 0) {
+				LOGW("invalid sample_rate, use default value");
+				new_info.sample_rate = 48000;
+			}
+
+			if(new_info.sample_bits == 0) {
+				LOGW("invalid sample_bits, use default value");
+				new_info.sample_bits = 16;
+			}
+
+			snd_pcm_format_t format = SND_PCM_FORMAT_S16_LE;
+			switch(new_info.sample_bits) {
+			case 8:  format = SND_PCM_FORMAT_U8; break;
+			case 16: format = SND_PCM_FORMAT_S16_LE; break;
+			case 24: format = SND_PCM_FORMAT_S24_LE; break;
+			case 32: format = SND_PCM_FORMAT_S32_LE; break;
+			default:
+				LOGE("Unsupported ALSA sample width: %u bits", new_info.sample_bits);
+				return false;
+			}
+
+			stop_alsa();
+
+			int err = snd_pcm_open(&mAlsaPcm, alsaDevice, SND_PCM_STREAM_PLAYBACK, 0);
+			if(err < 0) {
+				LOGE("snd_pcm_open(%s) failed: %s", alsaDevice, snd_strerror(err));
+				mAlsaPcm = NULL;
+				return false;
+			}
+
+			snd_pcm_hw_params_t* hwParams;
+			snd_pcm_hw_params_alloca(&hwParams);
+			if((err = snd_pcm_hw_params_any(mAlsaPcm, hwParams)) < 0 ||
+				(err = snd_pcm_hw_params_set_access(mAlsaPcm, hwParams, SND_PCM_ACCESS_RW_INTERLEAVED)) < 0 ||
+				(err = snd_pcm_hw_params_set_format(mAlsaPcm, hwParams, format)) < 0) {
+				LOGE("Failed to configure ALSA format/access: %s", snd_strerror(err));
+				stop_alsa();
+				return false;
+			}
+
+			unsigned int rate = new_info.sample_rate;
+			if((err = snd_pcm_hw_params_set_rate(mAlsaPcm, hwParams, rate, 0)) < 0 ||
+				(err = snd_pcm_hw_params_set_channels(mAlsaPcm, hwParams, new_info.channel_count)) < 0 ||
+				(err = snd_pcm_hw_params(mAlsaPcm, hwParams)) < 0) {
+				LOGE("Failed to configure ALSA properties (%u channels, %u Hz, %u bits): %s",
+					new_info.channel_count, new_info.sample_rate, new_info.sample_bits, snd_strerror(err));
+				stop_alsa();
+				return false;
+			}
+
+			if((err = snd_pcm_prepare(mAlsaPcm)) < 0 || (err = snd_pcm_start(mAlsaPcm)) < 0) {
+				LOGE("Failed to start ALSA device %s: %s", alsaDevice, snd_strerror(err));
+				stop_alsa();
+				return false;
+			}
+
+			LOGI("Started ALSA device %s (%u channels, %u Hz, %u bits); audio data is supplied by the IP core",
+				alsaDevice, new_info.channel_count, new_info.sample_rate, new_info.sample_bits);
+			return true;
 		}
 
 		static void _set_hdr(struct dau_service *dau,
@@ -1240,6 +1388,10 @@ struct App0 {
 				mOverlayBoHandle = 0;
 				mLastConnectorConnected = false;
 				mHaveLastConnectorState = false;
+				mAlsaPcm = NULL;
+				_FreeStack_ += [this]() {
+					stop_alsa();
+				};
 				init_default_video_format(&mCurrentVideoFormat);
 
 				{
