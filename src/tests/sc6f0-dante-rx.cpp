@@ -1115,6 +1115,11 @@ struct App0 {
 				"/sys/devices/platform/amba_pl@0/b00a0000.axis_switch/port_enable";
 			static const char* alsaDevice = "default:CARD=xlnxhdmi1";
 
+			if(! info) {
+				LOGW("audio_info is NULL or has invalid audio properties");
+				return false;
+			}
+
 			LOGD("audio_info: channel_count=%u, speaker_map=%d, level_shift_value=%u",
 				info->channel_count, (int)info->speaker_map, info->level_shift_value);
 			LOGD("audio_info: downmix_inhibit=%s, lfe_playback_level=%u, sample_rate=%u, sample_bits=%u",
@@ -1145,16 +1150,11 @@ struct App0 {
 				return false;
 			}
 
-			if(! info) {
-				LOGW("audio_info is NULL or has invalid audio properties");
-				return false;
-			}
-
 			struct audio_info new_info = *info;
 
 			if(new_info.channel_count == 0) {
 				LOGW("invalid channel_count, use default value");
-				new_info.channel_count = 2;
+				new_info.channel_count = 8;
 			}
 
 			if(new_info.sample_rate == 0) {
@@ -1164,7 +1164,7 @@ struct App0 {
 
 			if(new_info.sample_bits == 0) {
 				LOGW("invalid sample_bits, use default value");
-				new_info.sample_bits = 16;
+				new_info.sample_bits = 24;
 			}
 
 			snd_pcm_format_t format = SND_PCM_FORMAT_S16_LE;
@@ -1198,17 +1198,63 @@ struct App0 {
 			}
 
 			unsigned int rate = new_info.sample_rate;
-			if((err = snd_pcm_hw_params_set_rate(mAlsaPcm, hwParams, rate, 0)) < 0 ||
-				(err = snd_pcm_hw_params_set_channels(mAlsaPcm, hwParams, new_info.channel_count)) < 0 ||
-				(err = snd_pcm_hw_params(mAlsaPcm, hwParams)) < 0) {
-				LOGE("Failed to configure ALSA properties (%u channels, %u Hz, %u bits): %s",
-					new_info.channel_count, new_info.sample_rate, new_info.sample_bits, snd_strerror(err));
+			if((err = snd_pcm_hw_params_set_rate(mAlsaPcm, hwParams, rate, 0)) < 0) {
+				LOGE("Failed to configure ALSA properties (%u Hz): %s",
+					new_info.sample_rate, snd_strerror(err));
 				stop_alsa();
 				return false;
 			}
 
-			if((err = snd_pcm_prepare(mAlsaPcm)) < 0 || (err = snd_pcm_start(mAlsaPcm)) < 0) {
-				LOGE("Failed to start ALSA device %s: %s", alsaDevice, snd_strerror(err));
+			if((err = snd_pcm_hw_params_set_channels(mAlsaPcm, hwParams, new_info.channel_count)) < 0) {
+				LOGE("Failed to configure ALSA properties (%u channels): %s",
+					new_info.channel_count, snd_strerror(err));
+				stop_alsa();
+				return false;
+			}
+
+			if((err = snd_pcm_hw_params(mAlsaPcm, hwParams)) < 0) {
+				LOGE("Failed to configure ALSA properties: %s", snd_strerror(err));
+				stop_alsa();
+				return false;
+			}
+
+			/*
+			 * The HDMI playback link is only used to configure the HDMI
+			 * codec.  Its actual samples come from the custom AES3 IP stream
+			 * selected above, so this ALSA playback buffer is intentionally
+			 * empty.  ALSA normally rejects snd_pcm_start() with -EPIPE when
+			 * the playback buffer has no application data.  Disable that
+			 * empty-buffer start check for this externally-fed stream.
+			 */
+			snd_pcm_sw_params_t* swParams;
+			snd_pcm_uframes_t boundary = 0;
+			snd_pcm_uframes_t stopThreshold = 0;
+			snd_pcm_sw_params_alloca(&swParams);
+			if((err = snd_pcm_sw_params_current(mAlsaPcm, swParams)) < 0 ||
+				(err = snd_pcm_sw_params_get_boundary(swParams, &boundary)) < 0 ||
+				(err = snd_pcm_sw_params_get_stop_threshold(swParams, &stopThreshold)) < 0 ||
+				(err = snd_pcm_sw_params_set_stop_threshold(mAlsaPcm, swParams, boundary)) < 0 ||
+				(err = snd_pcm_sw_params(mAlsaPcm, swParams)) < 0) {
+				LOGE("Failed to configure ALSA software parameters: %s", snd_strerror(err));
+				stop_alsa();
+				return false;
+			}
+			LOGD("ALSA playback software parameters: boundary=%lu stop_threshold=%lu -> %lu",
+				(unsigned long)boundary, (unsigned long)stopThreshold,
+				(unsigned long)boundary);
+
+			if((err = snd_pcm_prepare(mAlsaPcm)) < 0) {
+				LOGE("Failed to prepare ALSA device %s: %s", alsaDevice, snd_strerror(err));
+				stop_alsa();
+				return false;
+			}
+
+			LOGD("Starting ALSA device %s: state=%s avail=%ld",
+				alsaDevice, snd_pcm_state_name(snd_pcm_state(mAlsaPcm)),
+				(long)snd_pcm_avail_update(mAlsaPcm));
+			if((err = snd_pcm_start(mAlsaPcm)) < 0) {
+				LOGE("Failed to start ALSA device %s: %s (state=%s)", alsaDevice,
+					snd_strerror(err), snd_pcm_state_name(snd_pcm_state(mAlsaPcm)));
 				stop_alsa();
 				return false;
 			}
