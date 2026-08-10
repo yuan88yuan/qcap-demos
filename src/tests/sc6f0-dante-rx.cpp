@@ -3,8 +3,13 @@
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdint.h>
 
 #include <atomic>
+#include <chrono>
+#include <cmath>
+#include <thread>
+#include <vector>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
@@ -121,6 +126,14 @@ struct App0 {
 		bool mHaveLastConnectorState;
 		struct video_format mCurrentVideoFormat;
 		snd_pcm_t* mAlsaPcm;
+
+		enum AudioMode {
+			AUDIO_MODE_STREAM = 0,
+			AUDIO_MODE_TEST_PATTERN = 1,
+		};
+		AudioMode mAudioMode;
+		std::thread* mToneThread;
+		std::atomic<bool> mToneRunning;
 
 		static const char* video_colorformat_to_string(enum video_colorformat colorformat) {
 			switch(colorformat) {
@@ -1073,6 +1086,22 @@ struct App0 {
 			dau_reply_success(dau, message);
 		}
 
+		static AudioMode audio_mode_from_env() {
+			/*
+			 * SC6F0_DANTE_RX_AUDIO_MODE selects the audio source:
+			 *   stream      (default) - fixed FPGA module, switch port_enable=0,1
+			 *   testpattern           - xilinx audio formatter IP reading PS DDR
+			 *                           data written via ALSA, port_enable=0,0
+			 */
+			const char* strVal = getenv("SC6F0_DANTE_RX_AUDIO_MODE");
+			if(strVal) {
+				if(strcmp(strVal, "stream") == 0) return AUDIO_MODE_STREAM;
+				if(strcmp(strVal, "testpattern") == 0) return AUDIO_MODE_TEST_PATTERN;
+				LOGW("SC6F0_DANTE_RX_AUDIO_MODE=%s is unknown; using default (stream)", strVal);
+			}
+			return AUDIO_MODE_STREAM;
+		}
+
 		static bool write_sysfs_value(const char* path, const char* value) {
 			int fd = open(path, O_WRONLY | O_CLOEXEC | O_NOFOLLOW);
 			if(fd < 0) {
@@ -1094,7 +1123,29 @@ struct App0 {
 			return true;
 		}
 
+		void stop_audio_tone() {
+			if(! mToneRunning.load(std::memory_order_acquire)) return;
+
+			mToneRunning.store(false, std::memory_order_release);
+
+			// Unblock a pending blocking snd_pcm_writei() in the tone thread.
+			if(mAlsaPcm) {
+				int err = snd_pcm_drop(mAlsaPcm);
+				if(err < 0) {
+					LOGW("snd_pcm_drop() failed while stopping the tone thread: %s", snd_strerror(err));
+				}
+			}
+
+			if(mToneThread) {
+				if(mToneThread->joinable()) mToneThread->join();
+				delete mToneThread;
+				mToneThread = NULL;
+			}
+		}
+
 		void stop_alsa() {
+			stop_audio_tone();
+
 			if(! mAlsaPcm) return;
 
 			int err = snd_pcm_drop(mAlsaPcm);
@@ -1108,11 +1159,172 @@ struct App0 {
 			mAlsaPcm = NULL;
 		}
 
-		bool set_audio_info(const struct audio_info* info) {
+		/*
+		 * Fixed audio test pattern: 48 kHz / 16-bit / 2ch / 1 kHz sine tone,
+		 * continuously written to the ALSA playback device.  The samples are
+		 * staged in PS DDR memory and consumed by the xilinx audio formatter
+		 * IP (selected with port_enable=0,0) which converts them to the AXI
+		 * Stream audio format used by the HDMI TX.
+		 */
+		void audio_tone_thread_main() {
+			static const double kPi = 3.14159265358979323846;
+			const unsigned int sampleRate = 48000;
+			const unsigned int channelCount = 2;
+			const double toneFreq = 1000.0;
+			const double amplitude = 16384.0; // -6 dBFS
+			const snd_pcm_uframes_t periodFrames = 1024;
+
+			const double twoPi = 2.0 * kPi;
+			const double phaseStep = twoPi * toneFreq / sampleRate;
+
+			std::vector<int16_t> frames((size_t)periodFrames * channelCount);
+
+			double phase = 0.0;
+			while(mToneRunning.load(std::memory_order_acquire)) {
+				// Generate one period of the 1 kHz sine (both channels).
+				for(snd_pcm_uframes_t i = 0; i < periodFrames; i++) {
+					int16_t sample = (int16_t)std::llround(amplitude * std::sin(phase));
+					phase += phaseStep;
+					if(phase >= twoPi) phase -= twoPi;
+					frames[(size_t)i * channelCount + 0] = sample;
+					frames[(size_t)i * channelCount + 1] = sample;
+				}
+
+				snd_pcm_t* pcm = mAlsaPcm;
+				if(! pcm) break;
+
+				size_t remaining = (size_t)periodFrames;
+				const int16_t* data = frames.data();
+				while(remaining > 0 && mToneRunning.load(std::memory_order_acquire)) {
+					snd_pcm_sframes_t written = snd_pcm_writei(pcm, data, remaining);
+					if(written < 0) {
+						int err = (int)written;
+						if(err == -EPIPE) {
+							// Underrun: rewind and keep feeding the tone.
+							if(snd_pcm_prepare(pcm) < 0) break;
+							continue;
+						}
+						if(err == -ESTRPIPE) {
+							// Device suspended: wait for resume.
+							while((err = snd_pcm_resume(pcm)) == -EAGAIN &&
+								mToneRunning.load(std::memory_order_acquire)) {
+								std::this_thread::sleep_for(std::chrono::milliseconds(10));
+							}
+							if(err < 0) snd_pcm_prepare(pcm);
+							continue;
+						}
+						if(err == -EBADFD || err == -ENODEV) break;
+						LOGW("ALSA tone: snd_pcm_writei() failed: %s", snd_strerror(err));
+						std::this_thread::sleep_for(std::chrono::milliseconds(10));
+						continue;
+					}
+					if(written == 0) {
+						std::this_thread::sleep_for(std::chrono::milliseconds(1));
+						continue;
+					}
+					data += written * channelCount;
+					remaining -= (size_t)written;
+				}
+			}
+		}
+
+		bool start_test_pattern_playback() {
+			static const char* alsaDevice = "default:CARD=xlnxhdmi1";
+
+			stop_alsa();
+
+			int err = snd_pcm_open(&mAlsaPcm, alsaDevice, SND_PCM_STREAM_PLAYBACK, 0);
+			if(err < 0) {
+				LOGE("snd_pcm_open(%s) failed: %s", alsaDevice, snd_strerror(err));
+				mAlsaPcm = NULL;
+				return false;
+			}
+
+			snd_pcm_hw_params_t* hwParams;
+			snd_pcm_hw_params_alloca(&hwParams);
+			if((err = snd_pcm_hw_params_any(mAlsaPcm, hwParams)) < 0 ||
+				(err = snd_pcm_hw_params_set_access(mAlsaPcm, hwParams, SND_PCM_ACCESS_RW_INTERLEAVED)) < 0 ||
+				(err = snd_pcm_hw_params_set_format(mAlsaPcm, hwParams, SND_PCM_FORMAT_S16_LE)) < 0 ||
+				(err = snd_pcm_hw_params_set_rate(mAlsaPcm, hwParams, 48000, 0)) < 0 ||
+				(err = snd_pcm_hw_params_set_channels(mAlsaPcm, hwParams, 2)) < 0) {
+				LOGE("Failed to configure ALSA test pattern HW params: %s", snd_strerror(err));
+				stop_alsa();
+				return false;
+			}
+
+			// Use a period/buffer size suited to the tone generator.
+			snd_pcm_uframes_t period = 1024;
+			snd_pcm_uframes_t buffer = 4096;
+			err = snd_pcm_hw_params_set_period_size_near(mAlsaPcm, hwParams, &period, NULL);
+			if(err < 0) LOGW("snd_pcm_hw_params_set_period_size_near() failed: %s", snd_strerror(err));
+			err = snd_pcm_hw_params_set_buffer_size_near(mAlsaPcm, hwParams, &buffer);
+			if(err < 0) LOGW("snd_pcm_hw_params_set_buffer_size_near() failed: %s", snd_strerror(err));
+
+			if((err = snd_pcm_hw_params(mAlsaPcm, hwParams)) < 0) {
+				LOGE("Failed to apply ALSA test pattern HW params: %s", snd_strerror(err));
+				stop_alsa();
+				return false;
+			}
+
+			/*
+			 * Start playback automatically once one period has been written.
+			 * Keep the default stop threshold so underruns are reported and
+			 * recovered by the tone thread instead of being masked.
+			 */
+			snd_pcm_sw_params_t* swParams;
+			snd_pcm_sw_params_alloca(&swParams);
+			if((err = snd_pcm_sw_params_current(mAlsaPcm, swParams)) < 0 ||
+				(err = snd_pcm_sw_params_set_start_threshold(mAlsaPcm, swParams, period)) < 0 ||
+				(err = snd_pcm_sw_params(mAlsaPcm, swParams)) < 0) {
+				LOGE("Failed to configure ALSA test pattern software parameters: %s", snd_strerror(err));
+				stop_alsa();
+				return false;
+			}
+
+			if((err = snd_pcm_prepare(mAlsaPcm)) < 0) {
+				LOGE("Failed to prepare ALSA device %s: %s", alsaDevice, snd_strerror(err));
+				stop_alsa();
+				return false;
+			}
+
+			mToneRunning.store(true, std::memory_order_release);
+			mToneThread = new std::thread(std::bind(&self_t::audio_tone_thread_main, this));
+
+			LOGI("Started ALSA test pattern: 48 kHz / 16-bit / 2ch / 1 kHz tone on %s", alsaDevice);
+			return true;
+		}
+
+		static bool configure_audio_switch(AudioMode mode) {
 			static const char* switchRegUpdate =
 				"/sys/devices/platform/amba_pl@0/b00a0000.axis_switch/reg_update_enable";
 			static const char* switchPortEnable =
 				"/sys/devices/platform/amba_pl@0/b00a0000.axis_switch/port_enable";
+
+			const char* portEnable = NULL;
+			const char* description = NULL;
+			if(mode == AUDIO_MODE_TEST_PATTERN) {
+				// xilinx audio formatter IP: reads PS DDR data written via ALSA.
+				portEnable = "0,0";
+				description = "xilinx audio formatter (PS DDR)";
+			} else {
+				// Fixed FPGA module that generates the audio data.
+				portEnable = "0,1";
+				description = "custom FPGA module";
+			}
+
+			if(! write_sysfs_value(switchRegUpdate, "0") ||
+				! write_sysfs_value(switchPortEnable, portEnable) ||
+				! write_sysfs_value(switchRegUpdate, "1")) {
+				LOGE("Failed to configure audio stream switcher route (%s, port_enable=%s)",
+					description, portEnable);
+				return false;
+			}
+
+			LOGI("Audio stream switcher route: %s (port_enable=%s)", description, portEnable);
+			return true;
+		}
+
+		bool set_audio_info(const struct audio_info* info) {
 			static const char* alsaDevice = "default:CARD=xlnxhdmi1";
 
 			if(! info) {
@@ -1141,13 +1353,24 @@ struct App0 {
 			case AUDIO_EN_MPEG4:     encoding_str = "MPEG4"; break;
 			}
 			LOGD("audio_info: encoding=%d (%s)", (int)info->encoding, encoding_str);
+			LOGI("audio output mode: %s",
+				mAudioMode == AUDIO_MODE_TEST_PATTERN ? "test-pattern (fixed 48 kHz/16-bit/2ch 1 kHz tone)" : "stream (custom FPGA module)");
 
-			// Route the custom IP audio stream from master input 0 to slave input 1.
-			if(! write_sysfs_value(switchRegUpdate, "0") ||
-				! write_sysfs_value(switchPortEnable, "0,1") ||
-				! write_sysfs_value(switchRegUpdate, "1")) {
-				LOGE("Failed to enable audio stream switcher route mi[0] -> si[1]");
+			// Route the audio stream to the source selected by the audio mode:
+			//   stream       - custom FPGA module, port_enable = 0,1
+			//   test-pattern - xilinx audio formatter (PS DDR via ALSA), port_enable = 0,0
+			if(! configure_audio_switch(mAudioMode)) {
 				return false;
+			}
+
+			// In test-pattern mode the output is fixed at 48 kHz / 16-bit / 2ch
+			// 1 kHz tone regardless of the requested audio_info.
+			if(mAudioMode == AUDIO_MODE_TEST_PATTERN) {
+				if(! start_test_pattern_playback()) {
+					LOGE("Failed to start audio test pattern playback");
+					return false;
+				}
+				return true;
 			}
 
 			struct audio_info new_info = *info;
@@ -1435,10 +1658,15 @@ struct App0 {
 				mLastConnectorConnected = false;
 				mHaveLastConnectorState = false;
 				mAlsaPcm = NULL;
+				mToneThread = NULL;
+				mToneRunning.store(false);
 				_FreeStack_ += [this]() {
 					stop_alsa();
 				};
 				init_default_video_format(&mCurrentVideoFormat);
+				mAudioMode = audio_mode_from_env();
+				LOGI("audio output mode selected by env: %s",
+					mAudioMode == AUDIO_MODE_TEST_PATTERN ? "test-pattern" : "stream");
 
 				{
 					int drm_fd = drmOpen("xlnx", NULL);
@@ -1520,6 +1748,18 @@ struct App0 {
 				if(qres != QCAP_RS_SUCCESSFUL) {
 					LOGE("%s(%d): StartConnectorMonitor() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
+				}
+
+				if(mAudioMode == AUDIO_MODE_TEST_PATTERN) {
+					// Best-effort: start the fixed test tone immediately so the
+					// audio path can be verified without host-driven
+					// set_audio_info().  If it fails (e.g. HDMI link not up yet),
+					// set_audio_info() will retry later.
+					if(configure_audio_switch(mAudioMode) && start_test_pattern_playback()) {
+						LOGI("Audio test pattern playback started at startup");
+					} else {
+						LOGW("Audio test pattern playback failed at startup; will retry on set_audio_info()");
+					}
 				}
 			}
 			return QCAP_RT_OK;
