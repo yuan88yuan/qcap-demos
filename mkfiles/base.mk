@@ -11,8 +11,11 @@ BASE_F+=\
 
 BASE_I+=\
 -I${S}/../include \
+-I${S}/../3rdparty/include \
 -I/opt/qcap/qcap-3rdparty/${PLATFORM}/include
 
+BASE_L+=$(call _ld_path,${S}/../lib)
+BASE_L+=$(call _ld_path,${S}/../3rdparty/lib)
 BASE_L+=$(call _ld_path,${D}/lib)
 BASE_L+=$(call _ld_path,/opt/qcap/qcap-3rdparty/${PLATFORM}/lib)
 

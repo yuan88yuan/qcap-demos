@@ -1324,6 +1324,51 @@ struct App0 {
 			return true;
 		}
 
+		static bool configure_dante_rx_to_aes3(int sample_width, int sample_rate) {
+			static const char* switchApply =
+				"/sys/devices/platform/amba_pl@0/b0040000.dante_rx_to_aes3/apply";
+			static const char* switchSampleWidth =
+				"/sys/devices/platform/amba_pl@0/b0040000.dante_rx_to_aes3/sample-width";
+			static const char* switchSampleRate =
+				"/sys/devices/platform/amba_pl@0/b0040000.dante_rx_to_aes3/sample-rate";
+
+			char str_sample_width[16];
+			char str_sample_rate[16];
+
+			snprintf(str_sample_width, sizeof(str_sample_width), "%d", sample_width);
+			snprintf(str_sample_rate, sizeof(str_sample_rate), "%d", sample_rate);
+
+			if(! write_sysfs_value(switchSampleWidth, str_sample_width) ||
+				! write_sysfs_value(switchSampleRate, str_sample_rate)) {
+				LOGE("Failed to set dante_rx_to_aes3 sysfs properties (sample_width=%d, sample_rate=%d)",
+					sample_width, sample_rate);
+				return false;
+			}
+
+			const int max_retries = 3;
+			bool apply_ok = false;
+
+			for(int retry = 0; retry <= max_retries; ++retry) {
+				if(retry > 0) {
+					LOGW("Retrying write(%s) (attempt %d/%d)...", switchApply, retry, max_retries);
+					usleep(500000);
+				}
+				if(write_sysfs_value(switchApply, "1")) {
+					apply_ok = true;
+					break;
+				}
+			}
+
+			if(! apply_ok) {
+				LOGE("Failed to configure dante_rx_to_aes3 (sample_width=%d, sample_rate=%d) after %d retries",
+					sample_width, sample_rate, max_retries);
+				return false;
+			}
+
+			LOGI("dante_rx_to_aes3: (sample_width=%d sample_rate=%d)", sample_width, sample_rate);
+			return true;
+		}
+
 		bool set_audio_info(const struct audio_info* info) {
 			static const char* alsaDevice = "default:CARD=xlnxhdmi1";
 
@@ -1387,7 +1432,7 @@ struct App0 {
 
 			if(new_info.sample_bits == 0) {
 				LOGW("invalid sample_bits, use default value");
-				new_info.sample_bits = 24;
+				new_info.sample_bits = 16;
 			}
 
 			snd_pcm_format_t format = SND_PCM_FORMAT_S16_LE;
@@ -1481,6 +1526,12 @@ struct App0 {
 				stop_alsa();
 				return false;
 			}
+
+#if 1
+			if(! configure_dante_rx_to_aes3(new_info.sample_bits, new_info.sample_rate)) {
+				return false;
+			}
+#endif
 
 			LOGI("Started ALSA device %s (%u channels, %u Hz, %u bits); audio data is supplied by the IP core",
 				alsaDevice, new_info.channel_count, new_info.sample_rate, new_info.sample_bits);
