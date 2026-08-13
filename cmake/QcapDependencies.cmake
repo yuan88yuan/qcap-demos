@@ -19,16 +19,21 @@ endif()
 # Common BASE module from mkfiles/base.mk.
 add_library(qcap_demos_base INTERFACE)
 add_library(qcap::base ALIAS qcap_demos_base)
+# Repo-local 3rdparty dir mirrors mkfiles/base.mk's -I${S}/../3rdparty/include
+# and -L${S}/../3rdparty/lib (platform-specific deps such as dauservice).
 target_include_directories(qcap_demos_base INTERFACE
   "${PROJECT_SOURCE_DIR}/include"
+  "${PROJECT_SOURCE_DIR}/3rdparty/include"
   "${QCAP_IMAGE_THIRDPARTY_DIR}/include"
 )
 target_link_directories(qcap_demos_base INTERFACE
   "${QCAP_IMAGE_THIRDPARTY_DIR}/lib"
+  "${PROJECT_SOURCE_DIR}/3rdparty/lib"
   "${CMAKE_BINARY_DIR}/lib"
 )
 target_link_options(qcap_demos_base INTERFACE
   "-Wl,-rpath-link,${QCAP_IMAGE_THIRDPARTY_DIR}/lib"
+  "-Wl,-rpath-link,${PROJECT_SOURCE_DIR}/3rdparty/lib"
   "-Wl,-rpath-link,${CMAKE_BINARY_DIR}/lib"
   -pthread)
 target_link_libraries(qcap_demos_base INTERFACE rt dl)

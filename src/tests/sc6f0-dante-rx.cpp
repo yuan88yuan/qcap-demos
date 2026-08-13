@@ -81,6 +81,135 @@ namespace __sc6f0_dante_rx__ {
 
 		return 0;
 	}
+
+	// ---- Sysfs-backed FPGA IP controller ---------------------------------
+	//
+	// Both audio IPs on the SC6F0 board share the same programming model:
+	// attribute values are written under the device's sysfs directory, then a
+	// commit is requested.  Commits are retried because some IPs busy-reject
+	// them while their internal state machine is still settling.
+
+	enum AudioMode {
+		AUDIO_MODE_STREAM = 0,
+		AUDIO_MODE_TEST_PATTERN = 1,
+	};
+
+	static bool write_sysfs_value(const char* path, const char* value) {
+		int fd = open(path, O_WRONLY | O_CLOEXEC | O_NOFOLLOW);
+		if(fd < 0) {
+			LOGE("open(%s) failed, err=%d", path, errno);
+			return false;
+		}
+
+		size_t len = strlen(value);
+		ssize_t written = write(fd, value, len);
+		int savedErrno = errno;
+		if(close(fd) < 0 && written == (ssize_t)len) {
+			written = -1;
+			savedErrno = errno;
+		}
+		if(written != (ssize_t)len) {
+			LOGE("write(%s) failed, err=%d", path, savedErrno);
+			return false;
+		}
+		return true;
+	}
+
+	struct SysfsIp {
+		const char* base;
+
+		bool write_attr(const char* name, int value) const {
+			char buf[16];
+			snprintf(buf, sizeof(buf), "%d", value);
+			return write_value(name, buf);
+		}
+
+		bool write_attr(const char* name, const char* value) const {
+			return write_value(name, value);
+		}
+
+		// Commit pending attribute writes.  max_retries is the number of
+		// additional attempts made after the initial one fails.
+		bool apply(int max_retries) const {
+			for(int retry = 0; retry <= max_retries; ++retry) {
+				if(retry > 0) {
+					LOGW("Retrying apply(%s) (attempt %d/%d)...",
+						base, retry, max_retries);
+					usleep(500000);
+				}
+				if(write_value("apply", "1")) return true;
+			}
+			LOGE("apply(%s) failed after %d retries", base, max_retries);
+			return false;
+		}
+
+	private:
+		bool write_value(const char* name, const char* value) const {
+			char path[256];
+			snprintf(path, sizeof(path), "%s/%s", base, name);
+			return write_sysfs_value(path, value);
+		}
+	};
+
+	// Audio stream switcher (axis_switch): selects which source feeds the
+	// HDMI audio path - the fixed FPGA module (stream) or the xilinx audio
+	// formatter reading PS DDR (test pattern).
+	struct AudioSwitch {
+		static bool select_source(AudioMode mode) {
+			static const SysfsIp ip = {
+				"/sys/devices/platform/amba_pl@0/b00a0000.axis_switch",
+			};
+
+			const char* portEnable;
+			const char* description;
+			if(mode == AUDIO_MODE_TEST_PATTERN) {
+				// xilinx audio formatter IP: reads PS DDR data written via ALSA.
+				portEnable = "0,0";
+				description = "xilinx audio formatter (PS DDR)";
+			} else {
+				// Fixed FPGA module that generates the audio data.
+				portEnable = "0,1";
+				description = "custom FPGA module";
+			}
+
+			if(! ip.write_attr("reg_update_enable", 0) ||
+				! ip.write_attr("port_enable", portEnable) ||
+				! ip.write_attr("reg_update_enable", 1)) {
+				LOGE("Failed to configure audio stream switcher route (%s, port_enable=%s)",
+					description, portEnable);
+				return false;
+			}
+
+			LOGI("Audio stream switcher route: %s (port_enable=%s)", description, portEnable);
+			return true;
+		}
+	};
+
+	// Dante RX -> AES3 converter: must be re-programmed whenever the incoming
+	// stream's sample format changes.
+	struct DanteRxToAes3 {
+		static bool set_sample_format(int sample_width, int sample_rate) {
+			static const SysfsIp ip = {
+				"/sys/devices/platform/amba_pl@0/b0040000.dante_rx_to_aes3",
+			};
+
+			if(! ip.write_attr("sample-width", sample_width) ||
+				! ip.write_attr("sample-rate", sample_rate)) {
+				LOGE("Failed to set dante_rx_to_aes3 sysfs properties (sample_width=%d, sample_rate=%d)",
+					sample_width, sample_rate);
+				return false;
+			}
+
+			if(! ip.apply(3)) {
+				LOGE("Failed to configure dante_rx_to_aes3 (sample_width=%d, sample_rate=%d)",
+					sample_width, sample_rate);
+				return false;
+			}
+
+			LOGI("dante_rx_to_aes3: (sample_width=%d sample_rate=%d)", sample_width, sample_rate);
+			return true;
+		}
+	};
 }
 
 using namespace __sc6f0_dante_rx__;
@@ -127,10 +256,6 @@ struct App0 {
 		struct video_format mCurrentVideoFormat;
 		snd_pcm_t* mAlsaPcm;
 
-		enum AudioMode {
-			AUDIO_MODE_STREAM = 0,
-			AUDIO_MODE_TEST_PATTERN = 1,
-		};
 		AudioMode mAudioMode;
 		std::thread* mToneThread;
 		std::atomic<bool> mToneRunning;
@@ -1102,27 +1227,6 @@ struct App0 {
 			return AUDIO_MODE_STREAM;
 		}
 
-		static bool write_sysfs_value(const char* path, const char* value) {
-			int fd = open(path, O_WRONLY | O_CLOEXEC | O_NOFOLLOW);
-			if(fd < 0) {
-				LOGE("open(%s) failed, err=%d", path, errno);
-				return false;
-			}
-
-			size_t len = strlen(value);
-			ssize_t written = write(fd, value, len);
-			int savedErrno = errno;
-			if(close(fd) < 0 && written == (ssize_t)len) {
-				written = -1;
-				savedErrno = errno;
-			}
-			if(written != (ssize_t)len) {
-				LOGE("write(%s) failed, err=%d", path, savedErrno);
-				return false;
-			}
-			return true;
-		}
-
 		void stop_audio_tone() {
 			if(! mToneRunning.load(std::memory_order_acquire)) return;
 
@@ -1294,81 +1398,6 @@ struct App0 {
 			return true;
 		}
 
-		static bool configure_audio_switch(AudioMode mode) {
-			static const char* switchRegUpdate =
-				"/sys/devices/platform/amba_pl@0/b00a0000.axis_switch/reg_update_enable";
-			static const char* switchPortEnable =
-				"/sys/devices/platform/amba_pl@0/b00a0000.axis_switch/port_enable";
-
-			const char* portEnable = NULL;
-			const char* description = NULL;
-			if(mode == AUDIO_MODE_TEST_PATTERN) {
-				// xilinx audio formatter IP: reads PS DDR data written via ALSA.
-				portEnable = "0,0";
-				description = "xilinx audio formatter (PS DDR)";
-			} else {
-				// Fixed FPGA module that generates the audio data.
-				portEnable = "0,1";
-				description = "custom FPGA module";
-			}
-
-			if(! write_sysfs_value(switchRegUpdate, "0") ||
-				! write_sysfs_value(switchPortEnable, portEnable) ||
-				! write_sysfs_value(switchRegUpdate, "1")) {
-				LOGE("Failed to configure audio stream switcher route (%s, port_enable=%s)",
-					description, portEnable);
-				return false;
-			}
-
-			LOGI("Audio stream switcher route: %s (port_enable=%s)", description, portEnable);
-			return true;
-		}
-
-		static bool configure_dante_rx_to_aes3(int sample_width, int sample_rate) {
-			static const char* switchApply =
-				"/sys/devices/platform/amba_pl@0/b0040000.dante_rx_to_aes3/apply";
-			static const char* switchSampleWidth =
-				"/sys/devices/platform/amba_pl@0/b0040000.dante_rx_to_aes3/sample-width";
-			static const char* switchSampleRate =
-				"/sys/devices/platform/amba_pl@0/b0040000.dante_rx_to_aes3/sample-rate";
-
-			char str_sample_width[16];
-			char str_sample_rate[16];
-
-			snprintf(str_sample_width, sizeof(str_sample_width), "%d", sample_width);
-			snprintf(str_sample_rate, sizeof(str_sample_rate), "%d", sample_rate);
-
-			if(! write_sysfs_value(switchSampleWidth, str_sample_width) ||
-				! write_sysfs_value(switchSampleRate, str_sample_rate)) {
-				LOGE("Failed to set dante_rx_to_aes3 sysfs properties (sample_width=%d, sample_rate=%d)",
-					sample_width, sample_rate);
-				return false;
-			}
-
-			const int max_retries = 3;
-			bool apply_ok = false;
-
-			for(int retry = 0; retry <= max_retries; ++retry) {
-				if(retry > 0) {
-					LOGW("Retrying write(%s) (attempt %d/%d)...", switchApply, retry, max_retries);
-					usleep(500000);
-				}
-				if(write_sysfs_value(switchApply, "1")) {
-					apply_ok = true;
-					break;
-				}
-			}
-
-			if(! apply_ok) {
-				LOGE("Failed to configure dante_rx_to_aes3 (sample_width=%d, sample_rate=%d) after %d retries",
-					sample_width, sample_rate, max_retries);
-				return false;
-			}
-
-			LOGI("dante_rx_to_aes3: (sample_width=%d sample_rate=%d)", sample_width, sample_rate);
-			return true;
-		}
-
 		bool set_audio_info(const struct audio_info* info) {
 			static const char* alsaDevice = "default:CARD=xlnxhdmi1";
 
@@ -1404,7 +1433,7 @@ struct App0 {
 			// Route the audio stream to the source selected by the audio mode:
 			//   stream       - custom FPGA module, port_enable = 0,1
 			//   test-pattern - xilinx audio formatter (PS DDR via ALSA), port_enable = 0,0
-			if(! configure_audio_switch(mAudioMode)) {
+			if(! AudioSwitch::select_source(mAudioMode)) {
 				return false;
 			}
 
@@ -1528,7 +1557,7 @@ struct App0 {
 			}
 
 #if 1
-			if(! configure_dante_rx_to_aes3(new_info.sample_bits, new_info.sample_rate)) {
+			if(! DanteRxToAes3::set_sample_format(new_info.sample_bits, new_info.sample_rate)) {
 				return false;
 			}
 #endif
@@ -1806,7 +1835,7 @@ struct App0 {
 					// audio path can be verified without host-driven
 					// set_audio_info().  If it fails (e.g. HDMI link not up yet),
 					// set_audio_info() will retry later.
-					if(configure_audio_switch(mAudioMode) && start_test_pattern_playback()) {
+					if(AudioSwitch::select_source(mAudioMode) && start_test_pattern_playback()) {
 						LOGI("Audio test pattern playback started at startup");
 					} else {
 						LOGW("Audio test pattern playback failed at startup; will retry on set_audio_info()");
