@@ -3,10 +3,15 @@
 ## Build System
 - Builds must run inside the qcap Docker image.
 - CMake migration targets currently include:
-  - image: `qcap-build:all3rdparty-ubuntu2004_x64-vaapi-20260720`, platform: `ubuntu2004_x64`;
-  - image: `qcap-build:all3rdparty-xlnk2_arm64-20260723`, platform: `xlnk2_arm64`.
+  - image: `qcap-build:ubuntu2004_x64-base`, platform: `ubuntu2004_x64`;
+  - image: `<image-tag>`, platform: `xlnk2_arm64` (建議使用 `qcap-build:xlnk2_arm64-base`).
 - `QCAP_HOME` must point to the prebuilt platform qcap library root. qcap is imported by CMake and is never built by this repository.
 - The selected Docker image already contains the platform third-party headers and libraries under `/opt/qcap/qcap-3rdparty/<platform>`. Do not add or pass a `QCAP_3RDPARTY` override.
+- 當 Docker image 未內建平台第三方庫（如 xlnk2_arm64 無 all3rdparty 版本）時，需先執行以下指令手動取得對應平台的第三方依賴：
+  ```bash
+  ./scripts/fetch-3rdparty-platform.sh <platform> [--variant cuda|vaapi|none]
+  ```
+  執行後會將依賴合併至專案根目錄的 `./3rdparty/`。x64 平台可透過 `--variant` 指定 GPU 加速 variant（`cuda` 或 `vaapi`），預設為 `none`。此步驟需在 CMake configure 或 Make build 之前完成。
 - Use CMake for the migration build:
   ```bash
   ./scripts/docker-run.sh qcap-build:all3rdparty-ubuntu2004_x64-vaapi-20260720 \

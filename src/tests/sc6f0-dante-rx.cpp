@@ -153,10 +153,62 @@ struct App0 {
 
 	bool running;
 
-	int Run() {
-		mTestCase1.DoWork();
+	static int test_case_from_args() {
+		int testCase = 1;
 
-		return 0;
+		for(int i = 1; i < g_argc; i++) {
+			const char* arg = g_argv[i];
+			if(! arg) continue;
+
+			const char* value = NULL;
+			if(strcmp(arg, "--test") == 0) {
+				if(i + 1 >= g_argc) {
+					LOGE("--test requires a test case number");
+					return -1;
+				}
+				value = g_argv[++i];
+			} else if(strncmp(arg, "--test=", 7) == 0) {
+				value = arg + 7;
+			} else {
+				LOGW("Ignoring unknown argument: %s", arg);
+				continue;
+			}
+
+			char* end = NULL;
+			long parsed = strtol(value, &end, 10);
+			if(value[0] == '\0' || ! end || *end != '\0' || parsed < 1 || parsed > 2) {
+				LOGE("Invalid test case '%s' (expected 1 or 2)", value);
+				return -1;
+			}
+			testCase = (int)parsed;
+		}
+
+		return testCase;
+	}
+
+	int Run() {
+		const int testCase = test_case_from_args();
+		if(testCase < 0) {
+			LOGE("Usage: sc6f0-dante-rx [--test N]");
+			return 2;
+		}
+
+		return DoCase(testCase);
+	}
+
+	int DoCase(int testCase) {
+		LOGI("Running test case %d", testCase);
+		switch(testCase) {
+		case 1:
+			mTestCase1.DoWork();
+			return 0;
+		case 2:
+			mTestCase2.DoWork();
+			return 0;
+		default:
+			LOGE("Unsupported test case %d", testCase);
+			return 2;
+		}
 	}
 
 	struct TestCase1 : public TestCase {
@@ -1967,6 +2019,465 @@ struct App0 {
 			return QCAP_RT_OK;
 		}
 	} mTestCase1;
+
+	/*
+	 * Test case 2 is intentionally independent from the DAU service above.  It
+	 * drives the HDMI TX directly: a DRM NV12 framebuffer containing SMPTE
+	 * colour bars is assigned to plane 36, while ALSA supplies the fixed
+	 * 48 kHz/16-bit/2-channel test audio.
+	 */
+	struct TestCase2 : public TestCase {
+		typedef TestCase2 self_t;
+		typedef TestCase super_t;
+
+		int mDrmFd;
+		uint32_t mConnectorId;
+		uint32_t mCrtcId;
+		uint32_t mPlaneId;
+		uint32_t mPrimaryPlaneId;
+		uint32_t mFbId;
+		uint32_t mBoHandle;
+		uint32_t mPrimaryFbId;
+		uint32_t mPrimaryBoHandle;
+		uint32_t mModeBlobId;
+		uint32_t mPitch;
+		uint32_t mPrimaryPitch;
+		uint32_t mModePropId;
+		uint32_t mActivePropId;
+		uint32_t mConnectorCrtcPropId;
+		uint32_t mPlaneFbPropId;
+		uint32_t mPlaneCrtcPropId;
+		uint32_t mPlaneCrtcWPropId;
+		uint32_t mPlaneCrtcHPropId;
+		uint32_t mPlaneSrcWPropId;
+		uint32_t mPlaneSrcHPropId;
+		uint32_t mPrimaryFbPropId;
+		uint32_t mPrimaryCrtcPropId;
+		uint32_t mPrimaryCrtcWPropId;
+		uint32_t mPrimaryCrtcHPropId;
+		uint32_t mPrimarySrcWPropId;
+		uint32_t mPrimarySrcHPropId;
+		size_t mDumbSize;
+		size_t mPrimaryDumbSize;
+		void* mDumbMap;
+		void* mPrimaryDumbMap;
+		qcap2_audio_source_t* mAudioSource;
+		qcap2_audio_sink_t* mAudioSink;
+
+		static uint32_t prop_id(int fd, drmModeObjectProperties* props, const char* name) {
+			return __sc6f0_dante_rx__::get_prop_id(fd, props, NULL, name);
+		}
+
+		static bool add_prop(drmModeAtomicReq* req, uint32_t object, uint32_t prop,
+			const char* name, uint64_t value) {
+			if(! prop || drmModeAtomicAddProperty(req, object, prop, value) < 0) {
+				LOGE("TestCase2: DRM property %s failed on object %u: %s",
+					name, object, strerror(errno));
+				return false;
+			}
+			return true;
+		}
+
+		void init_state() {
+			mDrmFd = -1; mConnectorId = 0; mCrtcId = 0; mPlaneId = 36;
+			mPrimaryPlaneId = 0; mFbId = 0; mBoHandle = 0;
+			mPrimaryFbId = 0; mPrimaryBoHandle = 0;
+			mModeBlobId = 0; mPitch = 0; mPrimaryPitch = 0;
+			mModePropId = mActivePropId = mConnectorCrtcPropId = 0;
+			mPlaneFbPropId = mPlaneCrtcPropId = 0;
+			mPlaneCrtcWPropId = mPlaneCrtcHPropId = 0;
+			mPlaneSrcWPropId = mPlaneSrcHPropId = 0;
+			mPrimaryFbPropId = mPrimaryCrtcPropId = 0;
+			mPrimaryCrtcWPropId = mPrimaryCrtcHPropId = 0;
+			mPrimarySrcWPropId = mPrimarySrcHPropId = 0;
+			mDumbSize = mPrimaryDumbSize = 0;
+			mDumbMap = MAP_FAILED; mPrimaryDumbMap = MAP_FAILED;
+			mAudioSource = NULL; mAudioSink = NULL;
+		}
+
+		static void fill_smpte_nv12(void* ptr, uint32_t pitch, uint32_t width,
+			uint32_t height) {
+			static const uint8_t top[3][7] = {
+				{180,162,131,112,84,65,35}, {128,44,156,72,184,100,212},
+				{128,142,44,58,198,212,114}
+			};
+			static const uint8_t middle[3][7] = {
+				{35,16,84,16,131,16,180}, {212,128,184,128,156,128,128},
+				{114,128,198,128,44,128,128}
+			};
+			static const uint8_t bottom[3][7] = {
+				{35,235,35,16,7,16,25}, {164,128,151,128,128,128,128},
+				{116,128,165,128,128,128,128}
+			};
+			uint8_t* base = (uint8_t*)ptr;
+			for(uint32_t y = 0; y < height; y++) {
+				const uint8_t (*b)[7] = y < height * 2 / 3 ? top :
+					(y < height * 3 / 4 ? middle : bottom);
+				uint8_t* row = base + (size_t)y * pitch;
+				for(uint32_t x = 0; x < width; x++) row[x] = b[0][(uint64_t)x * 7 / width];
+			}
+			uint8_t* uv = base + (size_t)pitch * height;
+			for(uint32_t y = 0; y < height / 2; y++) {
+				const uint8_t (*b)[7] = y * 2 < height * 2 / 3 ? top :
+					(y * 2 < height * 3 / 4 ? middle : bottom);
+				uint8_t* row = uv + (size_t)y * pitch;
+				for(uint32_t x = 0; x < width; x += 2) {
+					uint32_t n = (uint64_t)x * 7 / width;
+					row[x] = b[1][n]; row[x + 1] = b[2][n];
+				}
+			}
+		}
+
+		static bool is_primary_plane(int fd, drmModePlane* plane, int crtcIndex) {
+			if(! plane || !(plane->possible_crtcs & (1 << crtcIndex))) return false;
+			std::shared_ptr<drmModeObjectProperties> props(
+				drmModeObjectGetProperties(fd, plane->plane_id, DRM_MODE_OBJECT_PLANE),
+				drmModeFreeObjectProperties);
+			std::shared_ptr<drmModePropertyRes> typeProp;
+			uint32_t typeId = prop_id(fd, props.get(), "type");
+			if(props && typeId) typeProp.reset(drmModeGetProperty(fd, typeId), drmModeFreeProperty);
+			if(! props || ! typeProp) return false;
+			for(uint32_t i = 0; i < props->count_props; i++) {
+				if(props->props[i] != typeId) continue;
+				uint64_t value = props->prop_values[i];
+				for(int j = 0; j < typeProp->count_enums; j++) {
+					if(typeProp->enums[j].value == value &&
+						strcmp(typeProp->enums[j].name, "Primary") == 0) return true;
+				}
+			}
+			return false;
+		}
+
+		bool setup_drm() {
+			const uint32_t width = 3840, height = 2160;
+			mDrmFd = drmOpen("xlnx", NULL);
+			if(mDrmFd < 0) { LOGE("TestCase2: drmOpen failed: %s", strerror(errno)); return false; }
+			if(drmSetClientCap(mDrmFd, DRM_CLIENT_CAP_ATOMIC, 1) ||
+				drmSetClientCap(mDrmFd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1)) {
+				LOGE("TestCase2: DRM client caps failed: %s", strerror(errno)); cleanup_drm(); return false;
+			}
+			std::shared_ptr<drmModeRes> res(drmModeGetResources(mDrmFd), drmModeFreeResources);
+			if(! res) { cleanup_drm(); return false; }
+			std::shared_ptr<drmModeConnector> conn;
+			for(int i = 0; i < res->count_connectors && !conn; i++) {
+				std::shared_ptr<drmModeConnector> c(drmModeGetConnector(mDrmFd, res->connectors[i]), drmModeFreeConnector);
+				if(c && c->connection == DRM_MODE_CONNECTED && c->count_modes) conn = c;
+			}
+			if(! conn) { LOGE("TestCase2: no connected DRM connector"); cleanup_drm(); return false; }
+			mConnectorId = conn->connector_id;
+
+			drmModeModeInfo mode = {};
+			bool found = false;
+			for(int i = 0; i < conn->count_modes; i++) {
+				drmModeModeInfo* candidate = &conn->modes[i];
+				if(candidate->hdisplay == (int)width && candidate->vdisplay == (int)height &&
+					fabs(mode_vrefresh(candidate) - 60.0) < 0.5) {
+					mode = *candidate; found = true;
+					if(candidate->type & DRM_MODE_TYPE_PREFERRED) break;
+				}
+			}
+			if(! found) { LOGE("TestCase2: no 3840x2160@60 mode"); cleanup_drm(); return false; }
+
+			int crtcIndex = -1;
+			for(int i = 0; i < conn->count_encoders && crtcIndex < 0; i++) {
+				std::shared_ptr<drmModeEncoder> enc(drmModeGetEncoder(mDrmFd, conn->encoders[i]), drmModeFreeEncoder);
+				if(! enc) continue;
+				for(int j = 0; j < res->count_crtcs; j++) if(enc->possible_crtcs & (1 << j)) {
+					crtcIndex = j; mCrtcId = res->crtcs[j]; break;
+				}
+			}
+			if(crtcIndex < 0) { LOGE("TestCase2: no CRTC"); cleanup_drm(); return false; }
+			std::shared_ptr<drmModePlane> plane(drmModeGetPlane(mDrmFd, mPlaneId), drmModeFreePlane);
+			if(! plane || !(plane->possible_crtcs & (1 << crtcIndex))) {
+				LOGE("TestCase2: plane %u cannot use CRTC %u", mPlaneId, mCrtcId); cleanup_drm(); return false;
+			}
+			bool supportsNv12 = false;
+			for(uint32_t i = 0; i < plane->count_formats; i++) supportsNv12 |= plane->formats[i] == DRM_FORMAT_NV12;
+			if(! supportsNv12) { LOGE("TestCase2: plane %u has no NV12 format", mPlaneId); cleanup_drm(); return false; }
+
+			std::shared_ptr<drmModePlane> primary;
+			std::shared_ptr<drmModePlaneRes> planeRes(
+				drmModeGetPlaneResources(mDrmFd), drmModeFreePlaneResources);
+			if(planeRes) {
+				for(uint32_t i = 0; i < planeRes->count_planes && !primary; i++) {
+					std::shared_ptr<drmModePlane> candidate(
+						drmModeGetPlane(mDrmFd, planeRes->planes[i]), drmModeFreePlane);
+					if(is_primary_plane(mDrmFd, candidate.get(), crtcIndex)) primary = candidate;
+				}
+			}
+			if(! primary) {
+				LOGE("TestCase2: no primary plane for CRTC %u", mCrtcId);
+				cleanup_drm();
+				return false;
+			}
+			mPrimaryPlaneId = primary->plane_id;
+			bool supportsBgr888 = false;
+			for(uint32_t i = 0; i < primary->count_formats; i++)
+				supportsBgr888 |= primary->formats[i] == DRM_FORMAT_BGR888;
+			if(! supportsBgr888) {
+				LOGE("TestCase2: primary plane %u has no BGR888 format", mPrimaryPlaneId);
+				cleanup_drm();
+				return false;
+			}
+
+			struct drm_mode_create_dumb primaryCreate = {};
+			primaryCreate.width = width; primaryCreate.height = height; primaryCreate.bpp = 24;
+			if(drmIoctl(mDrmFd, DRM_IOCTL_MODE_CREATE_DUMB, &primaryCreate) < 0) {
+				LOGE("TestCase2: primary CREATE_DUMB failed: %s", strerror(errno));
+				cleanup_drm();
+				return false;
+			}
+			mPrimaryBoHandle = primaryCreate.handle;
+			mPrimaryPitch = primaryCreate.pitch;
+			mPrimaryDumbSize = primaryCreate.size;
+			struct drm_mode_map_dumb primaryMap = {};
+			primaryMap.handle = mPrimaryBoHandle;
+			if(drmIoctl(mDrmFd, DRM_IOCTL_MODE_MAP_DUMB, &primaryMap) < 0) {
+				LOGE("TestCase2: primary MAP_DUMB failed: %s", strerror(errno));
+				cleanup_drm();
+				return false;
+			}
+			mPrimaryDumbMap = mmap(NULL, mPrimaryDumbSize, PROT_READ | PROT_WRITE,
+				MAP_SHARED, mDrmFd, primaryMap.offset);
+			if(mPrimaryDumbMap == MAP_FAILED) {
+				LOGE("TestCase2: primary framebuffer mmap failed");
+				cleanup_drm();
+				return false;
+			}
+			memset(mPrimaryDumbMap, 0, mPrimaryDumbSize);
+			uint32_t primaryHandles[4] = {mPrimaryBoHandle, 0, 0, 0};
+			uint32_t primaryPitches[4] = {mPrimaryPitch, 0, 0, 0};
+			uint32_t primaryOffsets[4] = {0, 0, 0, 0};
+			if(drmModeAddFB2(mDrmFd, width, height, DRM_FORMAT_BGR888,
+				primaryHandles, primaryPitches, primaryOffsets, &mPrimaryFbId, 0) < 0) {
+				LOGE("TestCase2: primary AddFB2(BGR888) failed: %s", strerror(errno));
+				cleanup_drm();
+				return false;
+			}
+
+			struct drm_mode_create_dumb create = {};
+			create.width = width; create.height = height * 3 / 2; create.bpp = 8;
+			if(drmIoctl(mDrmFd, DRM_IOCTL_MODE_CREATE_DUMB, &create) < 0) {
+				LOGE("TestCase2: CREATE_DUMB failed: %s", strerror(errno)); cleanup_drm(); return false;
+			}
+			mBoHandle = create.handle; mPitch = create.pitch; mDumbSize = create.size;
+			struct drm_mode_map_dumb map = {}; map.handle = mBoHandle;
+			if(drmIoctl(mDrmFd, DRM_IOCTL_MODE_MAP_DUMB, &map) < 0) {
+				LOGE("TestCase2: MAP_DUMB failed: %s", strerror(errno)); cleanup_drm(); return false;
+			}
+			mDumbMap = mmap(NULL, mDumbSize, PROT_READ | PROT_WRITE, MAP_SHARED, mDrmFd, map.offset);
+			if(mDumbMap == MAP_FAILED || mDumbSize < (size_t)mPitch * height * 3 / 2) {
+				LOGE("TestCase2: NV12 dumb buffer mmap/size failed"); cleanup_drm(); return false;
+			}
+			fill_smpte_nv12(mDumbMap, mPitch, width, height);
+
+			uint32_t handles[4] = {mBoHandle, mBoHandle, 0, 0};
+			uint32_t pitches[4] = {mPitch, mPitch, 0, 0};
+			uint32_t offsets[4] = {0, mPitch * height, 0, 0};
+			if(drmModeAddFB2(mDrmFd, width, height, DRM_FORMAT_NV12, handles, pitches, offsets, &mFbId, 0) < 0) {
+				LOGE("TestCase2: AddFB2 NV12 failed: %s", strerror(errno)); cleanup_drm(); return false;
+			}
+			std::shared_ptr<drmModeObjectProperties> cp(drmModeObjectGetProperties(mDrmFd, mCrtcId, DRM_MODE_OBJECT_CRTC), drmModeFreeObjectProperties);
+			std::shared_ptr<drmModeObjectProperties> kp(drmModeObjectGetProperties(mDrmFd, mConnectorId, DRM_MODE_OBJECT_CONNECTOR), drmModeFreeObjectProperties);
+			std::shared_ptr<drmModeObjectProperties> pp(drmModeObjectGetProperties(mDrmFd, mPlaneId, DRM_MODE_OBJECT_PLANE), drmModeFreeObjectProperties);
+			std::shared_ptr<drmModeObjectProperties> primaryProps(drmModeObjectGetProperties(mDrmFd, mPrimaryPlaneId, DRM_MODE_OBJECT_PLANE), drmModeFreeObjectProperties);
+			if(!cp || !kp || !pp || !primaryProps) { LOGE("TestCase2: DRM properties unavailable"); cleanup_drm(); return false; }
+			mModePropId = prop_id(mDrmFd, cp.get(), "MODE_ID"); mActivePropId = prop_id(mDrmFd, cp.get(), "ACTIVE");
+			mConnectorCrtcPropId = prop_id(mDrmFd, kp.get(), "CRTC_ID");
+			mPlaneFbPropId = prop_id(mDrmFd, pp.get(), "FB_ID"); mPlaneCrtcPropId = prop_id(mDrmFd, pp.get(), "CRTC_ID");
+			mPlaneCrtcWPropId = prop_id(mDrmFd, pp.get(), "CRTC_W"); mPlaneCrtcHPropId = prop_id(mDrmFd, pp.get(), "CRTC_H");
+			mPlaneSrcWPropId = prop_id(mDrmFd, pp.get(), "SRC_W"); mPlaneSrcHPropId = prop_id(mDrmFd, pp.get(), "SRC_H");
+			mPrimaryFbPropId = prop_id(mDrmFd, primaryProps.get(), "FB_ID");
+			mPrimaryCrtcPropId = prop_id(mDrmFd, primaryProps.get(), "CRTC_ID");
+			mPrimaryCrtcWPropId = prop_id(mDrmFd, primaryProps.get(), "CRTC_W");
+			mPrimaryCrtcHPropId = prop_id(mDrmFd, primaryProps.get(), "CRTC_H");
+			mPrimarySrcWPropId = prop_id(mDrmFd, primaryProps.get(), "SRC_W");
+			mPrimarySrcHPropId = prop_id(mDrmFd, primaryProps.get(), "SRC_H");
+			if(!mModePropId || !mActivePropId || !mConnectorCrtcPropId || !mPlaneFbPropId || !mPlaneCrtcPropId ||
+				!mPlaneCrtcWPropId || !mPlaneCrtcHPropId || !mPlaneSrcWPropId || !mPlaneSrcHPropId ||
+				!mPrimaryFbPropId || !mPrimaryCrtcPropId || !mPrimaryCrtcWPropId || !mPrimaryCrtcHPropId ||
+				!mPrimarySrcWPropId || !mPrimarySrcHPropId) {
+				LOGE("TestCase2: required DRM atomic property missing"); cleanup_drm(); return false;
+			}
+			if(drmModeCreatePropertyBlob(mDrmFd, &mode, sizeof(mode), &mModeBlobId)) {
+				LOGE("TestCase2: CreatePropertyBlob failed: %s", strerror(errno)); cleanup_drm(); return false;
+			}
+			std::shared_ptr<drmModeAtomicReq> req(drmModeAtomicAlloc(), drmModeAtomicFree);
+			bool ok = req && add_prop(req.get(), mConnectorId, mConnectorCrtcPropId, "CRTC_ID", mCrtcId);
+			ok &= req && add_prop(req.get(), mCrtcId, mModePropId, "MODE_ID", mModeBlobId);
+			ok &= req && add_prop(req.get(), mCrtcId, mActivePropId, "ACTIVE", 1);
+			ok &= req && add_prop(req.get(), mPrimaryPlaneId, mPrimaryCrtcPropId, "CRTC_ID", mCrtcId);
+			ok &= req && add_prop(req.get(), mPrimaryPlaneId, mPrimaryFbPropId, "FB_ID", mPrimaryFbId);
+			ok &= req && add_prop(req.get(), mPrimaryPlaneId, mPrimaryCrtcWPropId, "CRTC_W", width);
+			ok &= req && add_prop(req.get(), mPrimaryPlaneId, mPrimaryCrtcHPropId, "CRTC_H", height);
+			ok &= req && add_prop(req.get(), mPrimaryPlaneId, mPrimarySrcWPropId, "SRC_W", (uint64_t)width << 16);
+			ok &= req && add_prop(req.get(), mPrimaryPlaneId, mPrimarySrcHPropId, "SRC_H", (uint64_t)height << 16);
+			ok &= req && add_prop(req.get(), mPlaneId, mPlaneCrtcPropId, "CRTC_ID", mCrtcId);
+			ok &= req && add_prop(req.get(), mPlaneId, mPlaneFbPropId, "FB_ID", mFbId);
+			ok &= req && add_prop(req.get(), mPlaneId, mPlaneCrtcWPropId, "CRTC_W", width);
+			ok &= req && add_prop(req.get(), mPlaneId, mPlaneCrtcHPropId, "CRTC_H", height);
+			ok &= req && add_prop(req.get(), mPlaneId, mPlaneSrcWPropId, "SRC_W", (uint64_t)width << 16);
+			ok &= req && add_prop(req.get(), mPlaneId, mPlaneSrcHPropId, "SRC_H", (uint64_t)height << 16);
+			if(!ok || drmModeAtomicCommit(mDrmFd, req.get(), DRM_MODE_ATOMIC_ALLOW_MODESET, NULL) < 0) {
+				LOGE("TestCase2: atomic DRM plane setup failed: %s", strerror(errno)); cleanup_drm(); return false;
+			}
+			LOGI("TestCase2: primary plane %u and video plane %u set once, 3840x2160@60 NV12 -> HDMI RGB",
+				mPrimaryPlaneId, mPlaneId);
+			return true;
+		}
+
+		void cleanup_drm() {
+			if(mDrmFd < 0) return;
+			if(mFbId && mPlaneCrtcPropId && mConnectorCrtcPropId) {
+				std::shared_ptr<drmModeAtomicReq> req(drmModeAtomicAlloc(), drmModeAtomicFree);
+				if(req) {
+					add_prop(req.get(), mPrimaryPlaneId, mPrimaryFbPropId, "FB_ID", 0); add_prop(req.get(), mPrimaryPlaneId, mPrimaryCrtcPropId, "CRTC_ID", 0);
+					add_prop(req.get(), mPrimaryPlaneId, mPrimaryCrtcWPropId, "CRTC_W", 0); add_prop(req.get(), mPrimaryPlaneId, mPrimaryCrtcHPropId, "CRTC_H", 0);
+					add_prop(req.get(), mPrimaryPlaneId, mPrimarySrcWPropId, "SRC_W", 0); add_prop(req.get(), mPrimaryPlaneId, mPrimarySrcHPropId, "SRC_H", 0);
+					add_prop(req.get(), mPlaneId, mPlaneFbPropId, "FB_ID", 0); add_prop(req.get(), mPlaneId, mPlaneCrtcPropId, "CRTC_ID", 0);
+					add_prop(req.get(), mPlaneId, mPlaneCrtcWPropId, "CRTC_W", 0); add_prop(req.get(), mPlaneId, mPlaneCrtcHPropId, "CRTC_H", 0);
+					add_prop(req.get(), mPlaneId, mPlaneSrcWPropId, "SRC_W", 0); add_prop(req.get(), mPlaneId, mPlaneSrcHPropId, "SRC_H", 0);
+					add_prop(req.get(), mConnectorId, mConnectorCrtcPropId, "CRTC_ID", 0); add_prop(req.get(), mCrtcId, mModePropId, "MODE_ID", 0); add_prop(req.get(), mCrtcId, mActivePropId, "ACTIVE", 0);
+					drmModeAtomicCommit(mDrmFd, req.get(), DRM_MODE_ATOMIC_ALLOW_MODESET, NULL);
+				}
+			}
+			if(mDumbMap != MAP_FAILED && mDumbMap) { munmap(mDumbMap, mDumbSize); mDumbMap = MAP_FAILED; }
+			if(mPrimaryDumbMap != MAP_FAILED && mPrimaryDumbMap) { munmap(mPrimaryDumbMap, mPrimaryDumbSize); mPrimaryDumbMap = MAP_FAILED; }
+			if(mFbId) { drmModeRmFB(mDrmFd, mFbId); mFbId = 0; }
+			if(mPrimaryFbId) { drmModeRmFB(mDrmFd, mPrimaryFbId); mPrimaryFbId = 0; }
+			if(mBoHandle) { struct drm_mode_destroy_dumb d = {}; d.handle = mBoHandle; drmIoctl(mDrmFd, DRM_IOCTL_MODE_DESTROY_DUMB, &d); mBoHandle = 0; }
+			if(mPrimaryBoHandle) { struct drm_mode_destroy_dumb d = {}; d.handle = mPrimaryBoHandle; drmIoctl(mDrmFd, DRM_IOCTL_MODE_DESTROY_DUMB, &d); mPrimaryBoHandle = 0; }
+			if(mModeBlobId) { drmModeDestroyPropertyBlob(mDrmFd, mModeBlobId); mModeBlobId = 0; }
+			drmClose(mDrmFd); mDrmFd = -1;
+		}
+
+		QRESULT start_audio_test_pattern() {
+			QRESULT qres = QCAP_RS_SUCCESSFUL;
+			const ULONG nChannels = 2;
+			const ULONG nBits = 16;
+			const ULONG nRate = 48000;
+
+			qcap2_event_t* audioEvent = NULL;
+			qres = NewEvent(_FreeStack_evt_, &audioEvent);
+			if(qres != QCAP_RS_SUCCESSFUL) return qres;
+
+			mAudioSource = qcap2_audio_source_new();
+			if(! mAudioSource) return QCAP_RS_ERROR_OUT_OF_MEMORY;
+			_FreeStack_evt_ += [this]() {
+				qcap2_audio_source_delete(mAudioSource);
+				mAudioSource = NULL;
+			};
+			qcap2_audio_source_set_backend_type(mAudioSource,
+				QCAP2_AUDIO_SOURCE_BACKEND_TYPE_TPG);
+			qcap2_audio_source_set_frame_count(mAudioSource, 4);
+			qcap2_audio_source_set_test_pattern(mAudioSource,
+				QCAP2_AUDIO_TEST_PATTERN_SINE_1KHZ_MINUS_20DBFS);
+			qcap2_audio_source_set_event(mAudioSource, audioEvent);
+
+			std::shared_ptr<qcap2_audio_format_t> audioFormat(
+				qcap2_audio_format_new(), qcap2_audio_format_delete);
+			if(! audioFormat) return QCAP_RS_ERROR_OUT_OF_MEMORY;
+			qcap2_audio_format_set_property(audioFormat.get(), nChannels, nBits, nRate);
+			qcap2_audio_source_set_audio_format(mAudioSource, audioFormat.get());
+
+			mAudioSink = qcap2_audio_sink_new();
+			if(! mAudioSink) return QCAP_RS_ERROR_OUT_OF_MEMORY;
+			_FreeStack_evt_ += [this]() {
+				qcap2_audio_sink_delete(mAudioSink);
+				mAudioSink = NULL;
+			};
+			qcap2_audio_sink_set_backend_type(mAudioSink,
+				QCAP2_AUDIO_SINK_BACKEND_TYPE_ALSA);
+			qcap2_audio_sink_set_card(mAudioSink, 1);
+			qcap2_audio_sink_set_device(mAudioSink, 0);
+			qcap2_audio_sink_set_audio_format(mAudioSink, audioFormat.get());
+			qcap2_audio_sink_set_period_time(mAudioSink, 20 * 1000);
+			qcap2_audio_sink_set_buffer_time(mAudioSink, 8 * 20 * 1000);
+
+			qres = qcap2_audio_sink_start(mAudioSink);
+			if(qres != QCAP_RS_SUCCESSFUL) {
+				LOGE("TestCase2: qcap2_audio_sink_start() failed, qres=%d", qres);
+				return qres;
+			}
+			_FreeStack_evt_ += [this]() {
+				QRESULT stopResult = qcap2_audio_sink_stop(mAudioSink);
+				if(stopResult != QCAP_RS_SUCCESSFUL)
+					LOGW("TestCase2: qcap2_audio_sink_stop() failed, qres=%d", stopResult);
+			};
+
+			qres = qcap2_audio_source_start(mAudioSource);
+			if(qres != QCAP_RS_SUCCESSFUL) {
+				LOGE("TestCase2: qcap2_audio_source_start() failed, qres=%d", qres);
+				return qres;
+			}
+			_FreeStack_evt_ += [this]() {
+				QRESULT stopResult = qcap2_audio_source_stop(mAudioSource);
+				if(stopResult != QCAP_RS_SUCCESSFUL)
+					LOGW("TestCase2: qcap2_audio_source_stop() failed, qres=%d", stopResult);
+			};
+
+			qres = AddEventHandler(_FreeStack_evt_, audioEvent,
+				std::bind(&self_t::OnAudio, this));
+			if(qres != QCAP_RS_SUCCESSFUL) return qres;
+			LOGI("TestCase2: qcap2 ALSA test pattern started (48 kHz/16-bit/2-ch)");
+			return QCAP_RS_SUCCESSFUL;
+		}
+
+		QRETURN OnAudio() {
+			qcap2_rcbuffer_t* buffer = NULL;
+			QRESULT qres = qcap2_audio_source_pop(mAudioSource, &buffer);
+			if(qres != QCAP_RS_SUCCESSFUL) {
+				LOGE("TestCase2: qcap2_audio_source_pop() failed, qres=%d", qres);
+				return QCAP_RT_OK;
+			}
+			std::shared_ptr<qcap2_rcbuffer_t> bufferGuard(buffer, qcap2_rcbuffer_release);
+			qres = qcap2_audio_sink_push(mAudioSink, buffer);
+			if(qres != QCAP_RS_SUCCESSFUL)
+				LOGE("TestCase2: qcap2_audio_sink_push() failed, qres=%d", qres);
+			return QCAP_RT_OK;
+		}
+
+		void DoWork() {
+			QRESULT qres = QCAP_RS_SUCCESSFUL;
+			LOGD("%s::%s", typeid(self_t).name(), __FUNCTION__);
+			init_state();
+
+			qres = StartEventHandlers();
+			if(qres == QCAP_RS_SUCCESSFUL) {
+				ZzUtils::Scoped ZZ_GUARD_NAME([&]() {
+					OnExitEventHandlers();
+				});
+
+				bool ok = AudioSwitch::select_source(AUDIO_MODE_TEST_PATTERN);
+				if(ok) ok = setup_drm();
+				if(! ok) qres = QCAP_RS_ERROR_GENERAL;
+				if(ok) {
+					QRESULT audioResult = QCAP_RS_SUCCESSFUL;
+					qres = ExecInEventHandlers([&]() -> QRETURN {
+						audioResult = start_audio_test_pattern();
+						return QCAP_RT_OK;
+					});
+					ok = qres == QCAP_RS_SUCCESSFUL &&
+						audioResult == QCAP_RS_SUCCESSFUL;
+					if(! ok) qres = audioResult;
+				}
+				if(ok) {
+					LOGI("TestCase2 is running; press 'q' to stop");
+					wait_for_test_finish([&](int ch) -> bool {
+						(void)ch;
+						return true;
+					}, 1000000LL, 10LL);
+				}
+			} else {
+				LOGE("TestCase2: StartEventHandlers() failed, qres=%d", qres);
+			}
+
+			_FreeStack_main_.flush();
+			cleanup_drm();
+			if(qres != QCAP_RS_SUCCESSFUL) LOGE("TestCase2 failed, qres=%d", qres);
+		}
+
+	} mTestCase2;
 };
 
 int main(int argc, char* argv[]) {
