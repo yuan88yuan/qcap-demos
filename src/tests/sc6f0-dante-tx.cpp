@@ -191,8 +191,6 @@ struct App0 {
 		void get_cable_status(struct dau_service *dau,
 						 struct DBusMessage *message)
 		{
-			LOGI("---tag---: %s", __FUNCTION__);
-
 			spinlock_lock(current_video_format_spinlock);
 			bool locked = current_video_format.locked;
 			spinlock_unlock(current_video_format_spinlock);
@@ -208,8 +206,6 @@ struct App0 {
 						struct DBusMessage *message,
 						void *ctxt)
 		{
-			LOGI("---tag---: %s", __FUNCTION__);
-
 			struct hdcp hdcp;
 
 			memset(&hdcp, 0x00, sizeof(hdcp));
@@ -225,8 +221,6 @@ struct App0 {
 						enum hdcp_version version,
 						void *ctxt)
 		{
-			LOGI("---tag---: %s", __FUNCTION__);
-
 			dau_reply_success(dau, message);
 		}
 
@@ -240,8 +234,6 @@ struct App0 {
 		}
 
 		void get_video_format(struct dau_service *dau, struct DBusMessage *message) {
-			LOGI("---tag---: %s", __FUNCTION__);
-
 			video_format format;
 
 			spinlock_lock(current_video_format_spinlock);
@@ -261,8 +253,6 @@ struct App0 {
 		}
 
 		void get_audio_info(struct dau_service *dau, struct DBusMessage *message) {
-			LOGI("---tag---: %s", __FUNCTION__);
-
 			audio_info info;
 
 			spinlock_lock(current_audio_info_spinlock);
@@ -276,8 +266,6 @@ struct App0 {
 					struct DBusMessage *message,
 					void *ctxt)
 		{
-			LOGI("---tag---: %s", __FUNCTION__);
-
 			char hdr[HDR_LEN] = { 0x00, 0x01, 0x02 };
 			char dv[DV_LEN] = { 0x04, 0x05, 0x06 };
 			struct hdr_info info = {
@@ -296,8 +284,6 @@ struct App0 {
 						const void *edid,
 						void *ctxt)
 		{
-			LOGI("---tag---: %s", __FUNCTION__);
-
 			dau_reply_success(dau, message);
 		}
 
@@ -305,8 +291,6 @@ struct App0 {
 					   struct DBusMessage *message,
 					   void *ctxt)
 		{
-			LOGI("---tag---: %s", __FUNCTION__);
-
 			dau_reply_success(dau, message);
 		}
 
@@ -315,8 +299,6 @@ struct App0 {
 						 const struct video_format *format,
 						 void *ctxt)
 		{
-			LOGI("---tag---: %s", __FUNCTION__);
-
 			dau_reply_success(dau, message);
 		}
 
@@ -325,8 +307,6 @@ struct App0 {
 						   const struct audio_info *info,
 						   void *ctxt)
 		{
-			LOGI("---tag---: %s", __FUNCTION__);
-
 			dau_reply_success(dau, message);
 		}
 
@@ -335,8 +315,6 @@ struct App0 {
 					const struct hdr_info *hdr,
 					void *ctxt)
 		{
-			LOGI("---tag---: %s", __FUNCTION__);
-
 			dau_reply_success(dau, message);
 		}
 
@@ -344,8 +322,6 @@ struct App0 {
 					 struct DBusMessage *message,
 					 void *ctxt)
 		{
-			LOGI("---tag---: %s", __FUNCTION__);
-
 			unsigned char edid[EDID_LEN];
 			unsigned int i;
 
@@ -407,21 +383,15 @@ struct App0 {
 
 #if BUILD_WITH_DAUSERVICE
 					case 'c': case 'C':
-						LOGI("---tag---: +dau_signal_cable_change");
 						dau_signal_cable_change(pHdmiRxDauServ);
-						LOGI("---tag---: -dau_signal_cable_change");
 						break;
 
 					case 'a': case 'A':
-						LOGI("---tag---: +dau_signal_audio_change");
 						dau_signal_audio_change(pHdmiRxDauServ);
-						LOGI("---tag---: -dau_signal_audio_change");
 						break;
 
 					case 'v': case 'V':
-						LOGI("---tag---: +dau_signal_video_change");
 						dau_signal_video_change(pHdmiRxDauServ);
-						LOGI("---tag---: -dau_signal_video_change");
 						break;
 #endif // BUILD_WITH_DAUSERVICE
 					}
@@ -500,10 +470,7 @@ struct App0 {
 		}
 
 		QRETURN OnHdmiRxEvent(dau_service* dauserv) {
-			// LOGI("---tag---: %s +dau_service_dispatch", __FUNCTION__);
 			dau_service_dispatch(dauserv, 0);
-			// LOGI("---tag---: %s -dau_service_dispatch", __FUNCTION__);
-
 			return QCAP_RT_OK;
 		}
 #endif // BUILD_WITH_DAUSERVICE
