@@ -130,9 +130,35 @@ endif()
 foreach(module IN ITEMS
     BOOST FFMPEG ZLIB ICONV FREETYPE HARFBUZZ FONTCONFIG GSTREAMER CUDA
     CUDA_DRIVER NPP NVBUF NVJPEG OPENSSL SDL ALSA X11 VAAPI UDEV YUV IPP
-    ONETBB DRM SPEEXDSP FMT IBVERBS IPX NVT_HDAL ALLEGRO2 SIPL DAUSERVICE)
+    ONETBB DRM SPEEXDSP FMT IBVERBS IPX NVT_HDAL ALLEGRO2 SIPL DAUSERVICE ZSTREAMER)
   qcap_define_module(${module})
 endforeach()
+
+if(NOT ZSTREAMER_ROOT)
+  if(DEFINED ENV{ZSTREAMER_ROOT})
+    set(ZSTREAMER_ROOT "$ENV{ZSTREAMER_ROOT}" CACHE PATH "zstreamer root")
+  else()
+    set(ZSTREAMER_ROOT "${PROJECT_SOURCE_DIR}/../zstreamer" CACHE PATH "zstreamer root")
+  endif()
+endif()
+
+if(TARGET qcap::zstreamer)
+  qcap_module_includes(ZSTREAMER
+    "${ZSTREAMER_ROOT}/include"
+    "${ZSTREAMER_ROOT}/include/zstreamer/elements"
+  )
+  set(ZSTREAMER_LIB_DIR "${ZSTREAMER_ROOT}/build-arm64/src")
+  if(NOT EXISTS "${ZSTREAMER_LIB_DIR}/libzstreamer.a")
+    set(ZSTREAMER_LIB_DIR "${PROJECT_SOURCE_DIR}/3rdparty/lib")
+  endif()
+  target_link_directories(qcap_demos_zstreamer INTERFACE "${ZSTREAMER_LIB_DIR}")
+  qcap_module_static_links(ZSTREAMER
+    -lzstreamer-elements -lzstreamer
+    "${QCAP_IMAGE_THIRDPARTY_DIR}/lib/libswresample.a"
+    "${QCAP_IMAGE_THIRDPARTY_DIR}/lib/libavutil.a"
+  )
+  qcap_module_links(ZSTREAMER -ljson-c -lpthread -lm -lrt -ldl)
+endif()
 
 qcap_module_static_links(BOOST
   -lboost_system -lboost_thread -lboost_atomic -lboost_chrono

@@ -28,6 +28,18 @@
 
 extern "C" {
 #include "dauservice.h"
+#include "zst_types.h"
+#include "zst_buffer.h"
+#include "zst_pad.h"
+#include "zst_element.h"
+#include "zst_pipeline.h"
+#include "zst_scheduler.h"
+#include "zst_clock.h"
+#include "zst_bus.h"
+#include "zstreamer/elements/zst_dante_session.h"
+#include "zstreamer/elements/zst_dante_video_coordinator.h"
+#include "zstreamer/elements/zst_dante_dep_audio.h"
+#include "zstreamer/elements/zst_audio_resampler.h"
 }
 
 ZZ_INIT_LOG("sc6f0-dante-tx");
@@ -93,6 +105,35 @@ struct App0 {
 		return 0;
 	}
 
+	struct zst_dante_tx_t {
+		zst_pipeline_t* pipe = nullptr;
+		zst_scheduler_t* sched = nullptr;
+		zst_clock_t* clock = nullptr;
+		zst_element_t* session = nullptr;
+		zst_element_t* coordinator = nullptr;
+		zst_element_t* tx_dep_sink = nullptr;
+		zst_element_t* tx_resampler = nullptr;
+		zst_pad_t* tx_video_pad = nullptr;
+		zst_pad_t* tx_audio_pad = nullptr;
+		zst_pad_t* app_video_src_pad = nullptr;
+		zst_pad_t* app_audio_src_pad = nullptr;
+		pthread_t bus_th = 0;
+		pthread_t sched_th = 0;
+		std::atomic<bool> running{false};
+
+		uint32_t audio_channels = 2;
+		uint32_t audio_sample_rate = 48000;
+		uint32_t audio_bits = 16;
+		uint32_t video_width = 1920;
+		uint32_t video_height = 1080;
+		double video_fps = 60.0;
+
+		std::atomic<uint64_t> tx_video_frames{0};
+		std::atomic<uint64_t> tx_video_bytes{0};
+		std::atomic<uint64_t> tx_audio_frames{0};
+		std::atomic<uint64_t> tx_audio_bytes{0};
+	};
+
 	struct TestCase1 : public TestCase {
 		typedef TestCase1 self_t;
 		typedef TestCase super_t;
@@ -112,6 +153,7 @@ struct App0 {
 		bool mHavePublishedVideoState;
 		bool mHavePublishedAudioState;
 
+#if BUILD_WITH_DAUSERVICE
 		static bool video_format_equal(const struct video_format& lhs,
 			const struct video_format& rhs)
 		{
@@ -312,6 +354,7 @@ struct App0 {
 
 			dau_reply_get_edid(dau, message, edid);
 		}
+#endif // BUILD_WITH_DAUSERVICE
 
 		void DoWork() {
 			QRESULT qres;
@@ -321,6 +364,7 @@ struct App0 {
 			memset(&current_video_format, 0, sizeof(current_video_format));
 			memset(&current_audio_info, 0, sizeof(current_audio_info));
 			nSnapshot = 0;
+
 			pHdmiRxDauServ = NULL;
 			bDmxStarted = false;
 			mHavePublishedVideoState = false;
@@ -361,6 +405,7 @@ struct App0 {
 						StartDmx();
 						break;
 
+#if BUILD_WITH_DAUSERVICE
 					case 'c': case 'C':
 						LOGI("---tag---: +dau_signal_cable_change");
 						dau_signal_cable_change(pHdmiRxDauServ);
@@ -378,6 +423,7 @@ struct App0 {
 						dau_signal_video_change(pHdmiRxDauServ);
 						LOGI("---tag---: -dau_signal_video_change");
 						break;
+#endif // BUILD_WITH_DAUSERVICE
 					}
 
 					return true;
@@ -389,12 +435,15 @@ struct App0 {
 
 		QRETURN OnStart(free_stack_t& _FreeStack_, QRESULT& qres) {
 			switch(1) { case 1:
-				dau_service* pHdmiRxDauServ;
+				dau_service* pHdmiRxDauServ = NULL;
+
+#if BUILD_WITH_DAUSERVICE
 				qres = StartDauServ(_FreeStack_, &pHdmiRxDauServ);
 				if(qres != QCAP_RS_SUCCESSFUL) {
 					LOGE("%s(%d): StartDauServ() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
+#endif // BUILD_WITH_DAUSERVICE
 
 				this->pHdmiRxDauServ = pHdmiRxDauServ;
 
@@ -403,6 +452,7 @@ struct App0 {
 			return QCAP_RT_OK;
 		}
 
+#if BUILD_WITH_DAUSERVICE
 		QRESULT StartDauServ(free_stack_t& _FreeStack_, dau_service** ppHdmiRxDauServ) {
 			QRESULT qres = QCAP_RS_SUCCESSFUL;
 
@@ -456,6 +506,7 @@ struct App0 {
 
 			return QCAP_RT_OK;
 		}
+#endif // BUILD_WITH_DAUSERVICE
 
 		void StartDmx() {
 			QRESULT qres;
@@ -630,18 +681,20 @@ struct App0 {
 					current_video_format = newVideoFormat;
 					spinlock_unlock(current_video_format_spinlock);
 
+#if BUILD_WITH_DAUSERVICE
 					const bool publishCableChange = (! mHavePublishedVideoState) ||
 						(oldVideoFormat.locked != newVideoFormat.locked);
 					const bool publishVideoChange = (! mHavePublishedVideoState) ||
 						(! video_format_equal(oldVideoFormat, newVideoFormat));
 
-					if(publishCableChange) {
+					if(pHdmiRxDauServ && publishCableChange) {
 						dau_signal_cable_change(pHdmiRxDauServ);
 					}
 
-					if(publishVideoChange) {
+					if(pHdmiRxDauServ && publishVideoChange) {
 						dau_signal_video_change(pHdmiRxDauServ);
 					}
+#endif // BUILD_WITH_DAUSERVICE
 
 					mHavePublishedVideoState = true;
 				}
@@ -690,12 +743,14 @@ struct App0 {
 					current_audio_info = newAudioInfo;
 					spinlock_unlock(current_audio_info_spinlock);
 
+#if BUILD_WITH_DAUSERVICE
 					const bool publishAudioChange = (! mHavePublishedAudioState) ||
 						(! audio_info_equal(oldAudioInfo, newAudioInfo));
 
-					if(publishAudioChange) {
+					if(pHdmiRxDauServ && publishAudioChange) {
 						dau_signal_audio_change(pHdmiRxDauServ);
 					}
+#endif // BUILD_WITH_DAUSERVICE
 
 					mHavePublishedAudioState = true;
 				}
@@ -703,10 +758,9 @@ struct App0 {
 				// next level muxers
 				qcap2_video_decoder_t* pVdec_rtsp = NULL;
 				qcap2_audio_decoder_t* pAdec_rtsp = NULL;
-				PVOID pDanteServer = NULL;
-				PVOID pDanteSender = NULL;
+				zst_dante_tx_t* pDanteTx = NULL;
 				if(nSrcColorSpaceType != QCAP_COLORSPACE_TYPE_UNDEFINED && nVideoWidth > 0 && nVideoHeight > 0) {
-#if 1
+#if 0
 					qcap2_muxer_t* pRTSPMuxer;
 					qres = StartRTSPMuxer(_FreeStack_, nColorSpaceType, nVideoWidth, nVideoHeight,
 						bVideoIsInterleaved, dVideoFrameRate, nVideoEncoderFormat, nVideoBitRate,
@@ -718,11 +772,11 @@ struct App0 {
 					}
 #endif
 
-#if 0
+#if 1
 					qres = StartDanteServer(_FreeStack_, nColorSpaceType, nVideoWidth, nVideoHeight,
 						bVideoIsInterleaved, dVideoFrameRate, nVideoEncoderFormat, nVideoBitRate,
 						nAudioChannels, nAudioBitsPerSample, nAudioSampleFrequency, nAudioEncoderFormat,
-						&pDanteServer, &pDanteSender);
+						&pDanteTx);
 					if(qres != QCAP_RS_SUCCESSFUL) {
 						LOGE("%s(%d): StartDanteServer() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 						break;
@@ -740,7 +794,7 @@ struct App0 {
 
 					if(pAsrcEvent) {
 						qres = AddEventHandler(_FreeStack_, pAsrcEvent,
-							std::bind(&self_t::OnAsrc, this, pAsrc, pAenc, pDanteSender));
+							std::bind(&self_t::OnAsrc, this, pAsrc, pAenc, pDanteTx));
 						if(qres != QCAP_RS_SUCCESSFUL) {
 							LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 							break;
@@ -750,7 +804,7 @@ struct App0 {
 
 					if(pVencEvent) {
 						qres = AddEventHandler(_FreeStack_, pVencEvent,
-							std::bind(&self_t::OnVenc, this, pVenc, pVdec_rtsp, pDanteSender));
+							std::bind(&self_t::OnVenc, this, pVenc, pVdec_rtsp, pDanteTx));
 						if(qres != QCAP_RS_SUCCESSFUL) {
 							LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 							break;
@@ -939,7 +993,7 @@ struct App0 {
 			return qres;
 		}
 
-		QRETURN OnVenc(qcap2_video_encoder_t* pVenc, qcap2_video_decoder_t* pVdec_rtsp, PVOID pDanteSender) {
+		QRETURN OnVenc(qcap2_video_encoder_t* pVenc, qcap2_video_decoder_t* pVdec_rtsp, zst_dante_tx_t* pDanteTx) {
 			QRESULT qres;
 
 			switch(1) { case 1:
@@ -960,28 +1014,46 @@ struct App0 {
 					}
 				}
 
-				if(pDanteSender) {
-					BYTE * pStreamBuffer;
-					ULONG nStreamBufferLen;
-					qcap2_rcbuffer_to_buffer(pRCBuffer, &pStreamBuffer, &nStreamBufferLen);
-
+				if(pDanteTx && pDanteTx->app_video_src_pad) {
 					std::shared_ptr<qcap2_av_packet_t> pAVPacket((qcap2_av_packet_t*)qcap2_rcbuffer_lock_data(pRCBuffer),
 						[pRCBuffer](qcap2_av_packet_t*) {
 							qcap2_rcbuffer_unlock_data(pRCBuffer);
 						}
 					);
 
-					int nStreamIndex;
-					BOOL bIsKeyFrame;
+					uint8_t* pStreamBuffer = nullptr;
+					int nStreamBufferLen = 0;
+					qcap2_av_packet_get_buffer(pAVPacket.get(), &pStreamBuffer, &nStreamBufferLen);
+
+					int nStreamIndex = 0;
+					BOOL bIsKeyFrame = FALSE;
 					qcap2_av_packet_get_property(pAVPacket.get(), &nStreamIndex, &bIsKeyFrame);
 
-					double dSampleTime;
+					double dSampleTime = 0.0;
 					qcap2_av_packet_get_sample_time(pAVPacket.get(), &dSampleTime);
 
-					qres = QCAP_SET_VIDEO_BROADCAST_SERVER_COMPRESSION_BUFFER(pDanteSender, 0, pStreamBuffer, nStreamBufferLen, bIsKeyFrame, dSampleTime);
-					if(qres != QCAP_RS_SUCCESSFUL) {
-						LOGE("%s(%d): QCAP_SET_VIDEO_BROADCAST_SERVER_COMPRESSION_BUFFER() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-						break;
+					if (pStreamBuffer && nStreamBufferLen > 0) {
+						zst_buffer_t* zbuf = zst_buffer_create(ZST_BUFFER_VIDEO_PACKET);
+						if (zbuf) {
+							void* copy_data = malloc((size_t)nStreamBufferLen);
+							if (copy_data) {
+								memcpy(copy_data, pStreamBuffer, (size_t)nStreamBufferLen);
+								zbuf->memory.type = ZST_MEMORY_CPU;
+								zbuf->memory.data = copy_data;
+								zbuf->memory.size = (size_t)nStreamBufferLen;
+								zbuf->memory.priv = copy_data;
+								zbuf->memory.release = free;
+								zbuf->pts = (zst_time_t)(dSampleTime * 1000000000.0);
+								zbuf->dts = zbuf->pts;
+								if (bIsKeyFrame) {
+									zbuf->flags |= ZST_BUFFER_FLAG_KEYFRAME;
+								}
+								zst_pad_push(pDanteTx->app_video_src_pad, zbuf);
+								pDanteTx->tx_video_frames++;
+								pDanteTx->tx_video_bytes += (size_t)nStreamBufferLen;
+							}
+							zst_buffer_unref(zbuf);
+						}
 					}
 				}
 			}
@@ -1022,7 +1094,14 @@ struct App0 {
 			return qres;
 		}
 
-		QRETURN OnAsrc(qcap2_audio_source_t* pAsrc, qcap2_audio_encoder_t* pAenc, PVOID pDanteSender) {
+		static void audio_wrap_buf_destroy(zst_buffer_t* b) {
+			if (b && b->payload) {
+				free(b->payload);
+				b->payload = NULL;
+			}
+		}
+
+		QRETURN OnAsrc(qcap2_audio_source_t* pAsrc, qcap2_audio_encoder_t* pAenc, zst_dante_tx_t* pDanteTx) {
 			QRESULT qres;
 
 			switch(1) { case 1:
@@ -1043,28 +1122,63 @@ struct App0 {
 					}
 				}
 
-#if 1
-				if(pDanteSender) {
-					BYTE * pFrameBuffer;
-					ULONG nFrameBufferLen;
-					qcap2_rcbuffer_to_buffer(pRCBuffer, &pFrameBuffer, &nFrameBufferLen);
-
+				if(pDanteTx && pDanteTx->app_audio_src_pad) {
 					std::shared_ptr<qcap2_av_frame_t> pAVFrame((qcap2_av_frame_t*)qcap2_rcbuffer_lock_data(pRCBuffer),
 						[pRCBuffer](qcap2_av_frame_t*) {
 							qcap2_rcbuffer_unlock_data(pRCBuffer);
 						}
 					);
 
-					double dSampleTime;
+					uint8_t* pFrameBuffer = nullptr;
+					int nFrameBufferStride = 0;
+					qcap2_av_frame_get_buffer(pAVFrame.get(), &pFrameBuffer, &nFrameBufferStride);
+
+					ULONG nChannels = 0, nSampleFmt = 0, nSampleFrequency = 0, nFrameSamples = 0;
+					qcap2_av_frame_get_audio_property(pAVFrame.get(), &nChannels, &nSampleFmt, &nSampleFrequency, &nFrameSamples);
+
+					double dSampleTime = 0.0;
 					qcap2_av_frame_get_sample_time(pAVFrame.get(), &dSampleTime);
 
-					qres = QCAP_SET_AUDIO_BROADCAST_SERVER_UNCOMPRESSION_BUFFER(pDanteSender, 0, pFrameBuffer, nFrameBufferLen, dSampleTime);
-					if(qres != QCAP_RS_SUCCESSFUL) {
-						LOGE("%s(%d): QCAP_SET_AUDIO_BROADCAST_SERVER_UNCOMPRESSION_BUFFER() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-						break;
+					uint32_t ch = nChannels ? (uint32_t)nChannels : (pDanteTx->audio_channels ? pDanteTx->audio_channels : 2);
+					uint32_t sr = nSampleFrequency ? (uint32_t)nSampleFrequency : (pDanteTx->audio_sample_rate ? pDanteTx->audio_sample_rate : 48000);
+					uint32_t sample_bytes = (pDanteTx->audio_bits > 0 ? pDanteTx->audio_bits / 8 : 2);
+					size_t nFrameBufferLen = (size_t)nFrameBufferStride;
+					if (nFrameBufferLen == 0 && nFrameSamples > 0) {
+						nFrameBufferLen = (size_t)nFrameSamples * ch * sample_bytes;
+					}
+
+					if (pFrameBuffer && nFrameBufferLen > 0) {
+						zst_buffer_t* zbuf = zst_buffer_create(ZST_BUFFER_AUDIO_FRAME);
+						if (zbuf) {
+							void* copy_data = malloc(nFrameBufferLen);
+							if (copy_data) {
+								memcpy(copy_data, pFrameBuffer, nFrameBufferLen);
+								zbuf->memory.type = ZST_MEMORY_CPU;
+								zbuf->memory.data = copy_data;
+								zbuf->memory.size = nFrameBufferLen;
+								zbuf->memory.priv = copy_data;
+								zbuf->memory.release = free;
+								zbuf->pts = (zst_time_t)(dSampleTime * 1000000000.0);
+								zbuf->dts = zbuf->pts;
+								zbuf->destroy = audio_wrap_buf_destroy;
+
+								zst_audio_frame_t* af = (zst_audio_frame_t*)calloc(1, sizeof(zst_audio_frame_t));
+								af->sample_rate = sr;
+								af->channels = ch;
+								af->format = (pDanteTx->audio_bits == 32) ? ZST_AUDIO_FMT_S32LE : ZST_AUDIO_FMT_S16LE;
+								uint32_t bytes_per_sample = ch * sample_bytes;
+								af->nb_samples = bytes_per_sample > 0 ? (uint32_t)(nFrameBufferLen / bytes_per_sample) : (uint32_t)nFrameSamples;
+								af->data = copy_data;
+								zbuf->payload = af;
+
+								zst_pad_push(pDanteTx->app_audio_src_pad, zbuf);
+								pDanteTx->tx_audio_frames++;
+								pDanteTx->tx_audio_bytes += nFrameBufferLen;
+							}
+							zst_buffer_unref(zbuf);
+						}
 					}
 				}
-#endif
 			}
 
 			return QCAP_RT_OK;
@@ -1288,146 +1402,182 @@ struct App0 {
 			return qres;
 		}
 
+		static void set_str(zst_element_t* el, const char* p, const char* v) {
+			zst_element_set_property(el, p, v);
+		}
+		static void set_uint(zst_element_t* el, const char* p, uint64_t v) {
+			char buf[32]; snprintf(buf, sizeof(buf), "%lu", (unsigned long)v);
+			zst_element_set_property(el, p, buf);
+		}
+
+		static void* dante_tx_bus_worker(void* arg) {
+			zst_dante_tx_t* tx = (zst_dante_tx_t*)arg;
+			uint64_t last_stat_time = 0;
+
+			while (tx->running) {
+				zst_event_t* ev = NULL;
+				if (zst_bus_pop(tx->pipe->bus, &ev, 100) == ZST_OK && ev) {
+					if (ev->type == ZST_EVENT_DANTE_FLOW_CREATED) {
+						LOGI("[DANTE BUS] TX video flow created: idx=%u ch=%u port=%u to=%s",
+							ev->as.dante_flow.flow.flow_index,
+							ev->as.dante_flow.flow.channel_index,
+							ev->as.dante_flow.flow.port,
+							ev->as.dante_flow.flow.receiver_address ? ev->as.dante_flow.flow.receiver_address : "?");
+						zst_dante_video_coordinator_apply_flow(tx->coordinator, &ev->as.dante_flow.flow);
+					} else if (ev->type == ZST_EVENT_DANTE_FLOW_DELETED) {
+						LOGI("[DANTE BUS] TX video flow deleted: idx=%u", ev->as.dante_flow.flow.flow_index);
+						zst_dante_video_coordinator_remove_flow(tx->coordinator, &ev->as.dante_flow.flow);
+					} else if (ev->type == ZST_EVENT_ERROR) {
+						LOGE("[DANTE BUS] Pipeline error: %s", ev->as.error.message ? ev->as.error.message : "");
+					}
+					zst_event_destroy(ev);
+				}
+
+				struct timespec ts;
+				clock_gettime(CLOCK_MONOTONIC, &ts);
+				uint64_t now_ms = (uint64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+				if (now_ms - last_stat_time >= 3000) {
+					last_stat_time = now_ms;
+					uint32_t active_flows = zst_dante_video_coordinator_get_flow_count(tx->coordinator);
+					LOGI("[DANTE TX STATS] flows=%u video_frames=%lu (%.1f MB) audio_frames=%lu (%.1f MB)",
+						active_flows,
+						(unsigned long)tx->tx_video_frames.load(),
+						(double)tx->tx_video_bytes.load() / (1024.0 * 1024.0),
+						(unsigned long)tx->tx_audio_frames.load(),
+						(double)tx->tx_audio_bytes.load() / (1024.0 * 1024.0));
+				}
+			}
+			return NULL;
+		}
+
 		QRESULT StartDanteServer(free_stack_t& _FreeStack_, ULONG nColorSpaceType, ULONG nVideoWidth, ULONG nVideoHeight,
 			BOOL bVideoIsInterleaved, double dVideoFrameRate, ULONG nEncoderFormat, ULONG nVideoBitRate,
 			ULONG nAudioChannels, ULONG nAudioBitsPerSample, ULONG nAudioSampleFrequency, ULONG nAudioEncoderFormat,
-			PVOID* ppDanteServer, PVOID* ppSender) {
+			zst_dante_tx_t** ppDanteTx)
+		{
 			QRESULT qres = QCAP_RS_SUCCESSFUL;
 
-			switch(1) { case 1:
-				PVOID pDanteServer;
-				qres = QCAP_CREATE_DANTE_SERVER(&pDanteServer);
-				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): QCAP_CREATE_DANTE_SERVER() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-					break;
-				}
-				_FreeStack_ += [pDanteServer]() {
-					QRESULT qres;
+			LOGI("StartDanteServer (zstreamer): V: %ux%u@%.2f (bitrate=%u) A: %uch %ubit %uHz",
+				(unsigned)nVideoWidth, (unsigned)nVideoHeight, dVideoFrameRate, (unsigned)nVideoBitRate,
+				(unsigned)nAudioChannels, (unsigned)nAudioBitsPerSample, (unsigned)nAudioSampleFrequency);
 
-					qres = QCAP_DESTROY_DANTE_SERVER(pDanteServer);
-					if(qres != QCAP_RS_SUCCESSFUL) {
-						LOGE("%s(%d): QCAP_DESTROY_DANTE_SERVER() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-					}
-				};
+			zst_dante_tx_t* tx = new zst_dante_tx_t();
+			tx->audio_channels = nAudioChannels ? nAudioChannels : 2;
+			tx->audio_sample_rate = nAudioSampleFrequency ? nAudioSampleFrequency : 48000;
+			tx->audio_bits = nAudioBitsPerSample ? nAudioBitsPerSample : 16;
+			tx->video_width = nVideoWidth;
+			tx->video_height = nVideoHeight;
+			tx->video_fps = dVideoFrameRate > 0 ? dVideoFrameRate : 30.0;
 
-				qres = QCAP_SET_DANTE_SERVER_CUSTOM_PROPERTY(pDanteServer, 1, 0);
-				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): QCAP_SET_DANTE_SERVER_CUSTOM_PROPERTY() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-					break;
-				}
-
-				qres = QCAP_REGISTER_DANTE_SERVER_MESSAGE_CALLBACK(pDanteServer, &self_t::_DANTE_SERVER_MESSAGE_CALLBACK, this);
-				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): QCAP_SET_DANTE_SERVER_CUSTOM_PROPERTY() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-					break;
-				}
-
-				qres = QCAP_REGISTER_DANTE_SERVER_TX_AUDIO_REQUEST_CALLBACK(pDanteServer, &self_t::_DANTE_SERVER_TX_AUDIO_REQUEST_CALLBACK, this);
-				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): QCAP_SET_DANTE_SERVER_CUSTOM_PROPERTY() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-					break;
-				}
-
-				qres = QCAP_REGISTER_DANTE_SERVER_NO_RESPOND_CALLBACK(pDanteServer, &self_t::_DANTE_SERVER_NO_RESPOND_CALLBACK, this);
-				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): QCAP_SET_DANTE_SERVER_CUSTOM_PROPERTY() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-					break;
-				}
-
-				qres = QCAP_START_DANTE_SERVER(pDanteServer);
-				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): QCAP_START_DANTE_SERVER() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-					break;
-				}
-				_FreeStack_ += [pDanteServer]() {
-					QRESULT qres;
-
-					qres = QCAP_STOP_DANTE_SERVER(pDanteServer);
-					if(qres != QCAP_RS_SUCCESSFUL) {
-						LOGE("%s(%d): QCAP_STOP_DANTE_SERVER() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-					}
-				};
-
-				PVOID pSender;
-				qres = QCAP_CREATE_DANTE_SENDER(pDanteServer, 0, &pSender, 0, 0);
-				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): QCAP_CREATE_DANTE_SENDER() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-					break;
-				}
-				_FreeStack_ += [pSender]() {
-					QRESULT qres;
-
-					qres = QCAP_DESTROY_BROADCAST_SERVER(pSender);
-					if(qres != QCAP_RS_SUCCESSFUL) {
-						LOGE("%s(%d): QCAP_DESTROY_BROADCAST_SERVER() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-					}
-				};
-
-				qres = QCAP_SET_VIDEO_BROADCAST_SERVER_PROPERTY(pSender, 0,
-					QCAP_ENCODER_TYPE_SOFTWARE, nEncoderFormat, nColorSpaceType,
-					nVideoWidth, nVideoHeight, dVideoFrameRate, QCAP_RECORD_MODE_CBR, 6000,
-					nVideoBitRate, 30, 0, 0, NULL, FALSE, FALSE, QCAP_BROADCAST_FLAG_NETWORK);
-				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): QCAP_SET_VIDEO_BROADCAST_SERVER_PROPERTY() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-					break;
-				}
-
-				qres = QCAP_SET_AUDIO_BROADCAST_SERVER_PROPERTY(pSender, 0,
-					QCAP_ENCODER_TYPE_SOFTWARE, QCAP_ENCODER_FORMAT_PCM, nAudioChannels, 32, nAudioSampleFrequency);
-				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): QCAP_SET_AUDIO_BROADCAST_SERVER_PROPERTY_EX() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-					break;
-				}
-
-				qres = QCAP_START_BROADCAST_SERVER(pSender);
-				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): QCAP_START_BROADCAST_SERVER() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-					break;
-				}
-				_FreeStack_ += [pSender]() {
-					QRESULT qres;
-
-					qres = QCAP_STOP_BROADCAST_SERVER(pSender);
-					if(qres != QCAP_RS_SUCCESSFUL) {
-						LOGE("%s(%d): QCAP_STOP_BROADCAST_SERVER() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-					}
-				};
-
-				*ppDanteServer = pDanteServer;
-				*ppSender = pSender;
+			tx->pipe = zst_pipeline_create();
+			if (!tx->pipe) {
+				LOGE("zst_pipeline_create failed");
+				delete tx;
+				return (QRESULT)-1;
 			}
 
+			/* 1. Dante DVR Session */
+			tx->session = zst_dante_session_create("/var/run/dante/dvr");
+			set_uint(tx->session, "tx-video-channels", 1);
+			set_uint(tx->session, "rx-video-channels", 1);
+
+			/* 2. Dante Video Coordinator */
+			tx->coordinator = zst_dante_video_coordinator_create();
+			zst_dante_video_coordinator_attach_session(tx->coordinator, tx->session);
+			tx->tx_video_pad = zst_dante_video_coordinator_request_tx_input_pad(tx->coordinator, 0);
+
+			tx->app_video_src_pad = zst_pad_create("app_video_src", ZST_PAD_SRC);
+			zst_pad_link(tx->app_video_src_pad, tx->tx_video_pad);
+
+			/* 3. Dante DEP Audio Sink */
+			tx->tx_dep_sink = zst_dante_dep_audio_sink_create();
+			set_str(tx->tx_dep_sink, "shm-name", "DanteEP");
+			set_str(tx->tx_dep_sink, "channels", "0,1");
+			set_str(tx->tx_dep_sink, "expected-sample-rate", "48000");
+			set_uint(tx->tx_dep_sink, "queue-periods", 2048);
+
+			/* 4. Audio Resampler (ASRC + 512-sample chunking) */
+			tx->tx_resampler = zst_audio_resampler_create(48000, 2, "S32LE");
+			set_str(tx->tx_resampler, "asrc-mode", "pts");
+			set_str(tx->tx_resampler, "max-drift-ppm", "2000");
+			set_uint(tx->tx_resampler, "drift-check-interval", 4);
+			set_uint(tx->tx_resampler, "block-samples", 512);
+
+			tx->tx_audio_pad = zst_element_get_pad(tx->tx_resampler, "sink");
+			zst_pad_link(zst_element_get_pad(tx->tx_resampler, "src"),
+			             zst_element_get_pad(tx->tx_dep_sink, "sink"));
+
+			tx->app_audio_src_pad = zst_pad_create("app_audio_src", ZST_PAD_SRC);
+			zst_pad_link(tx->app_audio_src_pad, tx->tx_audio_pad);
+
+			/* Add elements to pipeline */
+			zst_pipeline_add(tx->pipe, tx->coordinator);
+			zst_pipeline_add(tx->pipe, tx->tx_resampler);
+			zst_pipeline_add(tx->pipe, tx->tx_dep_sink);
+
+			tx->clock = zst_clock_system_create();
+			zst_pipeline_set_clock(tx->pipe, tx->clock);
+			zst_pipeline_set_state(tx->pipe, ZST_STATE_PLAYING);
+			tx->session->bus = tx->pipe->bus;
+			if (zst_element_set_state(tx->session, ZST_STATE_PLAYING) != ZST_OK) {
+				LOGW("Dante session start failed (is /var/run/dante/dvr running?)");
+			}
+
+			/* Scheduler */
+			zst_scheduler_config_t cfg = {
+				.mode = ZST_SCHEDULER_MULTI_THREAD,
+				.worker_threads = 4
+			};
+			tx->sched = zst_scheduler_create(&cfg);
+			zst_scheduler_attach(tx->sched, tx->pipe);
+			pthread_create(&tx->sched_th, NULL, (void* (*)(void*))zst_scheduler_run, tx->sched);
+
+			tx->running = true;
+			pthread_create(&tx->bus_th, NULL, dante_tx_bus_worker, tx);
+
+			_FreeStack_ += [tx]() {
+				LOGI("Stopping Dante TX pipeline (zstreamer)...");
+				tx->running = false;
+				if (tx->bus_th) {
+					pthread_join(tx->bus_th, NULL);
+					tx->bus_th = 0;
+				}
+				if (tx->app_video_src_pad) {
+					zst_pad_unlink(tx->app_video_src_pad);
+					zst_pad_destroy(tx->app_video_src_pad);
+					tx->app_video_src_pad = nullptr;
+				}
+				if (tx->app_audio_src_pad) {
+					zst_pad_unlink(tx->app_audio_src_pad);
+					zst_pad_destroy(tx->app_audio_src_pad);
+					tx->app_audio_src_pad = nullptr;
+				}
+				if (tx->session) {
+					zst_element_set_state(tx->session, ZST_STATE_NULL);
+					zst_element_destroy(tx->session);
+					tx->session = nullptr;
+				}
+				if (tx->sched) {
+					zst_scheduler_stop(tx->sched);
+					pthread_join(tx->sched_th, NULL);
+					zst_scheduler_destroy(tx->sched);
+					tx->sched = nullptr;
+				}
+				if (tx->pipe) {
+					zst_pipeline_set_state(tx->pipe, ZST_STATE_NULL);
+					zst_pipeline_destroy(tx->pipe);
+					tx->pipe = nullptr;
+				}
+				if (tx->clock) {
+					zst_clock_unref(tx->clock);
+					tx->clock = nullptr;
+				}
+				delete tx;
+				LOGI("Dante TX pipeline stopped.");
+			};
+
+			*ppDanteTx = tx;
 			return qres;
-		}
-
-		static QRETURN QCAP_EXPORT _DANTE_SERVER_MESSAGE_CALLBACK(PVOID pServer, UINT nVideoChannel, DWORD dwFlags, PVOID pUserData) {
-			self_t* pThis = (self_t*)pUserData;
-
-			return pThis->OnDanteMessage(nVideoChannel, dwFlags);
-		}
-
-		QRETURN OnDanteMessage(UINT nVideoChannel, DWORD dwFlags) {
-			return QCAP_RT_OK;
-		}
-
-		static QRETURN QCAP_EXPORT _DANTE_SERVER_TX_AUDIO_REQUEST_CALLBACK(PVOID pServer, double dSampleTime, PVOID pUserData) {
-			self_t* pThis = (self_t*)pUserData;
-
-			return pThis->OnDanteTxAudioRequest(dSampleTime);
-		}
-
-		QRETURN OnDanteTxAudioRequest(double dSampleTime) {
-			return QCAP_RT_OK;
-		}
-
-		static QRETURN QCAP_EXPORT _DANTE_SERVER_NO_RESPOND_CALLBACK(PVOID pServer, BOOL bActivate, PVOID pUserData) {
-			self_t* pThis = (self_t*)pUserData;
-
-			return pThis->OnDanteServerNoResponse(bActivate);
-		}
-
-		QRETURN OnDanteServerNoResponse(BOOL bActivate) {
-			return QCAP_RT_OK;
 		}
 	} mTestCase1;
 };
