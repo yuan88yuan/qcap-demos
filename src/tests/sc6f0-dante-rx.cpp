@@ -34,6 +34,10 @@
 #include "zstreamer/elements/zst_dante_video_coordinator.h"
 #include "zstreamer/elements/zst_dante_dep_audio.h"
 
+// qcap2 headers (ALLEGRO2 hardware decode)
+#include <qcap2.h>
+#include <qcap.common.h>
+
 ZZ_INIT_LOG("sc6f0-dante-rx");
 
 int g_argc = 0;
@@ -72,8 +76,237 @@ namespace __sc6f0_dante_rx__ {
 		return 0;
 	}
 
+	/* ── H.264 bitstream utilities ────────────────────────────────────── */
+
+	/* Minimal bitstream reader with RBSP emulation prevention (0x000003 → 0x0000) */
+	struct h264_bs_t {
+		const uint8_t* rbsp;
+		size_t size;
+		size_t bits;
+	};
+
+	static int bs_read_bit(h264_bs_t& bs) {
+		if (bs.bits >= bs.size * 8) return 0;
+		size_t byte_idx = bs.bits / 8;
+		int bit_offset = 7 - (bs.bits % 8);
+		bs.bits++;
+		return (bs.rbsp[byte_idx] >> bit_offset) & 1;
+	}
+
+	static int bs_read_bits(h264_bs_t& bs, int n) {
+		int val = 0;
+		for (int i = 0; i < n; i++)
+			val = (val << 1) | bs_read_bit(bs);
+		return val;
+	}
+
+	static int bs_read_ue(h264_bs_t& bs) {
+		int leading_zeros = 0;
+		while (bs_read_bit(bs) == 0 && leading_zeros < 32)
+			leading_zeros++;
+		if (leading_zeros == 0) return 0;
+		return (1 << leading_zeros) - 1 + bs_read_bits(bs, leading_zeros);
+	}
+
+	static int bs_read_se(h264_bs_t& bs) {
+		int val = bs_read_ue(bs);
+		return (val & 1) ? (val + 1) / 2 : -(val / 2);
+	}
+
+	/* Parse SPS NAL unit (after NAL header byte) for width, height, fps.
+	 * data must point to the first byte AFTER the NAL type byte (i.e. after 0x67).
+	 * Returns 0 on success. */
+	static int h264_parse_sps(const uint8_t* data, size_t size,
+	                          uint32_t* out_w, uint32_t* out_h, double* out_fps)
+	{
+		if (!data || size < 4) return -1;
+		h264_bs_t bs = { data, size, 0 };
+
+		int profile_idc = bs_read_bits(bs, 8);
+		bs_read_bits(bs, 8); /* constraint_set0..5 + reserved_zero_2bits */
+		bs_read_bits(bs, 8); /* level_idc */
+		bs_read_ue(bs);      /* seq_parameter_set_id */
+
+		int chroma_format_idc = 1; /* default: 4:2:0 */
+
+		/* High profile and above have extra fields */
+		if (profile_idc == 100 || profile_idc == 110 || profile_idc == 122 ||
+		    profile_idc == 244 || profile_idc ==  44 || profile_idc ==  83 ||
+		    profile_idc ==  86 || profile_idc == 118 || profile_idc == 128 ||
+		    profile_idc == 138 || profile_idc == 139 || profile_idc == 134) {
+			chroma_format_idc = bs_read_ue(bs);
+			if (chroma_format_idc == 3)
+				bs_read_bit(bs); /* separate_colour_plane_flag */
+			bs_read_ue(bs); /* bit_depth_luma_minus8 */
+			bs_read_ue(bs); /* bit_depth_chroma_minus8 */
+			bs_read_bit(bs); /* qpprime_y_zero_transform_bypass_flag */
+			int seq_scaling_matrix_present = bs_read_bit(bs);
+			if (seq_scaling_matrix_present) {
+				int cnt = (chroma_format_idc != 3) ? 8 : 12;
+				for (int i = 0; i < cnt; i++) {
+					if (bs_read_bit(bs)) { /* seq_scaling_list_present_flag[i] */
+						/* skip scaling list — not needed for resolution */
+						int last = 8, next = 8;
+						for (int j = 0; j < (i < 6 ? 16 : 64); j++) {
+							next = last + bs_read_se(bs) + 256;
+							last = next;
+						}
+					}
+				}
+			}
+		}
+
+		bs_read_ue(bs); /* log2_max_frame_num_minus4 */
+		int pic_order_cnt_type = bs_read_ue(bs);
+		if (pic_order_cnt_type == 0) {
+			bs_read_ue(bs); /* log2_max_pic_order_cnt_lsb_minus4 */
+		} else if (pic_order_cnt_type == 1) {
+			bs_read_bit(bs); /* delta_pic_order_always_zero_flag */
+			bs_read_se(bs);  /* offset_for_non_ref_pic */
+			bs_read_se(bs);  /* offset_for_top_to_bottom_field */
+			int num_ref_frames = bs_read_ue(bs);
+			for (int i = 0; i < num_ref_frames; i++)
+				bs_read_se(bs); /* offset_for_ref_frame */
+		}
+
+		int max_num_ref_frames = bs_read_ue(bs);
+		(void)max_num_ref_frames;
+		bs_read_bit(bs); /* gaps_in_frame_num_value_allowed_flag */
+
+		int pic_width_in_mbs_minus1 = bs_read_ue(bs);
+		int pic_height_in_map_units_minus1 = bs_read_ue(bs);
+		int frame_mbs_only_flag = bs_read_bit(bs);
+		if (!frame_mbs_only_flag)
+			bs_read_bit(bs); /* mb_adaptive_frame_field_flag */
+
+		int direct_8x8_inference_flag = bs_read_bit(bs);
+		(void)direct_8x8_inference_flag;
+
+		int frame_cropping_flag = bs_read_bit(bs);
+		int crop_left = 0, crop_right = 0, crop_top = 0, crop_bottom = 0;
+		if (frame_cropping_flag) {
+			crop_left   = bs_read_ue(bs);
+			crop_right  = bs_read_ue(bs);
+			crop_top    = bs_read_ue(bs);
+			crop_bottom = bs_read_ue(bs);
+		}
+
+		/* Compute resolution */
+		uint32_t w = (uint32_t)(pic_width_in_mbs_minus1 + 1) * 16;
+		uint32_t h = (uint32_t)(2 - frame_mbs_only_flag) * (pic_height_in_map_units_minus1 + 1) * 16;
+
+		/* Crop (YUV420: crop units are 2 pixels) */
+		int crop_unit_x = 1, crop_unit_y = 2 - frame_mbs_only_flag;
+		if (chroma_format_idc == 1) { crop_unit_x = 2; crop_unit_y = 2 * (2 - frame_mbs_only_flag); }
+		else if (chroma_format_idc == 2) { crop_unit_x = 2; crop_unit_y = 2 - frame_mbs_only_flag; }
+		if (frame_cropping_flag) {
+			w -= (crop_left + crop_right) * crop_unit_x;
+			h -= (crop_top + crop_bottom) * crop_unit_y;
+		}
+
+		/* VUI timing info (optional) */
+		double fps = 0.0;
+		int vui_parameters_present = bs_read_bit(bs);
+		if (vui_parameters_present) {
+			int aspect_ratio_info_present = bs_read_bit(bs);
+			if (aspect_ratio_info_present) {
+				int aspect_ratio_idc = bs_read_bits(bs, 8);
+				if (aspect_ratio_idc == 255) { /* Extended_SAR */
+					bs_read_bits(bs, 16); /* sar_width */
+					bs_read_bits(bs, 16); /* sar_height */
+				}
+			}
+			int overscan_info_present = bs_read_bit(bs);
+			if (overscan_info_present) bs_read_bits(bs, 1);
+			int video_signal_type_present = bs_read_bit(bs);
+			if (video_signal_type_present) {
+				bs_read_bits(bs, 3); /* video_format */
+				bs_read_bit(bs);     /* video_full_range_flag */
+				int colour_desc_present = bs_read_bit(bs);
+				if (colour_desc_present) bs_read_bits(bs, 8 + 8 + 8);
+			}
+			int chroma_loc_info_present = bs_read_bit(bs);
+			if (chroma_loc_info_present) {
+				bs_read_ue(bs); /* chroma_sample_loc_type_top_field */
+				bs_read_ue(bs); /* chroma_sample_loc_type_bottom_field */
+			}
+			int timing_info_present = bs_read_bit(bs);
+			if (timing_info_present) {
+				uint32_t num_units_in_tick = bs_read_bits(bs, 32);
+				uint32_t time_scale = bs_read_bits(bs, 32);
+				if (num_units_in_tick > 0)
+					fps = (double)time_scale / (2.0 * (double)num_units_in_tick);
+			}
+		}
+
+		if (out_w) *out_w = w;
+		if (out_h) *out_h = h;
+		if (out_fps) *out_fps = fps;
+		return 0;
+	}
+
+	/* Scan Annex-B bitstream for SPS (type 7) and PPS (type 8) NAL units.
+	 * Copies raw NAL bytes (including start code) into output buffers.
+	 * Returns 0 if at least SPS was found. */
+	static int h264_extract_sps_pps(const uint8_t* data, size_t size,
+	                                uint8_t* sps_out, int* sps_size,
+	                                uint8_t* pps_out, int* pps_size)
+	{
+		if (!data || size < 4) return -1;
+		int found_sps = 0;
+
+		if (sps_size) *sps_size = 0;
+		if (pps_size) *pps_size = 0;
+
+		size_t i = 0;
+		while (i + 3 < size) {
+			/* Find start code: 0x000001 or 0x00000001 */
+			size_t sc_len = 0;
+			if (data[i] == 0 && data[i + 1] == 0) {
+				if (i + 2 < size && data[i + 2] == 1)
+					sc_len = 3;
+				else if (i + 3 < size && data[i + 2] == 0 && data[i + 3] == 1)
+					sc_len = 4;
+			}
+			if (sc_len == 0) { i++; continue; }
+
+			size_t nal_start = i;
+			size_t data_start = i + sc_len;
+			if (data_start >= size) break;
+
+			uint8_t nal_type = data[data_start] & 0x1F;
+
+			/* Find end of this NAL (next start code or end of buffer) */
+			size_t nal_end = size;
+			for (size_t j = data_start + 1; j + 2 < size; j++) {
+				if (data[j] == 0 && data[j + 1] == 0 &&
+				    (data[j + 2] == 1 || (j + 3 < size && data[j + 2] == 0 && data[j + 3] == 1))) {
+					nal_end = j;
+					break;
+				}
+			}
+
+			int nal_len = (int)(nal_end - nal_start);
+			if (nal_len > 0) {
+				if (nal_type == 7 && sps_out && sps_size && nal_len <= *sps_size) {
+					memcpy(sps_out, data + nal_start, (size_t)nal_len);
+					*sps_size = nal_len;
+					found_sps = 1;
+				} else if (nal_type == 8 && pps_out && pps_size && nal_len <= *pps_size) {
+					memcpy(pps_out, data + nal_start, (size_t)nal_len);
+					*pps_size = nal_len;
+				}
+			}
+
+			i = nal_end;
+		}
+		return found_sps ? 0 : -1;
+	}
+
 	/* ── Video statistics & custom sink ──────────────────────────────── */
+	struct zst_dante_rx_t; /* forward declaration */
 	struct rx_video_stats_t {
+		zst_dante_rx_t* rx = nullptr;
 		std::atomic<uint64_t> total_packets{0};
 		std::atomic<uint64_t> total_bytes{0};
 		std::atomic<uint64_t> keyframes{0};
@@ -84,6 +317,13 @@ namespace __sc6f0_dante_rx__ {
 		std::atomic<uint64_t> first_pts{0};
 	};
 
+	/* Called from rx_video_sink_push (defined after zst_dante_rx_t).
+	 * Feeds an H.264 frame to the ALLEGRO2 decoder, initializing it from
+	 * SPS/PPS on the first keyframe if not already started. */
+	static void rx_video_feed_decoder(rx_video_stats_t* stats,
+	                                  const uint8_t* data, size_t data_size,
+	                                  uint32_t flags);
+
 	static zst_result_t rx_video_sink_push(zst_pad_t* pad, zst_buffer_t* buf) {
 		if (!pad || !pad->parent || !buf) return ZST_ERROR;
 		rx_video_stats_t* stats = (rx_video_stats_t*)pad->parent->priv;
@@ -91,33 +331,35 @@ namespace __sc6f0_dante_rx__ {
 
 		stats->total_packets++;
 		stats->total_bytes += buf->memory.size;
-		if (stats->first_pts == 0 && buf->pts > 0) {
+		if (stats->first_pts == 0 && buf->pts > 0)
 			stats->first_pts = buf->pts;
-		}
 		stats->last_pts = buf->pts;
 
-		if (buf->flags & ZST_BUFFER_FLAG_KEYFRAME) {
+		if (buf->flags & ZST_BUFFER_FLAG_KEYFRAME)
 			stats->keyframes++;
-		}
 
-		/* Inspect H.264 NAL type if packet payload is present */
-		if (buf->memory.data && buf->memory.size >= 4) {
-			const uint8_t* d = (const uint8_t*)buf->memory.data;
-			size_t sz = buf->memory.size;
-			for (size_t i = 0; i + 3 < sz && i < 32; i++) {
-				if (d[i] == 0 && d[i + 1] == 0 &&
-				    (d[i + 2] == 1 || (i + 4 <= sz && d[i + 2] == 0 && d[i + 3] == 1))) {
-					size_t offset = (d[i + 2] == 1) ? i + 3 : i + 4;
-					if (offset < sz) {
-						uint8_t nal_type = d[offset] & 0x1F;
-						if (nal_type == 7 || nal_type == 8) stats->sps_pps++;
-						else if (nal_type == 5) stats->idr_slices++;
-						else if (nal_type == 1) stats->non_idr_slices++;
-					}
-					break;
+		const uint8_t* data = (const uint8_t*)buf->memory.data;
+		size_t data_size = buf->memory.size;
+		if (!data || data_size < 4)
+			return ZST_OK;
+
+		/* ── NAL stats ───────────────────────────────────────────────── */
+		for (size_t i = 0; i + 3 < data_size && i < 32; i++) {
+			if (data[i] == 0 && data[i + 1] == 0 &&
+			    (data[i + 2] == 1 || (i + 4 <= data_size && data[i + 2] == 0 && data[i + 3] == 1))) {
+				size_t offset = (data[i + 2] == 1) ? i + 3 : i + 4;
+				if (offset < data_size) {
+					uint8_t nal_type = data[offset] & 0x1F;
+					if (nal_type == 7 || nal_type == 8) stats->sps_pps++;
+					else if (nal_type == 5) stats->idr_slices++;
+					else if (nal_type == 1) stats->non_idr_slices++;
 				}
+				break;
 			}
 		}
+
+		/* ── Feed to ALLEGRO2 hardware decoder ──────────────────────── */
+		rx_video_feed_decoder(stats, data, data_size, buf->flags);
 
 		return ZST_OK;
 	}
@@ -238,6 +480,20 @@ namespace __sc6f0_dante_rx__ {
 		rx_video_stats_t* video_stats = nullptr;
 		rx_audio_stats_t* audio_stats = nullptr;
 
+		// qcap2 ALLEGRO2 hardware decoder
+		qcap2_video_decoder_t*       vdec = nullptr;
+		qcap2_event_t*               vdec_event = nullptr;
+		qcap2_event_handlers_t*      vdec_event_handlers = nullptr;
+		qcap2_packet_pool_t*         vdec_pool = nullptr;
+		bool                         vdec_started = false;
+		uint8_t*                     extra_data = nullptr;
+		int                          extra_data_size = 0;
+		uint32_t                     dec_width = 0;
+		uint32_t                     dec_height = 0;
+		double                       dec_fps = 0.0;
+		std::atomic<uint64_t>        decoded_frames{0};
+		std::atomic<uint64_t>        decoded_errors{0};
+
 		std::string dvr_socket{"/var/run/dante/dvr"};
 		std::string dep_name{"DanteEP"};
 		std::string channels{"0,1"};
@@ -249,6 +505,265 @@ namespace __sc6f0_dante_rx__ {
 		std::atomic<bool> running{false};
 		uint64_t start_time_ms{0};
 	};
+
+	/* ── qcap2 ALLEGRO2 hardware decoder ────────────────────────────── */
+
+	static QRETURN on_video_decoded(void* user_data) {
+		zst_dante_rx_t* rx = (zst_dante_rx_t*)user_data;
+		while (rx->vdec) {
+			qcap2_rcbuffer_t* pOut = nullptr;
+			if (qcap2_video_decoder_pop(rx->vdec, &pOut) != QCAP_RS_SUCCESSFUL) break;
+			qcap2_av_frame_t* frame = (qcap2_av_frame_t*)qcap2_rcbuffer_get_data(pOut);
+			if (frame) {
+				rx->decoded_frames++;
+			}
+			qcap2_rcbuffer_release(pOut);
+		}
+		return QCAP_RT_OK;
+	}
+
+	static int init_vdec_decoder(zst_dante_rx_t* rx) {
+		/* 1. Create decoder */
+		rx->vdec = qcap2_video_decoder_new();
+		if (!rx->vdec) {
+			LOGE("qcap2_video_decoder_new() failed");
+			return -1;
+		}
+
+		/* 2. Configure property: ALLEGRO2, H264, NV12, parsed W×H×fps */
+		std::shared_ptr<qcap2_video_encoder_property_t> prop(
+			qcap2_video_encoder_property_new(), qcap2_video_encoder_property_delete);
+		qcap2_video_encoder_property_set_property(prop.get(),
+			QCAP_ENCODER_TYPE_ALLEGRO2, QCAP_ENCODER_FORMAT_H264,
+			QCAP_COLORSPACE_TYPE_NV12,
+			rx->dec_width, rx->dec_height, rx->dec_fps,
+			0, 0, 0, 0, 0, 0);
+		qcap2_video_decoder_set_video_property(rx->vdec, prop.get());
+
+		/* 3. Set extra data (SPS+PPS Annex B) */
+		qcap2_video_decoder_set_extra_data(rx->vdec, rx->extra_data, rx->extra_data_size);
+
+		/* 4. Create event + handler for decoded frame pop */
+		rx->vdec_event = qcap2_event_new();
+		if (!rx->vdec_event) {
+			LOGE("qcap2_event_new() failed");
+			qcap2_video_decoder_delete(rx->vdec);
+			rx->vdec = nullptr;
+			return -1;
+		}
+		qcap2_event_start(rx->vdec_event);
+		qcap2_video_decoder_set_event(rx->vdec, rx->vdec_event);
+
+		rx->vdec_event_handlers = qcap2_event_handlers_new();
+		if (!rx->vdec_event_handlers) {
+			LOGE("qcap2_event_handlers_new() failed");
+			qcap2_event_stop(rx->vdec_event);
+			qcap2_event_delete(rx->vdec_event);
+			qcap2_video_decoder_delete(rx->vdec);
+			rx->vdec = nullptr;
+			return -1;
+		}
+		uintptr_t handle;
+		qcap2_event_get_native_handle(rx->vdec_event, &handle);
+		qcap2_event_handlers_add_handler(rx->vdec_event_handlers, handle,
+		                                 on_video_decoded, rx);
+		qcap2_event_handlers_start(rx->vdec_event_handlers);
+
+		/* 4b. Create packet pool (recycle av_packet rcbuffers to avoid
+		 *       per-frame qcap2_rcbuffer_new_av_packet / _delete churn) */
+		rx->vdec_pool = qcap2_packet_pool_new();
+		if (!rx->vdec_pool) {
+			LOGE("qcap2_packet_pool_new() failed");
+			qcap2_event_handlers_stop(rx->vdec_event_handlers);
+			qcap2_event_handlers_delete(rx->vdec_event_handlers);
+			rx->vdec_event_handlers = nullptr;
+			qcap2_event_stop(rx->vdec_event);
+			qcap2_event_delete(rx->vdec_event);
+			rx->vdec_event = nullptr;
+			qcap2_video_decoder_delete(rx->vdec);
+			rx->vdec = nullptr;
+			return -1;
+		}
+		qcap2_packet_pool_set_packet_count(rx->vdec_pool, 32);
+		if (qcap2_packet_pool_start(rx->vdec_pool) != QCAP_RS_SUCCESSFUL) {
+			LOGE("qcap2_packet_pool_start() failed");
+			qcap2_packet_pool_stop(rx->vdec_pool);
+			qcap2_packet_pool_delete(rx->vdec_pool);
+			rx->vdec_pool = nullptr;
+			qcap2_event_handlers_stop(rx->vdec_event_handlers);
+			qcap2_event_handlers_delete(rx->vdec_event_handlers);
+			rx->vdec_event_handlers = nullptr;
+			qcap2_event_stop(rx->vdec_event);
+			qcap2_event_delete(rx->vdec_event);
+			rx->vdec_event = nullptr;
+			qcap2_video_decoder_delete(rx->vdec);
+			rx->vdec = nullptr;
+			return -1;
+		}
+
+		/* 5. Configure decoder buffer counts */
+		qcap2_video_decoder_set_frame_count(rx->vdec, 8);
+		qcap2_video_decoder_set_packet_count(rx->vdec, 16);
+		qcap2_video_decoder_set_max_packet_size(rx->vdec, 1024 * 1024);
+
+		/* 6. Start decoder */
+		QRESULT qres = qcap2_video_decoder_start(rx->vdec);
+		if (qres != QCAP_RS_SUCCESSFUL) {
+			LOGE("qcap2_video_decoder_start() failed, qres=%d", (int)qres);
+			qcap2_packet_pool_stop(rx->vdec_pool);
+			qcap2_packet_pool_delete(rx->vdec_pool);
+			rx->vdec_pool = nullptr;
+			qcap2_event_handlers_stop(rx->vdec_event_handlers);
+			qcap2_event_handlers_delete(rx->vdec_event_handlers);
+			qcap2_event_stop(rx->vdec_event);
+			qcap2_event_delete(rx->vdec_event);
+			qcap2_video_decoder_delete(rx->vdec);
+			rx->vdec = nullptr;
+			return -1;
+		}
+
+		rx->vdec_started = true;
+		LOGI("qcap2 ALLEGRO2 decoder started: %ux%u @ %.1f fps",
+		     rx->dec_width, rx->dec_height, rx->dec_fps);
+		return 0;
+	}
+
+	static void rx_video_feed_decoder(rx_video_stats_t* stats,
+	                                   const uint8_t* data, size_t data_size,
+	                                   uint32_t flags) {
+		zst_dante_rx_t* rx = stats->rx;
+		if (!rx || !data || data_size < 4)
+			return;
+
+		/* Decoder already running → feed frame directly */
+		if (rx->vdec_started) {
+			qcap2_rcbuffer_t* rcbuf = nullptr;
+			if (qcap2_packet_pool_get_buffer(rx->vdec_pool, (int)data_size, &rcbuf) != QCAP_RS_SUCCESSFUL || !rcbuf) {
+				rx->decoded_errors++;
+				return;
+			}
+			qcap2_av_packet_t* pkt = (qcap2_av_packet_t*)qcap2_rcbuffer_get_data(rcbuf);
+			if (pkt) {
+				uint8_t* dst; int dst_size;
+				qcap2_av_packet_get_buffer(pkt, &dst, &dst_size);
+				memcpy(dst, data, data_size);
+				qcap2_av_packet_set_buffer(pkt, dst, (int)data_size);
+				qcap2_av_packet_set_property(pkt, 0, (flags & ZST_BUFFER_FLAG_KEYFRAME) ? TRUE : FALSE);
+				qcap2_av_packet_set_pts(pkt, 0);
+				qcap2_av_packet_set_dts(pkt, 0);
+				QRESULT qres = qcap2_video_decoder_push(rx->vdec, rcbuf);
+				if (qres != QCAP_RS_SUCCESSFUL)
+					rx->decoded_errors++;
+			} else {
+				rx->decoded_errors++;
+			}
+			qcap2_rcbuffer_release(rcbuf); /* returns buffer to pool */
+			return;
+		}
+
+		/* Not started yet: wait for a keyframe that carries SPS/PPS */
+		if (!(flags & ZST_BUFFER_FLAG_KEYFRAME))
+			return;
+
+		/* Copy out SPS+PPS from this keyframe */
+		int sps_len = 256 * 1024;
+		int pps_len = 256 * 1024;
+		uint8_t* sps_buf = (uint8_t*)malloc((size_t)sps_len);
+		uint8_t* pps_buf = (uint8_t*)malloc((size_t)pps_len);
+		if (!sps_buf || !pps_buf) {
+			free(sps_buf);
+			free(pps_buf);
+			return;
+		}
+
+		if (h264_extract_sps_pps(data, data_size, sps_buf, &sps_len, pps_buf, &pps_len) != 0) {
+			free(sps_buf);
+			free(pps_buf);
+			return; /* no SPS in this frame, retry next keyframe */
+		}
+
+		/* Locate SPS NAL body (past start code + NAL header byte) */
+		size_t sps_nal_off = 0;
+		for (size_t i = 0; i + 3 < (size_t)sps_len; i++) {
+			if (sps_buf[i] == 0 && sps_buf[i+1] == 0 &&
+			    (sps_buf[i+2] == 1 || sps_buf[i+2] == 0)) {
+				size_t sc_len = (sps_buf[i+2] == 1) ? 3 : 4;
+				uint8_t nal_type = sps_buf[i + sc_len] & 0x1F;
+				if (nal_type == 7) {
+					sps_nal_off = i + sc_len + 1;
+					break;
+				}
+			}
+		}
+
+		if (sps_nal_off == 0) {
+			free(sps_buf);
+			free(pps_buf);
+			return;
+		}
+
+		double fps = 0.0;
+		if (h264_parse_sps(sps_buf + sps_nal_off, (size_t)sps_len - sps_nal_off,
+		                    &rx->dec_width, &rx->dec_height, &fps) != 0) {
+			free(sps_buf);
+			free(pps_buf);
+			return;
+		}
+		rx->dec_fps = (fps > 0.0) ? fps : 60.0;
+
+		/* Build extra_data = SPS + PPS concatenated (Annex B, with start codes) */
+		size_t extra_sz = (size_t)sps_len + (pps_len > 0 ? (size_t)pps_len : 0);
+		rx->extra_data = (uint8_t*)malloc(extra_sz + 8);
+		if (!rx->extra_data) {
+			free(sps_buf);
+			free(pps_buf);
+			return;
+		}
+		memcpy(rx->extra_data, sps_buf, (size_t)sps_len);
+		rx->extra_data_size = (int)sps_len;
+		if (pps_len > 0) {
+			memcpy(rx->extra_data + sps_len, pps_buf, (size_t)pps_len);
+			rx->extra_data_size += pps_len;
+		}
+		free(sps_buf);
+		free(pps_buf);
+
+		/* Initialize and start decoder */
+		if (init_vdec_decoder(rx) != 0) {
+			free(rx->extra_data);
+			rx->extra_data = nullptr;
+			rx->extra_data_size = 0;
+			return;
+		}
+
+		LOGI("ALLEGRO2 decoder: %ux%u @ %.1f fps, extra_data=%d bytes",
+		     rx->dec_width, rx->dec_height, rx->dec_fps, rx->extra_data_size);
+
+		/* Feed this keyframe to the now-running decoder */
+		{
+			qcap2_rcbuffer_t* rcbuf = nullptr;
+			if (qcap2_packet_pool_get_buffer(rx->vdec_pool, (int)data_size, &rcbuf) != QCAP_RS_SUCCESSFUL || !rcbuf) {
+				rx->decoded_errors++;
+				return;
+			}
+			qcap2_av_packet_t* pkt = (qcap2_av_packet_t*)qcap2_rcbuffer_get_data(rcbuf);
+			if (pkt) {
+				uint8_t* dst; int dst_size;
+				qcap2_av_packet_get_buffer(pkt, &dst, &dst_size);
+				memcpy(dst, data, data_size);
+				qcap2_av_packet_set_buffer(pkt, dst, (int)data_size);
+				qcap2_av_packet_set_property(pkt, 0, TRUE);
+				qcap2_av_packet_set_pts(pkt, 0);
+				qcap2_av_packet_set_dts(pkt, 0);
+				QRESULT qres = qcap2_video_decoder_push(rx->vdec, rcbuf);
+				if (qres != QCAP_RS_SUCCESSFUL)
+					rx->decoded_errors++;
+			} else {
+				rx->decoded_errors++;
+			}
+			qcap2_rcbuffer_release(rcbuf); /* returns buffer to pool */
+		}
+	}
 
 	static void* dante_rx_bus_worker(void* arg) {
 		zst_dante_rx_t* rx = (zst_dante_rx_t*)arg;
@@ -406,7 +921,7 @@ namespace __sc6f0_dante_rx__ {
 			return nullptr;
 		}
 
-		/* 3. RX Video Sink (packet inspector, no decode) */
+		/* 3. RX Video Packet Inspector → feeds ALLEGRO2 decoder */
 		rx->rx_video_sink = create_rx_video_sink(&rx->video_stats);
 		if (!rx->rx_video_sink) {
 			LOGE("create_rx_video_sink() failed");
@@ -416,6 +931,7 @@ namespace __sc6f0_dante_rx__ {
 			delete rx;
 			return nullptr;
 		}
+		rx->video_stats->rx = rx;
 		zst_pad_link(rx->rx_video_pad, zst_element_get_pad(rx->rx_video_sink, "sink"));
 
 		/* 4. Dante DEP Audio Source */
@@ -497,6 +1013,37 @@ namespace __sc6f0_dante_rx__ {
 		uint64_t apds = rx->audio_stats ? rx->audio_stats->total_periods.load() : 0;
 		uint64_t asamples = rx->audio_stats ? rx->audio_stats->total_samples.load() : 0;
 		uint64_t abytes = rx->audio_stats ? rx->audio_stats->total_bytes.load() : 0;
+		uint64_t dec_frames = rx->decoded_frames.load();
+		uint64_t dec_errors = rx->decoded_errors.load();
+
+		/* Stop + release ALLEGRO2 hardware decoder (before session/pipeline teardown) */
+		if (rx->vdec) {
+			if (rx->vdec_started)
+				qcap2_video_decoder_stop(rx->vdec);
+			if (rx->vdec_event_handlers) {
+				qcap2_event_handlers_stop(rx->vdec_event_handlers);
+				qcap2_event_handlers_delete(rx->vdec_event_handlers);
+				rx->vdec_event_handlers = nullptr;
+			}
+			if (rx->vdec_event) {
+				qcap2_event_stop(rx->vdec_event);
+				qcap2_event_delete(rx->vdec_event);
+				rx->vdec_event = nullptr;
+			}
+			qcap2_video_decoder_delete(rx->vdec);
+			rx->vdec = nullptr;
+			rx->vdec_started = false;
+		}
+		if (rx->vdec_pool) {
+			qcap2_packet_pool_stop(rx->vdec_pool);
+			qcap2_packet_pool_delete(rx->vdec_pool);
+			rx->vdec_pool = nullptr;
+		}
+		if (rx->extra_data) {
+			free(rx->extra_data);
+			rx->extra_data = nullptr;
+			rx->extra_data_size = 0;
+		}
 
 		if (rx->session) {
 			zst_element_set_state(rx->session, ZST_STATE_NULL);
@@ -534,6 +1081,8 @@ namespace __sc6f0_dante_rx__ {
 		printf("  Video Keyframes:     %llu\n", (unsigned long long)keyframes);
 		printf("  Video IDR Slices:    %llu\n", (unsigned long long)idr);
 		printf("  Video SPS/PPS NALs:  %llu\n", (unsigned long long)sps_pps);
+		printf("  Decoded Frames:      %llu\n", (unsigned long long)dec_frames);
+		printf("  Decode Errors:       %llu\n", (unsigned long long)dec_errors);
 		printf("  Audio Periods:       %llu\n", (unsigned long long)apds);
 		printf("  Audio Samples:       %llu (%.2f MB)\n",
 		       (unsigned long long)asamples,
