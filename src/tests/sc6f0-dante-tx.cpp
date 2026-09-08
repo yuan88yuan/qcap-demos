@@ -912,7 +912,7 @@ struct App0 {
 					ULONG nRecordMode = QCAP_RECORD_MODE_CBR;
 					ULONG nQuality = 8000;
 					ULONG nBitRate = nVideoBitRate;
-					ULONG nGOP = 60;
+					ULONG nGOP = dVideoFrameRate > 1.0 ? (ULONG)dVideoFrameRate : (ULONG)1;
 					ULONG nBFrames = 0;
 					BOOL bIsInterleaved = FALSE;
 					ULONG nSlices = 0;
@@ -1000,6 +1000,27 @@ struct App0 {
 					qcap2_av_packet_get_sample_time(pAVPacket.get(), &dSampleTime);
 
 					if (pStreamBuffer && nStreamBufferLen > 0) {
+						/* ── Debug: first packets + a dedicated KEYFRAME trace ─ */
+						static uint64_t enc_pkts = 0;
+						static uint64_t enc_keyframes = 0;
+						uint64_t en = ++enc_pkts;
+						char hex[96];
+						size_t hn = nStreamBufferLen < 24 ? (size_t)nStreamBufferLen : 24;
+						size_t hx = 0;
+						for (size_t hi = 0; hi < hn; hi++)
+							hx += snprintf(hex + hx, sizeof(hex) - hx, " %02X",
+							               ((uint8_t*)pStreamBuffer)[hi]);
+						if (en <= 10 || bIsKeyFrame) {
+							LOGI("[VDBG] tx enc pkt #%llu size=%d keyframe=%d sample=%.3f bytes:%s",
+							     (unsigned long long)en, nStreamBufferLen, (int)bIsKeyFrame,
+							     dSampleTime, hex);
+						}
+						if (bIsKeyFrame) {
+							uint64_t kn = ++enc_keyframes;
+							LOGI("[VDBG] TX KEYFRAME #%llu (enc frame #%llu) size=%d sample=%.3f"
+							     " bytes:%s", (unsigned long long)kn, (unsigned long long)en,
+							     nStreamBufferLen, dSampleTime, hex);
+						}
 						zst_buffer_t* zbuf = zst_buffer_create(ZST_BUFFER_VIDEO_PACKET);
 						if (zbuf) {
 							void* copy_data = malloc((size_t)nStreamBufferLen);
@@ -1294,7 +1315,7 @@ struct App0 {
 					ULONG nRecordMode = QCAP_RECORD_MODE_CBR;
 					ULONG nQuality = 8000;
 					ULONG nBitRate = nVideoBitRate;
-					ULONG nGOP = 60;
+					ULONG nGOP = dVideoFrameRate > 1.0 ? (ULONG)dVideoFrameRate : (ULONG)1;
 					ULONG nBFrames = 0;
 					BOOL bIsInterleaved = FALSE;
 					ULONG nSlices = 0;
