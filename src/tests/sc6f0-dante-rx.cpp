@@ -37,6 +37,7 @@
 
 // qcap2 headers (ALLEGRO2 hardware decode)
 #include <qcap2.h>
+#include <qcap2.allegro2.h>
 #include <qcap2.user.h>
 #include <qcap.common.h>
 
@@ -360,13 +361,18 @@ namespace __sc6f0_dante_rx__ {
 			size_t np = 0;
 			size_t i = 0;
 			int cnt = 0;
-			while (i + 3 < data_size && cnt < 10) {
+			int slice_count = 0;
+			while (i + 3 < data_size) {
 				if (data[i] == 0 && data[i + 1] == 0 &&
 				    (data[i + 2] == 1 ||
 				     (i + 4 <= data_size && data[i + 2] == 0 && data[i + 3] == 1))) {
 					size_t off = (data[i + 2] == 1) ? i + 3 : i + 4;
 					if (off < data_size) {
-						np += snprintf(nals + np, sizeof(nals) - np, " %u", data[off] & 0x1F);
+						uint8_t nal_type = data[off] & 0x1F;
+						if (nal_type == 1 || nal_type == 5)
+							slice_count++;
+						if (cnt < 10)
+							np += snprintf(nals + np, sizeof(nals) - np, " %u", nal_type);
 						cnt++;
 					}
 					i = off;
@@ -374,9 +380,9 @@ namespace __sc6f0_dante_rx__ {
 					i++;
 				}
 			}
-			LOGI("[VDBG] rx buf #%llu size=%zu pts=%llu bytes:%s nals:%s",
+			LOGI("[VDBG] rx buf #%llu size=%zu pts=%llu bytes:%s nals:%s slices=%d",
 			     (unsigned long long)vdbg_n, data_size,
-			     (unsigned long long)buf->pts, hex, nals);
+			     (unsigned long long)buf->pts, hex, nals, slice_count);
 		}
 
 		/* ── NAL classification (scan the full AU; an AUD often comes first) */
@@ -540,11 +546,13 @@ namespace __sc6f0_dante_rx__ {
 		rx_video_stats_t* video_stats = nullptr;
 		rx_audio_stats_t* audio_stats = nullptr;
 
-		// qcap2 ALLEGRO2 hardware decoder
+		// qcap2 ALLEGRO2 hardware decoder (async event-handler based)
 		qcap2_video_decoder_t*       vdec = nullptr;
 		qcap2_event_t*               vdec_event = nullptr;
 		qcap2_event_handlers_t*      vdec_event_handlers = nullptr;
+		qcap2_packet_pool_t*         vdec_packet_pool = nullptr;
 		bool                         vdec_started = false;
+		bool                         vdec_init_done = false;
 		uint8_t*                     extra_data = nullptr;
 		int                          extra_data_size = 0;
 		uint32_t                     dec_width = 0;
@@ -552,7 +560,12 @@ namespace __sc6f0_dante_rx__ {
 		double                       dec_fps = 0.0;
 		std::atomic<uint64_t>        decoded_frames{0};
 		std::atomic<uint64_t>        decoded_errors{0};
+		std::atomic<uint64_t>        decoder_input_packets{0};
+		std::atomic<uint64_t>        decoder_pushed_packets{0};
+		std::atomic<uint64_t>        decoder_dropped_packets{0};
 		std::mutex                   decoder_lock;
+		std::chrono::steady_clock::time_point decoder_last_submit;
+		bool                         decoder_wait_for_idr = false;
 		std::string                  reconstructed_path;
 		FILE*                        reconstructed_file = nullptr;
 
@@ -570,12 +583,166 @@ namespace __sc6f0_dante_rx__ {
 
 	/* ── qcap2 ALLEGRO2 hardware decoder ────────────────────────────── */
 
-	static void drain_video_decoder(zst_dante_rx_t* rx) {
-		while (rx->vdec) {
-			qcap2_rcbuffer_t* pOut = nullptr;
-			if (qcap2_video_decoder_pop(rx->vdec, &pOut) != QCAP_RS_SUCCESSFUL) break;
+	static QRETURN on_vdec_event_callback(PVOID pUserData);
+
+	static void StopVdecAsync(zst_dante_rx_t* rx) {
+		if (rx->vdec_event_handlers) {
+			qcap2_event_handlers_stop(rx->vdec_event_handlers);
+			qcap2_event_handlers_delete(rx->vdec_event_handlers);
+			rx->vdec_event_handlers = nullptr;
+		}
+		if (rx->vdec_packet_pool) {
+			qcap2_packet_pool_stop(rx->vdec_packet_pool);
+			qcap2_packet_pool_delete(rx->vdec_packet_pool);
+			rx->vdec_packet_pool = nullptr;
+		}
+		if (rx->vdec_event) {
+			qcap2_event_stop(rx->vdec_event);
+			qcap2_event_delete(rx->vdec_event);
+			rx->vdec_event = nullptr;
+		}
+		rx->vdec_init_done = false;
+	}
+
+	/* Create decoder event, output handler, and packet pool before decoder start. */
+	static int SetupVdecAsync(zst_dante_rx_t* rx) {
+		QRESULT qres;
+		uintptr_t event_handle;
+
+		rx->vdec_event = qcap2_event_new();
+		if (!rx->vdec_event) {
+			LOGE("qcap2_event_new() failed");
+			return -1;
+		}
+		qres = qcap2_event_start(rx->vdec_event);
+		if (qres != QCAP_RS_SUCCESSFUL) {
+			LOGE("qcap2_event_start() failed, qres=%d", (int)qres);
+			StopVdecAsync(rx);
+			return -1;
+		}
+
+		rx->vdec_event_handlers = qcap2_event_handlers_new();
+		if (!rx->vdec_event_handlers) {
+			LOGE("qcap2_event_handlers_new() failed");
+			StopVdecAsync(rx);
+			return -1;
+		}
+		qres = qcap2_event_handlers_start(rx->vdec_event_handlers);
+		if (qres != QCAP_RS_SUCCESSFUL) {
+			LOGE("qcap2_event_handlers_start() failed, qres=%d", (int)qres);
+			StopVdecAsync(rx);
+			return -1;
+		}
+		qres = qcap2_event_get_native_handle(rx->vdec_event, &event_handle);
+		if (qres != QCAP_RS_SUCCESSFUL) {
+			LOGE("qcap2_event_get_native_handle() failed, qres=%d", (int)qres);
+			StopVdecAsync(rx);
+			return -1;
+		}
+		qres = qcap2_event_handlers_add_handler(rx->vdec_event_handlers, event_handle,
+			on_vdec_event_callback, rx);
+		if (qres != QCAP_RS_SUCCESSFUL) {
+			LOGE("qcap2_event_handlers_add_handler(vdec) failed, qres=%d", (int)qres);
+			StopVdecAsync(rx);
+			return -1;
+		}
+
+		rx->vdec_packet_pool = qcap2_packet_pool_new();
+		if (!rx->vdec_packet_pool) {
+			LOGE("qcap2_packet_pool_new() failed");
+			StopVdecAsync(rx);
+			return -1;
+		}
+		qcap2_packet_pool_set_packet_count(rx->vdec_packet_pool, 16);
+		qres = qcap2_packet_pool_start(rx->vdec_packet_pool);
+		if (qres != QCAP_RS_SUCCESSFUL) {
+			LOGE("qcap2_packet_pool_start() failed, qres=%d", (int)qres);
+			StopVdecAsync(rx);
+			return -1;
+		}
+
+		rx->vdec_init_done = true;
+		return 0;
+	}
+
+	/* Decoder output is fully event-driven; no timer polling is used. */
+	static QRETURN on_vdec_event_callback(PVOID pUserData) {
+		zst_dante_rx_t* rx = (zst_dante_rx_t*)pUserData;
+		if (!rx) return QCAP_RT_OK;
+		std::lock_guard<std::mutex> decoder_guard(rx->decoder_lock);
+		if (!rx->vdec) return QCAP_RT_OK;
+
+		while (true) {
+			qcap2_rcbuffer_t* pFrame = nullptr;
+			QRESULT qres = qcap2_video_decoder_pop(rx->vdec, &pFrame);
+			if (qres != QCAP_RS_SUCCESSFUL) {
+				if (qres != QCAP_RS_ERROR_TIMEOUT)
+					rx->decoded_errors++;
+				break;
+			}
 			rx->decoded_frames++;
-			qcap2_rcbuffer_release(pOut);
+			qcap2_rcbuffer_release(pFrame);
+		}
+		return QCAP_RT_OK;
+	}
+
+	/* Called with decoder_lock held. Failed input submission is intentionally dropped. */
+	static void submit_vdec_packet(zst_dante_rx_t* rx, const uint8_t* data,
+		size_t data_size, bool is_keyframe, uint64_t pts) {
+		if (rx->decoder_wait_for_idr && !is_keyframe) {
+			rx->decoder_dropped_packets++;
+			return;
+		}
+		double fps = rx->dec_fps > 1.0 ? rx->dec_fps : 60.0;
+		auto frame_interval = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+			std::chrono::duration<double>(1.0 / fps));
+		if (rx->decoder_last_submit.time_since_epoch().count() != 0) {
+			auto due = rx->decoder_last_submit + frame_interval;
+			if (std::chrono::steady_clock::now() < due)
+				std::this_thread::sleep_until(due);
+		}
+
+		qcap2_rcbuffer_t* rcbuf = nullptr;
+		QRESULT qres = qcap2_packet_pool_get_buffer(rx->vdec_packet_pool,
+			(int)data_size, &rcbuf);
+		if (qres != QCAP_RS_SUCCESSFUL || !rcbuf) {
+			rx->decoder_dropped_packets++;
+			if (qres != QCAP_RS_ERROR_TIMEOUT)
+				LOGE("qcap2_packet_pool_get_buffer() failed, qres=%d", (int)qres);
+			return;
+		}
+
+		qcap2_av_packet_t* pkt = (qcap2_av_packet_t*)qcap2_rcbuffer_lock_data(rcbuf);
+		uint8_t* dst = nullptr;
+		int dst_size = 0;
+		if (pkt)
+			qcap2_av_packet_get_buffer(pkt, &dst, &dst_size);
+		if (!pkt || !dst || dst_size < (int)data_size) {
+			if (pkt) qcap2_rcbuffer_unlock_data(rcbuf);
+			qcap2_rcbuffer_release(rcbuf);
+			rx->decoder_dropped_packets++;
+			rx->decoded_errors++;
+			LOGE("packet pool returned an invalid %zu-byte input buffer", data_size);
+			return;
+		}
+
+		memcpy(dst, data, data_size);
+		qcap2_av_packet_set_buffer(pkt, dst, (int)data_size);
+		qcap2_av_packet_set_property(pkt, 0, is_keyframe ? TRUE : FALSE);
+		qcap2_av_packet_set_pts(pkt, (int64_t)(pts / 1000));
+		qcap2_av_packet_set_dts(pkt, (int64_t)(pts / 1000));
+		qcap2_rcbuffer_unlock_data(rcbuf);
+
+		qres = qcap2_video_decoder_push(rx->vdec, rcbuf);
+		qcap2_rcbuffer_release(rcbuf);
+		if (qres == QCAP_RS_SUCCESSFUL) {
+			rx->decoder_pushed_packets++;
+			rx->decoder_last_submit = std::chrono::steady_clock::now();
+			rx->decoder_wait_for_idr = false;
+		} else {
+			rx->decoder_dropped_packets++;
+			if (qres != QCAP_RS_ERROR_TIMEOUT)
+				LOGE("qcap2_video_decoder_push() failed, qres=%d", (int)qres);
 		}
 	}
 
@@ -600,10 +767,15 @@ namespace __sc6f0_dante_rx__ {
 		/* 3. Set extra data (SPS+PPS Annex B) */
 		qcap2_video_decoder_set_extra_data(rx->vdec, rx->extra_data, rx->extra_data_size);
 
-		/* 4. Configure decoder buffer counts */
+		/* 4. The Dante coordinator provides one complete Annex-B AU per buffer. */
+		qcap2_video_decoder_set_input_mode(rx->vdec, AL_DEC_SPLIT_INPUT);
+		qcap2_video_decoder_set_multithread(rx->vdec, false);
 		qcap2_video_decoder_set_frame_count(rx->vdec, 8);
 		qcap2_video_decoder_set_packet_count(rx->vdec, 16);
 		qcap2_video_decoder_set_max_packet_size(rx->vdec, 1024 * 1024);
+
+		/* 4.5 Bind decoder event for async output */
+		qcap2_video_decoder_set_event(rx->vdec, rx->vdec_event);
 
 		/* 5. Start decoder */
 		QRESULT qres = qcap2_video_decoder_start(rx->vdec);
@@ -626,6 +798,13 @@ namespace __sc6f0_dante_rx__ {
 		zst_dante_rx_t* rx = stats->rx;
 		if (!rx || !data || data_size < 4)
 			return;
+		rx->decoder_input_packets++;
+		if (flags & ZST_BUFFER_FLAG_DROP) {
+			std::lock_guard<std::mutex> decoder_guard(rx->decoder_lock);
+			rx->decoder_wait_for_idr = true;
+			rx->decoder_dropped_packets++;
+			return;
+		}
 		/* The scheduler has multiple workers. Keep decoder initialization and
 		 * input submission ordered even if upstream pushes overlap. */
 		std::lock_guard<std::mutex> decoder_guard(rx->decoder_lock);
@@ -657,39 +836,9 @@ namespace __sc6f0_dante_rx__ {
 		}
 		int is_keyframe = has_idr || (flags & ZST_BUFFER_FLAG_KEYFRAME);
 
-		/* Decoder already running → feed frame directly */
+		/* Decoder input is submitted directly; failed submissions are dropped. */
 		if (rx->vdec_started) {
-			qcap2_rcbuffer_t* rcbuf = qcap2_rcbuffer_new_av_packet();
-			if (!rcbuf) {
-				rx->decoded_errors++;
-				return;
-			}
-			qcap2_av_packet_t* pkt = (qcap2_av_packet_t*)qcap2_rcbuffer_lock_data(rcbuf);
-			if (pkt) {
-				int allocated = qcap2_av_packet_alloc_buffer(pkt, (int)data_size);
-				uint8_t* dst = nullptr;
-				int dst_size = 0;
-				if (allocated) qcap2_av_packet_get_buffer(pkt, &dst, &dst_size);
-				if (allocated && dst && dst_size >= (int)data_size) {
-					memcpy(dst, data, data_size);
-					qcap2_av_packet_set_buffer(pkt, dst, (int)data_size);
-					qcap2_av_packet_set_property(pkt, 0, is_keyframe ? TRUE : FALSE);
-					/* zstreamer timestamps are nanoseconds; qcap packet timestamps
-					 * use microseconds (see qcap2_av_packet_set_sample_time()). */
-					qcap2_av_packet_set_pts(pkt, (int64_t)(pts / 1000));
-					qcap2_av_packet_set_dts(pkt, (int64_t)(pts / 1000));
-				}
-				qcap2_rcbuffer_unlock_data(rcbuf);
-				QRESULT qres = allocated && dst && dst_size >= (int)data_size
-					? qcap2_video_decoder_push(rx->vdec, rcbuf) : QCAP_RS_ERROR_OUT_OF_MEMORY;
-				if (qres != QCAP_RS_SUCCESSFUL)
-					rx->decoded_errors++;
-				else
-					drain_video_decoder(rx);
-			} else {
-				rx->decoded_errors++;
-			}
-			qcap2_rcbuffer_release(rcbuf);
+			submit_vdec_packet(rx, data, data_size, is_keyframe != 0, pts);
 			return;
 		}
 
@@ -818,49 +967,22 @@ namespace __sc6f0_dante_rx__ {
 		LOGI("ALLEGRO2 decoder init: SPS=%d bytes, PPS=%d bytes, %ux%u @ %.1f fps",
 		     sps_len, pps_len, rx->dec_width, rx->dec_height, rx->dec_fps);
 
-		/* Initialize and start decoder */
+		/* Create event/packet-pool resources before binding and starting decoder. */
+		if (SetupVdecAsync(rx) != 0) {
+			free(rx->extra_data); rx->extra_data = nullptr; rx->extra_data_size = 0;
+			return;
+		}
 		if (init_vdec_decoder(rx) != 0) {
-			free(rx->extra_data);
-			rx->extra_data = nullptr;
-			rx->extra_data_size = 0;
+			StopVdecAsync(rx);
+			free(rx->extra_data); rx->extra_data = nullptr; rx->extra_data_size = 0;
 			return;
 		}
 
 		LOGI("ALLEGRO2 decoder: %ux%u @ %.1f fps, extra_data=%d bytes",
 		     rx->dec_width, rx->dec_height, rx->dec_fps, rx->extra_data_size);
 
-		/* Feed this keyframe to the now-running decoder */
-		{
-			qcap2_rcbuffer_t* rcbuf = qcap2_rcbuffer_new_av_packet();
-			if (!rcbuf) {
-				rx->decoded_errors++;
-				return;
-			}
-			qcap2_av_packet_t* pkt = (qcap2_av_packet_t*)qcap2_rcbuffer_lock_data(rcbuf);
-			if (pkt) {
-				int allocated = qcap2_av_packet_alloc_buffer(pkt, (int)data_size);
-				uint8_t* dst = nullptr;
-				int dst_size = 0;
-				if (allocated) qcap2_av_packet_get_buffer(pkt, &dst, &dst_size);
-				if (allocated && dst && dst_size >= (int)data_size) {
-					memcpy(dst, data, data_size);
-					qcap2_av_packet_set_buffer(pkt, dst, (int)data_size);
-					qcap2_av_packet_set_property(pkt, 0, is_keyframe ? TRUE : FALSE);
-					qcap2_av_packet_set_pts(pkt, (int64_t)(pts / 1000));
-					qcap2_av_packet_set_dts(pkt, (int64_t)(pts / 1000));
-				}
-				qcap2_rcbuffer_unlock_data(rcbuf);
-				QRESULT qres = allocated && dst && dst_size >= (int)data_size
-					? qcap2_video_decoder_push(rx->vdec, rcbuf) : QCAP_RS_ERROR_OUT_OF_MEMORY;
-				if (qres != QCAP_RS_SUCCESSFUL)
-					rx->decoded_errors++;
-				else
-					drain_video_decoder(rx);
-			} else {
-				rx->decoded_errors++;
-			}
-			qcap2_rcbuffer_release(rcbuf);
-		}
+		/* Submit the SPS/IDR AU that initialized this decoder. */
+		submit_vdec_packet(rx, data, data_size, is_keyframe != 0, pts);
 	}
 
 	static void* dante_rx_bus_worker(void* arg) {
@@ -948,6 +1070,16 @@ namespace __sc6f0_dante_rx__ {
 					udp_in = get_uint_prop(rx_udp_src, "rtp-packets");
 				double rtp_rate = dt_sec > 0 ? (double)(rtp_in - last_rtp_in) / dt_sec : 0.0;
 				last_rtp_in = rtp_in;
+
+				uint64_t dec_input = rx->decoder_input_packets.load();
+				uint64_t dec_pushed = rx->decoder_pushed_packets.load();
+				uint64_t dec_dropped = rx->decoder_dropped_packets.load();
+				double dec_drop_rate = dec_input > 0
+					? 100.0 * (double)dec_dropped / (double)dec_input : 0.0;
+				LOGI("[DANTE RX DECODER] input=%lu pushed=%lu dropped=%lu (%.2f%%) decoded=%lu",
+					(unsigned long)dec_input, (unsigned long)dec_pushed,
+					(unsigned long)dec_dropped, dec_drop_rate,
+					(unsigned long)rx->decoded_frames.load());
 
 				if (active_flows > 0 || cur_vpkts > 0) {
 					LOGI("[DANTE RX STATS] flows=%u | VIDEO: %lu pkts (%.2f MB, %.1f fps, %.2f Mbps, keyframes=%lu, IDR=%lu, non-idr=%lu, SPS/PPS=%lu, no-sc=%lu, other-nal=%lu) | RTP: %lu udp-in, %lu reord-in (%.0f/s), lost=%lu, old=%lu, dup=%lu, parse-fail=%lu, dep-in=%lu, dep-drop=%lu | AUDIO: %lu periods (%.2f MB, %lu samples, %.1f p/s, underflow=%u, overrun=%u)",
@@ -1141,6 +1273,13 @@ namespace __sc6f0_dante_rx__ {
 			pthread_join(rx->bus_th, nullptr);
 			rx->bus_th = 0;
 		}
+		/* Stop scheduler before decoder teardown: scheduler workers submit input AUs. */
+		if (rx->sched) {
+			zst_scheduler_stop(rx->sched);
+			pthread_join(rx->sched_th, nullptr);
+			zst_scheduler_destroy(rx->sched);
+			rx->sched = nullptr;
+		}
 
 		/* Snapshot statistics before elements are destroyed */
 		uint64_t vpkts = rx->video_stats ? rx->video_stats->total_packets.load() : 0;
@@ -1153,25 +1292,26 @@ namespace __sc6f0_dante_rx__ {
 		uint64_t abytes = rx->audio_stats ? rx->audio_stats->total_bytes.load() : 0;
 		uint64_t dec_frames = rx->decoded_frames.load();
 		uint64_t dec_errors = rx->decoded_errors.load();
+		uint64_t dec_input = rx->decoder_input_packets.load();
+		uint64_t dec_pushed = rx->decoder_pushed_packets.load();
+		uint64_t dec_dropped = rx->decoder_dropped_packets.load();
+		double dec_drop_rate = dec_input > 0
+			? 100.0 * (double)dec_dropped / (double)dec_input : 0.0;
 
-		/* Stop + release ALLEGRO2 hardware decoder (before session/pipeline teardown) */
+		/* Stop output callbacks before stopping/deleting the decoder. */
+		if (rx->vdec_event_handlers) {
+			qcap2_event_handlers_stop(rx->vdec_event_handlers);
+			qcap2_event_handlers_delete(rx->vdec_event_handlers);
+			rx->vdec_event_handlers = nullptr;
+		}
 		if (rx->vdec) {
 			if (rx->vdec_started)
 				qcap2_video_decoder_stop(rx->vdec);
-			if (rx->vdec_event_handlers) {
-				qcap2_event_handlers_stop(rx->vdec_event_handlers);
-				qcap2_event_handlers_delete(rx->vdec_event_handlers);
-				rx->vdec_event_handlers = nullptr;
-			}
-			if (rx->vdec_event) {
-				qcap2_event_stop(rx->vdec_event);
-				qcap2_event_delete(rx->vdec_event);
-				rx->vdec_event = nullptr;
-			}
 			qcap2_video_decoder_delete(rx->vdec);
 			rx->vdec = nullptr;
 			rx->vdec_started = false;
 		}
+		StopVdecAsync(rx);
 		if (rx->extra_data) {
 			free(rx->extra_data);
 			rx->extra_data = nullptr;
@@ -1182,12 +1322,6 @@ namespace __sc6f0_dante_rx__ {
 			zst_element_set_state(rx->session, ZST_STATE_NULL);
 			zst_element_destroy(rx->session);
 			rx->session = nullptr;
-		}
-		if (rx->sched) {
-			zst_scheduler_stop(rx->sched);
-			pthread_join(rx->sched_th, nullptr);
-			zst_scheduler_destroy(rx->sched);
-			rx->sched = nullptr;
 		}
 		if (rx->reconstructed_file) {
 			fclose(rx->reconstructed_file);
@@ -1219,6 +1353,10 @@ namespace __sc6f0_dante_rx__ {
 		printf("  Video Keyframes:     %llu\n", (unsigned long long)keyframes);
 		printf("  Video IDR Slices:    %llu\n", (unsigned long long)idr);
 		printf("  Video SPS/PPS NALs:  %llu\n", (unsigned long long)sps_pps);
+		printf("  Decoder Input AUs:   %llu\n", (unsigned long long)dec_input);
+		printf("  Decoder Pushed AUs:  %llu\n", (unsigned long long)dec_pushed);
+		printf("  Decoder Dropped AUs: %llu (%.2f%%)\n",
+		       (unsigned long long)dec_dropped, dec_drop_rate);
 		printf("  Decoded Frames:      %llu\n", (unsigned long long)dec_frames);
 		printf("  Decode Errors:       %llu\n", (unsigned long long)dec_errors);
 		printf("  Audio Periods:       %llu\n", (unsigned long long)apds);

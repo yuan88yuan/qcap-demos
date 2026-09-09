@@ -102,7 +102,7 @@ int main(int argc, char* argv[])
 		QCAP_RECORD_COMPLEXITY_0, QCAP_RECORD_MODE_CBR, 8000, 40000000,
 		60, 0, FALSE, (ULONG)slices, 0, 0, FALSE, FALSE, FALSE,
 		0, 0, 0, 0, 0, 0);
-	qcap2_video_encoder_property_set_low_delay(property, false);
+	qcap2_video_encoder_property_set_low_delay(property, true);
 	qcap2_video_encoder_property_set_time_scale_factor(property, 1);
 	qcap2_video_encoder_set_video_property(encoder, property);
 	qcap2_video_encoder_set_multithread(encoder, false);

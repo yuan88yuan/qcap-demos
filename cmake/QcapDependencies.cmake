@@ -147,17 +147,15 @@ if(TARGET qcap::zstreamer)
     "${ZSTREAMER_ROOT}/include"
     "${ZSTREAMER_ROOT}/include/zstreamer/elements"
   )
-  set(ZSTREAMER_LIB_DIR "${ZSTREAMER_ROOT}/build-arm64/src")
-  if(NOT EXISTS "${ZSTREAMER_LIB_DIR}/libzstreamer.a")
+  set(ZSTREAMER_LIB_DIR "${ZSTREAMER_ROOT}/build-xlnk2_arm64/src")
+  if(NOT EXISTS "${ZSTREAMER_LIB_DIR}/libzstreamer.so"
+     AND NOT EXISTS "${ZSTREAMER_LIB_DIR}/libzstreamer.a")
     set(ZSTREAMER_LIB_DIR "${PROJECT_SOURCE_DIR}/3rdparty/lib")
   endif()
   target_link_directories(qcap_demos_zstreamer INTERFACE "${ZSTREAMER_LIB_DIR}")
-  qcap_module_static_links(ZSTREAMER
+  qcap_module_links(ZSTREAMER
     -lzstreamer-elements -lzstreamer
-    "${QCAP_IMAGE_THIRDPARTY_DIR}/lib/libswresample.a"
-    "${QCAP_IMAGE_THIRDPARTY_DIR}/lib/libavutil.a"
-  )
-  qcap_module_links(ZSTREAMER -ljson-c -lpthread -lm -lrt -ldl)
+    -ljson-c -lpthread -lm -lrt -ldl)
 endif()
 
 qcap_module_static_links(BOOST

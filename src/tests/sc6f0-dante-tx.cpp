@@ -132,6 +132,7 @@ struct App0 {
 		std::atomic<uint64_t> tx_video_bytes{0};
 		std::atomic<uint64_t> tx_audio_frames{0};
 		std::atomic<uint64_t> tx_audio_bytes{0};
+		std::atomic<uint64_t> tx_audio_samples{0};
 	};
 
 	struct TestCase1 : public TestCase {
@@ -194,8 +195,6 @@ struct App0 {
 			spinlock_lock(current_video_format_spinlock);
 			bool locked = current_video_format.locked;
 			spinlock_unlock(current_video_format_spinlock);
-
-			LOGI("locked: %d", locked);
 
 			dau_reply_get_cable_status(dau, message, locked);
 
@@ -335,8 +334,6 @@ struct App0 {
 		void DoWork() {
 			QRESULT qres;
 
-			LOGD("%s::%s", typeid(self_t).name(), __FUNCTION__);
-
 			memset(&current_video_format, 0, sizeof(current_video_format));
 			memset(&current_audio_info, 0, sizeof(current_audio_info));
 			nSnapshot = 0;
@@ -374,7 +371,7 @@ struct App0 {
 
 					switch(ch) {
 					case 's': case 'S':
-						LOGD("++nSnapshot=%d", ++nSnapshot);
+						++nSnapshot;
 						break;
 
 					case 'd': case 'D':
@@ -455,7 +452,6 @@ struct App0 {
 				};
 
 				int fd_hdmirx = dau_service_get_fd(hdmirx);
-				LOGD("fd_hdmirx=%d", fd_hdmirx);
 
 				qres = AddEventHandler(_FreeStack_, fd_hdmirx, std::bind(&self_t::OnHdmiRxEvent, this, hdmirx));
 				if(qres != QCAP_RS_SUCCESSFUL) {
@@ -862,7 +858,7 @@ struct App0 {
 
 #if 1
 				if(nSnapshot > 0) {
-					LOGD("--nSnapshot=%d", --nSnapshot);
+					--nSnapshot;
 
 					qres = qcap2_save_raw_video_frame(pRCBuffer, "snapshot");
 					if(qres != QCAP_RS_SUCCESSFUL) {
@@ -915,7 +911,7 @@ struct App0 {
 					ULONG nGOP = dVideoFrameRate > 1.0 ? (ULONG)dVideoFrameRate : (ULONG)1;
 					ULONG nBFrames = 0;
 					BOOL bIsInterleaved = FALSE;
-					ULONG nSlices = 0;
+					ULONG nSlices = 4;
 					ULONG nLayers = 0;
 					ULONG nSceneCut = 0;
 					BOOL bMultiThread = FALSE;
@@ -1000,27 +996,6 @@ struct App0 {
 					qcap2_av_packet_get_sample_time(pAVPacket.get(), &dSampleTime);
 
 					if (pStreamBuffer && nStreamBufferLen > 0) {
-						/* ── Debug: first packets + a dedicated KEYFRAME trace ─ */
-						static uint64_t enc_pkts = 0;
-						static uint64_t enc_keyframes = 0;
-						uint64_t en = ++enc_pkts;
-						char hex[96];
-						size_t hn = nStreamBufferLen < 24 ? (size_t)nStreamBufferLen : 24;
-						size_t hx = 0;
-						for (size_t hi = 0; hi < hn; hi++)
-							hx += snprintf(hex + hx, sizeof(hex) - hx, " %02X",
-							               ((uint8_t*)pStreamBuffer)[hi]);
-						if (en <= 10 || bIsKeyFrame) {
-							LOGI("[VDBG] tx enc pkt #%llu size=%d keyframe=%d sample=%.3f bytes:%s",
-							     (unsigned long long)en, nStreamBufferLen, (int)bIsKeyFrame,
-							     dSampleTime, hex);
-						}
-						if (bIsKeyFrame) {
-							uint64_t kn = ++enc_keyframes;
-							LOGI("[VDBG] TX KEYFRAME #%llu (enc frame #%llu) size=%d sample=%.3f"
-							     " bytes:%s", (unsigned long long)kn, (unsigned long long)en,
-							     nStreamBufferLen, dSampleTime, hex);
-						}
 						zst_buffer_t* zbuf = zst_buffer_create(ZST_BUFFER_VIDEO_PACKET);
 						if (zbuf) {
 							void* copy_data = malloc((size_t)nStreamBufferLen);
@@ -1162,6 +1137,7 @@ struct App0 {
 								zst_pad_push(pDanteTx->app_audio_src_pad, zbuf);
 								pDanteTx->tx_audio_frames++;
 								pDanteTx->tx_audio_bytes += nFrameBufferLen;
+								pDanteTx->tx_audio_samples += af->nb_samples;
 							}
 							zst_buffer_unref(zbuf);
 						}
@@ -1401,6 +1377,11 @@ struct App0 {
 		static void* dante_tx_bus_worker(void* arg) {
 			zst_dante_tx_t* tx = (zst_dante_tx_t*)arg;
 			uint64_t last_stat_time = 0;
+			uint64_t last_video_frames = 0;
+			uint64_t last_video_bytes = 0;
+			uint64_t last_audio_frames = 0;
+			uint64_t last_audio_bytes = 0;
+			uint64_t last_audio_samples = 0;
 
 			while (tx->running) {
 				zst_event_t* ev = NULL;
@@ -1424,15 +1405,48 @@ struct App0 {
 				struct timespec ts;
 				clock_gettime(CLOCK_MONOTONIC, &ts);
 				uint64_t now_ms = (uint64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
-				if (now_ms - last_stat_time >= 3000) {
+				uint64_t video_frames = tx->tx_video_frames.load();
+				uint64_t video_bytes = tx->tx_video_bytes.load();
+				uint64_t audio_frames = tx->tx_audio_frames.load();
+				uint64_t audio_bytes = tx->tx_audio_bytes.load();
+				uint64_t audio_samples = tx->tx_audio_samples.load();
+				if (last_stat_time == 0) {
 					last_stat_time = now_ms;
+					last_video_frames = video_frames;
+					last_video_bytes = video_bytes;
+					last_audio_frames = audio_frames;
+					last_audio_bytes = audio_bytes;
+					last_audio_samples = audio_samples;
+					continue;
+				}
+				if (now_ms - last_stat_time >= 3000) {
+					double elapsed_sec = (double)(now_ms - last_stat_time) / 1000.0;
 					uint32_t active_flows = zst_dante_video_coordinator_get_flow_count(tx->coordinator);
-					LOGI("[DANTE TX STATS] flows=%u video_frames=%lu (%.1f MB) audio_frames=%lu (%.1f MB)",
+					double video_fps = elapsed_sec > 0.0
+						? (double)(video_frames - last_video_frames) / elapsed_sec : 0.0;
+					double video_mbps = elapsed_sec > 0.0
+						? (double)(video_bytes - last_video_bytes) * 8.0 / (elapsed_sec * 1000000.0) : 0.0;
+					double audio_frame_rate = elapsed_sec > 0.0
+						? (double)(audio_frames - last_audio_frames) / elapsed_sec : 0.0;
+					double audio_sample_rate = elapsed_sec > 0.0
+						? (double)(audio_samples - last_audio_samples) / elapsed_sec : 0.0;
+					double audio_mbps = elapsed_sec > 0.0
+						? (double)(audio_bytes - last_audio_bytes) * 8.0 / (elapsed_sec * 1000000.0) : 0.0;
+
+					LOGI("[DANTE TX STATS] flows=%u | VIDEO: %lu frames (%.1f MB, %.1f fps, %.2f Mbps) | AUDIO: %lu frames (%.1f MB, %.1f frames/s, %.0f samples/s, %.2f Mbps)",
 						active_flows,
-						(unsigned long)tx->tx_video_frames.load(),
-						(double)tx->tx_video_bytes.load() / (1024.0 * 1024.0),
-						(unsigned long)tx->tx_audio_frames.load(),
-						(double)tx->tx_audio_bytes.load() / (1024.0 * 1024.0));
+						(unsigned long)video_frames,
+						(double)video_bytes / (1024.0 * 1024.0), video_fps, video_mbps,
+						(unsigned long)audio_frames,
+						(double)audio_bytes / (1024.0 * 1024.0), audio_frame_rate,
+						audio_sample_rate, audio_mbps);
+
+					last_stat_time = now_ms;
+					last_video_frames = video_frames;
+					last_video_bytes = video_bytes;
+					last_audio_frames = audio_frames;
+					last_audio_bytes = audio_bytes;
+					last_audio_samples = audio_samples;
 				}
 			}
 			return NULL;

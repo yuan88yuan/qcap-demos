@@ -116,6 +116,8 @@ qcap_add_test(roce-dmabuf-test roce-dmabuf-test.cpp ZZLAB QCAP CUDA CUDA_DRIVER)
 qcap_add_test(test-demuxer test-demuxer.cpp ZZLAB QCAP ALLEGRO2)
 qcap_add_test(sc6f0-sdi sc6f0-sdi.cpp ZZLAB QCAP)
 qcap_add_test(test-vdec-bench test-vdec-bench.cpp ZZLAB QCAP)
+qcap_add_test(sc6f0-allegro2-encode-fixture sc6f0-allegro2-encode-fixture.cpp ZZLAB QCAP ALLEGRO2 DRM)
+qcap_add_test(sc6f0-allegro2-decode-fixture sc6f0-allegro2-decode-fixture.cpp ZZLAB QCAP ALLEGRO2 DRM)
 
 # Jetson Multimedia API classes are external sources/objects in the Make build.
 # Keep the executable represented, but only add the test to the aggregate when
