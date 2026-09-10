@@ -148,7 +148,7 @@ namespace __sc6f0_dante_rx__ {
 				int cnt = (chroma_format_idc != 3) ? 8 : 12;
 				for (int i = 0; i < cnt; i++) {
 					if (bs_read_bit(bs)) { /* seq_scaling_list_present_flag[i] */
-						/* skip scaling list — not needed for resolution */
+/* skip scaling list — not needed for resolution */
 						int last = 8, next = 8;
 						for (int j = 0; j < (i < 6 ? 16 : 64); j++) {
 							next = last + bs_read_se(bs) + 256;
@@ -325,12 +325,8 @@ namespace __sc6f0_dante_rx__ {
 		std::atomic<uint64_t> first_pts{0};
 	};
 
-	/* Called from rx_video_sink_push (defined after zst_dante_rx_t).
-	 * Feeds an H.264 frame to the ALLEGRO2 decoder, initializing it from
-	 * SPS/PPS on the first keyframe if not already started. */
-	static void rx_video_feed_decoder(rx_video_stats_t* stats,
-	                                  const uint8_t* data, size_t data_size,
-	                                  uint32_t flags, uint64_t pts);
+	/* Defined after the qcap2 decoder state. */
+	static void rx_video_bridge_push(rx_video_stats_t* stats, const zst_buffer_t* buf);
 
 	static zst_result_t rx_video_sink_push(zst_pad_t* pad, zst_buffer_t* buf) {
 		if (!pad || !pad->parent || !buf) return ZST_ERROR;
@@ -347,43 +343,6 @@ namespace __sc6f0_dante_rx__ {
 		size_t data_size = buf->memory.size;
 		if (!data || data_size < 4)
 			return ZST_OK;
-
-		/* ── Debug: dump first 25 buffers (hex + NAL list) ─────────────── */
-		static std::atomic<uint64_t> vdbg_seen{0};
-		uint64_t vdbg_n = vdbg_seen.fetch_add(1);
-		if (vdbg_n < 25) {
-			char hex[96];
-			size_t hexn = data_size < 24 ? data_size : 24;
-			size_t hx = 0;
-			for (size_t i = 0; i < hexn; i++)
-				hx += snprintf(hex + hx, sizeof(hex) - hx, " %02X", data[i]);
-			char nals[128];
-			size_t np = 0;
-			size_t i = 0;
-			int cnt = 0;
-			int slice_count = 0;
-			while (i + 3 < data_size) {
-				if (data[i] == 0 && data[i + 1] == 0 &&
-				    (data[i + 2] == 1 ||
-				     (i + 4 <= data_size && data[i + 2] == 0 && data[i + 3] == 1))) {
-					size_t off = (data[i + 2] == 1) ? i + 3 : i + 4;
-					if (off < data_size) {
-						uint8_t nal_type = data[off] & 0x1F;
-						if (nal_type == 1 || nal_type == 5)
-							slice_count++;
-						if (cnt < 10)
-							np += snprintf(nals + np, sizeof(nals) - np, " %u", nal_type);
-						cnt++;
-					}
-					i = off;
-				} else {
-					i++;
-				}
-			}
-			LOGI("[VDBG] rx buf #%llu size=%zu pts=%llu bytes:%s nals:%s slices=%d",
-			     (unsigned long long)vdbg_n, data_size,
-			     (unsigned long long)buf->pts, hex, nals, slice_count);
-		}
 
 		/* ── NAL classification (scan the full AU; an AUD often comes first) */
 		{
@@ -424,8 +383,8 @@ namespace __sc6f0_dante_rx__ {
 			}
 		}
 
-		/* ── Feed to ALLEGRO2 hardware decoder ──────────────────────── */
-		rx_video_feed_decoder(stats, data, data_size, buf->flags, buf->pts);
+		/* qcap2 owns H.264 bootstrap, recovery, and decode submission. */
+		rx_video_bridge_push(stats, buf);
 
 		return ZST_OK;
 	}
@@ -469,6 +428,9 @@ namespace __sc6f0_dante_rx__ {
 		std::atomic<uint64_t> total_periods{0};
 		std::atomic<uint64_t> total_samples{0};
 		std::atomic<uint64_t> total_bytes{0};
+		std::atomic<uint32_t> sample_rate{0};
+		std::atomic<uint32_t> channels{0};
+		std::atomic<uint32_t> format{0};
 		std::atomic<uint64_t> last_pts{0};
 		std::atomic<uint64_t> first_pts{0};
 	};
@@ -488,6 +450,9 @@ namespace __sc6f0_dante_rx__ {
 		if (buf->payload) {
 			const zst_audio_frame_t* af = (const zst_audio_frame_t*)buf->payload;
 			stats->total_samples += af->nb_samples;
+			stats->sample_rate = af->sample_rate;
+			stats->channels = af->channels;
+			stats->format = af->format;
 		} else {
 			/* Standard DEP default: 2ch 32-bit (8 bytes/frame) */
 			stats->total_samples += buf->memory.size / 8;
@@ -553,19 +518,18 @@ namespace __sc6f0_dante_rx__ {
 		qcap2_packet_pool_t*         vdec_packet_pool = nullptr;
 		bool                         vdec_started = false;
 		bool                         vdec_init_done = false;
+		bool                         vdec_extra_set = false;
 		uint8_t*                     extra_data = nullptr;
 		int                          extra_data_size = 0;
-		uint32_t                     dec_width = 0;
-		uint32_t                     dec_height = 0;
-		double                       dec_fps = 0.0;
 		std::atomic<uint64_t>        decoded_frames{0};
 		std::atomic<uint64_t>        decoded_errors{0};
 		std::atomic<uint64_t>        decoder_input_packets{0};
 		std::atomic<uint64_t>        decoder_pushed_packets{0};
 		std::atomic<uint64_t>        decoder_dropped_packets{0};
+		std::atomic<uint64_t>        transport_dropped_packets{0};
+		std::atomic<uint64_t>        packet_pool_dropped_packets{0};
+		std::atomic<uint64_t>        decoder_push_failed_packets{0};
 		std::mutex                   decoder_lock;
-		std::chrono::steady_clock::time_point decoder_last_submit;
-		bool                         decoder_wait_for_idr = false;
 		std::string                  reconstructed_path;
 		FILE*                        reconstructed_file = nullptr;
 
@@ -574,6 +538,13 @@ namespace __sc6f0_dante_rx__ {
 		std::string channels{"0,1"};
 		uint32_t sample_rate{48000};
 		uint32_t stat_interval_sec{3};
+
+		/* Direct RTP verification mode (bypasses the Dante daemon/session). */
+		bool direct_mode = false;
+		bool decode_enabled = true;
+		std::string direct_transmitter;
+		std::string direct_local{"0.0.0.0"};
+		uint16_t direct_port = 16490;
 
 		pthread_t bus_th = 0;
 		pthread_t sched_th = 0;
@@ -669,7 +640,6 @@ namespace __sc6f0_dante_rx__ {
 	static QRETURN on_vdec_event_callback(PVOID pUserData) {
 		zst_dante_rx_t* rx = (zst_dante_rx_t*)pUserData;
 		if (!rx) return QCAP_RT_OK;
-		std::lock_guard<std::mutex> decoder_guard(rx->decoder_lock);
 		if (!rx->vdec) return QCAP_RT_OK;
 
 		while (true) {
@@ -686,27 +656,15 @@ namespace __sc6f0_dante_rx__ {
 		return QCAP_RT_OK;
 	}
 
-	/* Called with decoder_lock held. Failed input submission is intentionally dropped. */
+	/* Allegro2 push/pop support concurrent access; no decoder_lock serialization. */
 	static void submit_vdec_packet(zst_dante_rx_t* rx, const uint8_t* data,
 		size_t data_size, bool is_keyframe, uint64_t pts) {
-		if (rx->decoder_wait_for_idr && !is_keyframe) {
-			rx->decoder_dropped_packets++;
-			return;
-		}
-		double fps = rx->dec_fps > 1.0 ? rx->dec_fps : 60.0;
-		auto frame_interval = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-			std::chrono::duration<double>(1.0 / fps));
-		if (rx->decoder_last_submit.time_since_epoch().count() != 0) {
-			auto due = rx->decoder_last_submit + frame_interval;
-			if (std::chrono::steady_clock::now() < due)
-				std::this_thread::sleep_until(due);
-		}
-
 		qcap2_rcbuffer_t* rcbuf = nullptr;
 		QRESULT qres = qcap2_packet_pool_get_buffer(rx->vdec_packet_pool,
 			(int)data_size, &rcbuf);
 		if (qres != QCAP_RS_SUCCESSFUL || !rcbuf) {
 			rx->decoder_dropped_packets++;
+			rx->packet_pool_dropped_packets++;
 			if (qres != QCAP_RS_ERROR_TIMEOUT)
 				LOGE("qcap2_packet_pool_get_buffer() failed, qres=%d", (int)qres);
 			return;
@@ -737,13 +695,72 @@ namespace __sc6f0_dante_rx__ {
 		qcap2_rcbuffer_release(rcbuf);
 		if (qres == QCAP_RS_SUCCESSFUL) {
 			rx->decoder_pushed_packets++;
-			rx->decoder_last_submit = std::chrono::steady_clock::now();
-			rx->decoder_wait_for_idr = false;
 		} else {
 			rx->decoder_dropped_packets++;
+			rx->decoder_push_failed_packets++;
 			if (qres != QCAP_RS_ERROR_TIMEOUT)
 				LOGE("qcap2_video_decoder_push() failed, qres=%d", (int)qres);
 		}
+	}
+
+	/* Build an avcC (AVCDecoderConfigurationRecord) from the first AU that
+	 * carries SPS+PPS, mirroring the decode fixture's make_avcc(). */
+	static void set_vdec_extra_data_once(zst_dante_rx_t* rx,
+		const uint8_t* data, size_t data_size) {
+		if (rx->vdec_extra_set || !rx->vdec || !data || data_size < 4)
+			return;
+
+		const uint8_t* sps = nullptr; size_t sps_len = 0;
+		const uint8_t* pps = nullptr; size_t pps_len = 0;
+		size_t base = 0;
+		while (base + 3 < data_size) {
+			size_t sc = 0;
+			if (data[base] == 0 && data[base + 1] == 0) {
+				if (data[base + 2] == 1) sc = 3;
+				else if (base + 4 <= data_size && data[base + 2] == 0 && data[base + 3] == 1) sc = 4;
+			}
+			if (!sc) { ++base; continue; }
+			size_t nal = base + sc;
+			if (nal >= data_size) break;
+			uint8_t type = data[nal] & 0x1f;
+			size_t end = nal + 1;
+			while (end + 3 < data_size) {
+				if (data[end] == 0 && data[end + 1] == 0 &&
+				    (data[end + 2] == 1 ||
+				     (end + 4 <= data_size && data[end + 2] == 0 && data[end + 3] == 1)))
+					break;
+				++end;
+			}
+			size_t nal_len = end - nal;
+			if (type == 7 && !sps) { sps = data + nal; sps_len = nal_len; }
+			else if (type == 8 && !pps) { pps = data + nal; pps_len = nal_len; }
+			if (sps && pps) break;
+			base = end;
+		}
+		if (!sps || !pps || sps_len > UINT16_MAX || pps_len > UINT16_MAX) return;
+
+		std::vector<uint8_t> avcc;
+		avcc.resize(11 + sps_len + pps_len);
+		uint8_t* out = avcc.data();
+		out[0] = 1;
+		out[1] = sps[1];
+		out[2] = sps[2];
+		out[3] = sps[3];
+		out[4] = 0xff;
+		out[5] = 0xe1;
+		out[6] = (uint8_t)(sps_len >> 8);
+		out[7] = (uint8_t)sps_len;
+		memcpy(out + 8, sps, sps_len);
+		size_t off = 8 + sps_len;
+		out[off] = 1;
+		out[off + 1] = (uint8_t)(pps_len >> 8);
+		out[off + 2] = (uint8_t)pps_len;
+		memcpy(out + off + 3, pps, pps_len);
+
+		qcap2_video_decoder_set_extra_data(rx->vdec, avcc.data(), (int)avcc.size());
+		rx->vdec_extra_set = true;
+		LOGI("ALLEGRO2 decoder extra_data set: avcC=%zu bytes (SPS=%zu, PPS=%zu)",
+		     avcc.size(), sps_len, pps_len);
 	}
 
 	static int init_vdec_decoder(zst_dante_rx_t* rx) {
@@ -754,20 +771,17 @@ namespace __sc6f0_dante_rx__ {
 			return -1;
 		}
 
-		/* 2. Configure property: ALLEGRO2, H264, NV12, parsed W×H×fps */
+		/* qcap2 bootstraps dimensions and codec config from the first H.264 IDR. */
 		std::shared_ptr<qcap2_video_encoder_property_t> prop(
 			qcap2_video_encoder_property_new(), qcap2_video_encoder_property_delete);
 		qcap2_video_encoder_property_set_property(prop.get(),
 			QCAP_ENCODER_TYPE_ALLEGRO2, QCAP_ENCODER_FORMAT_H264,
 			QCAP_COLORSPACE_TYPE_NV12,
-			rx->dec_width, rx->dec_height, rx->dec_fps,
+			3840, 2160, 60.0,
 			0, 0, 0, 0, 0, 0);
 		qcap2_video_decoder_set_video_property(rx->vdec, prop.get());
 
-		/* 3. Set extra data (SPS+PPS Annex B) */
-		qcap2_video_decoder_set_extra_data(rx->vdec, rx->extra_data, rx->extra_data_size);
-
-		/* 4. The Dante coordinator provides one complete Annex-B AU per buffer. */
+		/* The Dante coordinator provides one complete Annex-B AU per buffer. */
 		qcap2_video_decoder_set_input_mode(rx->vdec, AL_DEC_SPLIT_INPUT);
 		qcap2_video_decoder_set_multithread(rx->vdec, false);
 		qcap2_video_decoder_set_frame_count(rx->vdec, 8);
@@ -787,11 +801,35 @@ namespace __sc6f0_dante_rx__ {
 		}
 
 		rx->vdec_started = true;
-		LOGI("qcap2 ALLEGRO2 decoder started: %ux%u @ %.1f fps",
-		     rx->dec_width, rx->dec_height, rx->dec_fps);
+		LOGI("qcap2 ALLEGRO2 decoder configured; waiting for H.264 SPS/PPS/IDR");
 		return 0;
 	}
 
+	static void rx_video_bridge_push(rx_video_stats_t* stats, const zst_buffer_t* buf) {
+		zst_dante_rx_t* rx = stats->rx;
+		const uint8_t* data = (const uint8_t*)buf->memory.data;
+		if (!rx || !rx->vdec || !data || buf->memory.size < 4)
+			return;
+		rx->decoder_input_packets++;
+		if (rx->reconstructed_file) {
+			if (fwrite(data, 1, buf->memory.size, rx->reconstructed_file) != buf->memory.size ||
+			    fflush(rx->reconstructed_file) != 0) {
+				LOGE("Failed to write reconstructed H.264 AU to %s",
+				     rx->reconstructed_path.c_str());
+				fclose(rx->reconstructed_file);
+				rx->reconstructed_file = nullptr;
+			}
+		}
+		if (buf->flags & ZST_BUFFER_FLAG_DROP) {
+			rx->transport_dropped_packets++;
+			qcap2_video_decoder_notify_discontinuity(rx->vdec);
+		}
+		set_vdec_extra_data_once(rx, data, buf->memory.size);
+		submit_vdec_packet(rx, data, buf->memory.size,
+			(buf->flags & ZST_BUFFER_FLAG_KEYFRAME) != 0, buf->pts);
+	}
+
+	#if 0 // Superseded by qcap2 automatic H.264 bootstrap.
 	static void rx_video_feed_decoder(rx_video_stats_t* stats,
 	                                   const uint8_t* data, size_t data_size,
 	                                   uint32_t flags, uint64_t pts) {
@@ -801,8 +839,9 @@ namespace __sc6f0_dante_rx__ {
 		rx->decoder_input_packets++;
 		if (flags & ZST_BUFFER_FLAG_DROP) {
 			std::lock_guard<std::mutex> decoder_guard(rx->decoder_lock);
-			rx->decoder_wait_for_idr = true;
 			rx->decoder_dropped_packets++;
+			if (rx->vdec_started)
+				qcap2_video_decoder_notify_discontinuity(rx->vdec);
 			return;
 		}
 		/* The scheduler has multiple workers. Keep decoder initialization and
@@ -985,13 +1024,17 @@ namespace __sc6f0_dante_rx__ {
 		submit_vdec_packet(rx, data, data_size, is_keyframe != 0, pts);
 	}
 
+	#endif
+
 	static void* dante_rx_bus_worker(void* arg) {
 		zst_dante_rx_t* rx = (zst_dante_rx_t*)arg;
 		uint64_t last_stat_time = 0;
 		uint64_t last_vpkts = 0;
 		uint64_t last_vbytes = 0;
 		uint64_t last_apds = 0;
+		uint64_t last_abytes = 0;
 		uint64_t last_rtp_in = 0;
+		uint64_t last_decoded = 0;
 
 		while (rx->running) {
 			zst_event_t* ev = nullptr;
@@ -1050,12 +1093,18 @@ namespace __sc6f0_dante_rx__ {
 				uint64_t cur_apds = rx->audio_stats ? rx->audio_stats->total_periods.load() : 0;
 				uint64_t cur_abytes = rx->audio_stats ? rx->audio_stats->total_bytes.load() : 0;
 				uint64_t cur_asamples = rx->audio_stats ? rx->audio_stats->total_samples.load() : 0;
+				uint32_t audio_rate = rx->audio_stats ? rx->audio_stats->sample_rate.load() : 0;
+				uint32_t audio_channels = rx->audio_stats ? rx->audio_stats->channels.load() : 0;
+				uint32_t audio_format = rx->audio_stats ? rx->audio_stats->format.load() : 0;
 				uint64_t delta_apds = cur_apds - last_apds;
+				uint64_t delta_abytes = cur_abytes - last_abytes;
 				last_apds = cur_apds;
+				last_abytes = cur_abytes;
 				double a_rate = dt_sec > 0 ? (double)delta_apds / dt_sec : 0.0;
+				double a_mbps = dt_sec > 0 ? ((double)delta_abytes * 8.0) / (dt_sec * 1000000.0) : 0.0;
 
-				uint32_t underflows = get_uint_prop(rx->rx_dep_src, "underflow-count");
-				uint32_t overruns = get_uint_prop(rx->rx_dep_src, "overrun-count");
+				uint32_t underflows = rx->rx_dep_src ? get_uint_prop(rx->rx_dep_src, "underflow-count") : 0;
+				uint32_t overruns = rx->rx_dep_src ? get_uint_prop(rx->rx_dep_src, "overrun-count") : 0;
 				uint32_t active_flows = zst_dante_video_coordinator_get_flow_count(rx->coordinator);
 
 				uint64_t rtp_in = get_uint_prop(rx->coordinator, "rx-in-packets");
@@ -1066,33 +1115,42 @@ namespace __sc6f0_dante_rx__ {
 				uint64_t dep_in = get_uint_prop(rx->coordinator, "rx-dep-in-packets");
 				uint64_t dep_dropped = get_uint_prop(rx->coordinator, "rx-dep-dropped");
 				uint64_t udp_in = 0;
-				if (zst_element_t* rx_udp_src = zst_dante_video_coordinator_get_rx_udp_source(rx->coordinator, 0))
+				uint64_t udp_qoverflow = 0;
+				uint64_t udp_qdepth = 0;
+				if (zst_element_t* rx_udp_src = zst_dante_video_coordinator_get_rx_udp_source(rx->coordinator, 0)) {
 					udp_in = get_uint_prop(rx_udp_src, "rtp-packets");
+					udp_qoverflow = get_uint_prop(rx_udp_src, "queue-overflow");
+					udp_qdepth = get_uint_prop(rx_udp_src, "queue-depth");
+				}
 				double rtp_rate = dt_sec > 0 ? (double)(rtp_in - last_rtp_in) / dt_sec : 0.0;
 				last_rtp_in = rtp_in;
 
 				uint64_t dec_input = rx->decoder_input_packets.load();
 				uint64_t dec_pushed = rx->decoder_pushed_packets.load();
 				uint64_t dec_dropped = rx->decoder_dropped_packets.load();
+				uint64_t transport_dropped = rx->transport_dropped_packets.load();
+				uint64_t pool_dropped = rx->packet_pool_dropped_packets.load();
+				uint64_t push_failed = rx->decoder_push_failed_packets.load();
+				uint64_t recovery_skipped = rx->vdec
+					? qcap2_video_decoder_get_recovery_skipped_packets(rx->vdec) : 0;
+				uint64_t decoded = rx->decoded_frames.load();
+				double decoded_fps = dt_sec > 0 ? (decoded - last_decoded) / dt_sec : 0.0;
+				last_decoded = decoded;
 				double dec_drop_rate = dec_input > 0
 					? 100.0 * (double)dec_dropped / (double)dec_input : 0.0;
-				LOGI("[DANTE RX DECODER] input=%lu pushed=%lu dropped=%lu (%.2f%%) decoded=%lu",
+				LOGI("[DANTE RX DECODER] input=%lu pushed=%lu dropped=%lu (%.2f%%: transport=%lu, pool=%lu, push=%lu, recovery=%lu) decoded=%lu (%.1f fps)",
 					(unsigned long)dec_input, (unsigned long)dec_pushed,
-					(unsigned long)dec_dropped, dec_drop_rate,
-					(unsigned long)rx->decoded_frames.load());
+					(unsigned long)dec_dropped, dec_drop_rate, (unsigned long)transport_dropped,
+					(unsigned long)pool_dropped, (unsigned long)push_failed,
+					(unsigned long)recovery_skipped,
+					(unsigned long)decoded, decoded_fps);
 
 				if (active_flows > 0 || cur_vpkts > 0) {
-					LOGI("[DANTE RX STATS] flows=%u | VIDEO: %lu pkts (%.2f MB, %.1f fps, %.2f Mbps, keyframes=%lu, IDR=%lu, non-idr=%lu, SPS/PPS=%lu, no-sc=%lu, other-nal=%lu) | RTP: %lu udp-in, %lu reord-in (%.0f/s), lost=%lu, old=%lu, dup=%lu, parse-fail=%lu, dep-in=%lu, dep-drop=%lu | AUDIO: %lu periods (%.2f MB, %lu samples, %.1f p/s, underflow=%u, overrun=%u)",
+					LOGI("[DANTE RX STATS] flows=%u | VIDEO: %lu AUs (%.2f MB, %.1f fps, %.2f Mbps) | RTP: %lu udp-in, %lu reord-in (%.0f/s), lost=%lu, old=%lu, dup=%lu, parse-fail=%lu, dep-in=%lu, dep-drop=%lu, qof=%lu, qd=%lu | AUDIO: %u Hz, %u ch, fmt=%u, %lu periods (%.2f MB, %.2f Mbps, %lu samples, %.1f p/s, underflow=%u, overrun=%u)",
 						active_flows,
 						(unsigned long)cur_vpkts,
 						(double)cur_vbytes / (1024.0 * 1024.0),
 						fps, mbps,
-						(unsigned long)cur_keyframes,
-						(unsigned long)cur_idr,
-						(unsigned long)cur_nonidr,
-						(unsigned long)cur_sps_pps,
-						(unsigned long)cur_nosc,
-						(unsigned long)cur_nalother,
 						(unsigned long)udp_in,
 						(unsigned long)rtp_in, rtp_rate,
 						(unsigned long)rtp_lost,
@@ -1101,8 +1159,12 @@ namespace __sc6f0_dante_rx__ {
 						(unsigned long)parse_fail,
 						(unsigned long)dep_in,
 						(unsigned long)dep_dropped,
+						(unsigned long)udp_qoverflow,
+						(unsigned long)udp_qdepth,
+						audio_rate, audio_channels, audio_format,
 						(unsigned long)cur_apds,
 						(double)cur_abytes / (1024.0 * 1024.0),
+						a_mbps,
 						(unsigned long)cur_asamples,
 						a_rate,
 						underflows, overruns);
@@ -1123,7 +1185,12 @@ namespace __sc6f0_dante_rx__ {
 	                                     const std::string& channels,
 	                                     uint32_t sample_rate,
 	                                     uint32_t stat_interval,
-	                                     const std::string& reconstructed_path)
+	                                     const std::string& reconstructed_path,
+	                                     bool decode_enabled = true,
+	                                     bool direct_mode = false,
+	                                     const std::string& direct_peer = "",
+	                                     const std::string& direct_local = "0.0.0.0",
+	                                     uint16_t direct_port = 16490)
 	{
 		zst_dante_rx_t* rx = new zst_dante_rx_t();
 		rx->dvr_socket = dvr_socket;
@@ -1132,6 +1199,11 @@ namespace __sc6f0_dante_rx__ {
 		rx->sample_rate = sample_rate;
 		rx->stat_interval_sec = stat_interval > 0 ? stat_interval : 3;
 		rx->reconstructed_path = reconstructed_path;
+		rx->decode_enabled = decode_enabled;
+		rx->direct_mode = direct_mode;
+		rx->direct_transmitter = direct_peer;
+		rx->direct_local = direct_local.empty() ? "0.0.0.0" : direct_local;
+		rx->direct_port = direct_port;
 
 		struct timespec ts;
 		clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -1150,27 +1222,33 @@ namespace __sc6f0_dante_rx__ {
 			return nullptr;
 		}
 
-		/* 1. Dante DVR Session */
-		rx->session = zst_dante_session_create(rx->dvr_socket.c_str());
-		if (!rx->session) {
-			LOGE("zst_dante_session_create(%s) failed", rx->dvr_socket.c_str());
-			zst_pipeline_destroy(rx->pipe);
-			delete rx;
-			return nullptr;
+		/* 1. Dante DVR Session (skipped in direct RTP mode) */
+		if (!direct_mode) {
+			rx->session = zst_dante_session_create(rx->dvr_socket.c_str());
+			if (!rx->session) {
+				LOGE("zst_dante_session_create(%s) failed", rx->dvr_socket.c_str());
+				zst_pipeline_destroy(rx->pipe);
+				delete rx;
+				return nullptr;
+			}
+			set_uint(rx->session, "tx-video-channels", 0);
+			set_uint(rx->session, "rx-video-channels", 1);
 		}
-		set_uint(rx->session, "tx-video-channels", 0);
-		set_uint(rx->session, "rx-video-channels", 1);
 
 		/* 2. Dante Video Coordinator */
 		rx->coordinator = zst_dante_video_coordinator_create();
 		if (!rx->coordinator) {
 			LOGE("zst_dante_video_coordinator_create() failed");
-			zst_element_destroy(rx->session);
+			if (rx->session) zst_element_destroy(rx->session);
 			zst_pipeline_destroy(rx->pipe);
 			delete rx;
 			return nullptr;
 		}
-		zst_dante_video_coordinator_attach_session(rx->coordinator, rx->session);
+		if (rx->session)
+			zst_dante_video_coordinator_attach_session(rx->coordinator, rx->session);
+		/* The default 64-packet/20-ms window is too short for bursty QDMA delivery. */
+		set_uint(rx->coordinator, ZST_DANTE_VIDEO_COORDINATOR_PROP_REORDER_WINDOW, 512);
+		set_uint(rx->coordinator, ZST_DANTE_VIDEO_COORDINATOR_PROP_REORDER_TIMEOUT_MS, 100);
 		rx->rx_video_pad = zst_dante_video_coordinator_request_rx_output_pad(rx->coordinator, 0);
 		if (!rx->rx_video_pad) {
 			LOGE("zst_dante_video_coordinator_request_rx_output_pad() failed");
@@ -1194,41 +1272,59 @@ namespace __sc6f0_dante_rx__ {
 		rx->video_stats->rx = rx;
 		zst_pad_link(rx->rx_video_pad, zst_element_get_pad(rx->rx_video_sink, "sink"));
 
-		/* 4. Dante DEP Audio Source */
-		rx->rx_dep_src = zst_dante_dep_audio_source_create();
-		if (!rx->rx_dep_src) {
-			LOGE("zst_dante_dep_audio_source_create() failed");
-			zst_element_destroy(rx->rx_video_sink);
-			zst_element_destroy(rx->coordinator);
-			zst_element_destroy(rx->session);
-			zst_pipeline_destroy(rx->pipe);
-			delete rx;
-			return nullptr;
-		}
-		set_str(rx->rx_dep_src, "shm-name", rx->dep_name.c_str());
-		set_str(rx->rx_dep_src, "channels", rx->channels.c_str());
-		set_uint(rx->rx_dep_src, "expected-sample-rate", rx->sample_rate);
+		/* 4. Dante DEP Audio Source (skipped in direct RTP mode) */
+		if (!direct_mode) {
+			rx->rx_dep_src = zst_dante_dep_audio_source_create();
+			if (!rx->rx_dep_src) {
+				LOGE("zst_dante_dep_audio_source_create() failed");
+				zst_element_destroy(rx->rx_video_sink);
+				zst_element_destroy(rx->coordinator);
+				if (rx->session) zst_element_destroy(rx->session);
+				zst_pipeline_destroy(rx->pipe);
+				delete rx;
+				return nullptr;
+			}
+			set_str(rx->rx_dep_src, "shm-name", rx->dep_name.c_str());
+			set_str(rx->rx_dep_src, "channels", rx->channels.c_str());
+			set_uint(rx->rx_dep_src, "expected-sample-rate", rx->sample_rate);
 
-		/* 5. RX Audio Sink */
-		rx->rx_audio_sink = create_rx_audio_sink(&rx->audio_stats);
-		if (!rx->rx_audio_sink) {
-			LOGE("create_rx_audio_sink() failed");
-			zst_element_destroy(rx->rx_dep_src);
+			/* 5. RX Audio Sink */
+			rx->rx_audio_sink = create_rx_audio_sink(&rx->audio_stats);
+			if (!rx->rx_audio_sink) {
+				LOGE("create_rx_audio_sink() failed");
+				zst_element_destroy(rx->rx_dep_src);
+				zst_element_destroy(rx->rx_video_sink);
+				zst_element_destroy(rx->coordinator);
+				if (rx->session) zst_element_destroy(rx->session);
+				zst_pipeline_destroy(rx->pipe);
+				delete rx;
+				return nullptr;
+			}
+			zst_pad_link(zst_element_get_pad(rx->rx_dep_src, "src"),
+			             zst_element_get_pad(rx->rx_audio_sink, "sink"));
+		}
+
+		if (decode_enabled &&
+		    (SetupVdecAsync(rx) != 0 || init_vdec_decoder(rx) != 0)) {
+			LOGE("qcap2 video decoder setup failed");
+			StopVdecAsync(rx);
+			if (rx->rx_audio_sink) zst_element_destroy(rx->rx_audio_sink);
+			if (rx->rx_dep_src) zst_element_destroy(rx->rx_dep_src);
 			zst_element_destroy(rx->rx_video_sink);
 			zst_element_destroy(rx->coordinator);
-			zst_element_destroy(rx->session);
+			if (rx->session) zst_element_destroy(rx->session);
 			zst_pipeline_destroy(rx->pipe);
 			delete rx;
 			return nullptr;
 		}
-		zst_pad_link(zst_element_get_pad(rx->rx_dep_src, "src"),
-		             zst_element_get_pad(rx->rx_audio_sink, "sink"));
 
 		/* Add elements to pipeline */
 		zst_pipeline_add(rx->pipe, rx->coordinator);
 		zst_pipeline_add(rx->pipe, rx->rx_video_sink);
-		zst_pipeline_add(rx->pipe, rx->rx_dep_src);
-		zst_pipeline_add(rx->pipe, rx->rx_audio_sink);
+		if (!direct_mode) {
+			zst_pipeline_add(rx->pipe, rx->rx_dep_src);
+			zst_pipeline_add(rx->pipe, rx->rx_audio_sink);
+		}
 
 		/* Clocks and pipeline state */
 		if (!rx->reconstructed_path.empty()) {
@@ -1244,9 +1340,11 @@ namespace __sc6f0_dante_rx__ {
 		rx->clock = zst_clock_system_create();
 		zst_pipeline_set_clock(rx->pipe, rx->clock);
 		zst_pipeline_set_state(rx->pipe, ZST_STATE_PLAYING);
-		rx->session->bus = rx->pipe->bus;
-		if (zst_element_set_state(rx->session, ZST_STATE_PLAYING) != ZST_OK) {
-			LOGW("Dante session start failed (check if /var/run/dante/dvr is active)");
+		if (rx->session) {
+			rx->session->bus = rx->pipe->bus;
+			if (zst_element_set_state(rx->session, ZST_STATE_PLAYING) != ZST_OK) {
+				LOGW("Dante session start failed (check if /var/run/dante/dvr is active)");
+			}
 		}
 
 		/* Multi-threaded scheduler */
@@ -1257,6 +1355,28 @@ namespace __sc6f0_dante_rx__ {
 		rx->sched = zst_scheduler_create(&cfg);
 		zst_scheduler_attach(rx->sched, rx->pipe);
 		pthread_create(&rx->sched_th, nullptr, (void* (*)(void*))zst_scheduler_run, rx->sched);
+
+		/* Direct mode: synthesize a unicast H.264 RX flow (no Dante daemon). */
+		if (direct_mode) {
+			zst_dante_flow_t flow = {};
+			flow.direction = ZST_DANTE_FLOW_RX;
+			flow.transport = ZST_DANTE_FLOW_UNICAST;
+			flow.flow_index = 0;
+			flow.channel_index = 0;
+			flow.port = rx->direct_port;
+			flow.receiver_address = (char*)(rx->direct_local.c_str());
+			flow.transmitter_address = (char*)(rx->direct_transmitter.c_str());
+			flow.multicast_address = nullptr;
+			snprintf(flow.video_subtype, sizeof(flow.video_subtype), "H264");
+			zst_result_t r = zst_dante_video_coordinator_apply_flow(rx->coordinator, &flow);
+			if (r != ZST_OK) {
+				LOGE("direct RX flow apply failed, r=%d", (int)r);
+			} else {
+				LOGI("[DIRECT RX] listening on %s:%u from %s (reorder 512/100ms)",
+				     rx->direct_local.c_str(), rx->direct_port,
+				     rx->direct_transmitter.c_str());
+			}
+		}
 
 		rx->running = true;
 		pthread_create(&rx->bus_th, nullptr, dante_rx_bus_worker, rx);
@@ -1295,6 +1415,11 @@ namespace __sc6f0_dante_rx__ {
 		uint64_t dec_input = rx->decoder_input_packets.load();
 		uint64_t dec_pushed = rx->decoder_pushed_packets.load();
 		uint64_t dec_dropped = rx->decoder_dropped_packets.load();
+		uint64_t transport_dropped = rx->transport_dropped_packets.load();
+		uint64_t pool_dropped = rx->packet_pool_dropped_packets.load();
+		uint64_t push_failed = rx->decoder_push_failed_packets.load();
+		uint64_t recovery_skipped = rx->vdec
+			? qcap2_video_decoder_get_recovery_skipped_packets(rx->vdec) : 0;
 		double dec_drop_rate = dec_input > 0
 			? 100.0 * (double)dec_dropped / (double)dec_input : 0.0;
 
@@ -1357,6 +1482,9 @@ namespace __sc6f0_dante_rx__ {
 		printf("  Decoder Pushed AUs:  %llu\n", (unsigned long long)dec_pushed);
 		printf("  Decoder Dropped AUs: %llu (%.2f%%)\n",
 		       (unsigned long long)dec_dropped, dec_drop_rate);
+		printf("    Transport / Pool / Push / Recovery: %llu / %llu / %llu / %llu\n",
+		       (unsigned long long)transport_dropped, (unsigned long long)pool_dropped,
+		       (unsigned long long)push_failed, (unsigned long long)recovery_skipped);
 		printf("  Decoded Frames:      %llu\n", (unsigned long long)dec_frames);
 		printf("  Decode Errors:       %llu\n", (unsigned long long)dec_errors);
 		printf("  Audio Periods:       %llu\n", (unsigned long long)apds);
@@ -1390,6 +1518,13 @@ int main(int argc, char* argv[]) {
 	uint32_t sample_rate = 48000;
 	uint32_t stat_interval = 3;
 	std::string reconstructed_path;
+	bool direct_mode = false;
+	bool decode_enabled = true;
+	bool decode_requested = false;
+	bool recv_only = false;
+	std::string direct_peer;
+	std::string direct_local = "192.168.190.145";
+	uint16_t direct_port = 16490;
 
 	for (int i = 1; i < argc; i++) {
 		if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
@@ -1401,6 +1536,12 @@ int main(int argc, char* argv[]) {
 			printf("  --rate <hz>        Audio sample rate in Hz (default: 48000)\n");
 			printf("  --interval <sec>   Periodic statistics interval (default: 3)\n");
 			printf("  --dump-reconstructed <path>  Write depayloaded Annex-B video AUs\n");
+			printf("  --direct <tx-ip>   Direct RTP mode: receive unicast RTP from tx-ip:port,\n");
+			printf("                     bypassing the Dante daemon entirely (no decode by default)\n");
+			printf("  --decode           Enable the ALLEGRO2 decoder in --direct mode\n");
+			printf("  --recv-only        Disable the decoder entirely (verify RTP->packet only)\n");
+			printf("  --local-ip <ip>    Local bind address for --direct (default: 0.0.0.0)\n");
+			printf("  --port <port>      RTP port for --direct (default: 16490)\n");
 			printf("  -h, --help         Show this help message\n");
 			return 0;
 		} else if (strcmp(argv[i], "--dvr") == 0 && i + 1 < argc) {
@@ -1415,35 +1556,57 @@ int main(int argc, char* argv[]) {
 			stat_interval = (uint32_t)strtoul(argv[++i], nullptr, 10);
 		} else if (strcmp(argv[i], "--dump-reconstructed") == 0 && i + 1 < argc) {
 			reconstructed_path = argv[++i];
+		} else if (strcmp(argv[i], "--direct") == 0 && i + 1 < argc) {
+			direct_peer = argv[++i];
+			direct_mode = true;
+		} else if (strcmp(argv[i], "--decode") == 0) {
+			decode_requested = true;
+		} else if (strcmp(argv[i], "--recv-only") == 0) {
+			recv_only = true;
+		} else if (strcmp(argv[i], "--local-ip") == 0 && i + 1 < argc) {
+			direct_local = argv[++i];
+		} else if (strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
+			direct_port = (uint16_t)strtoul(argv[++i], nullptr, 10);
 		}
 	}
+
+	decode_enabled = recv_only ? false : (direct_mode ? decode_requested : true);
 
 	signal(SIGINT, sig_handler);
 	signal(SIGTERM, sig_handler);
 
 	printf("============================================================\n");
-	printf(" SC6F0 Dante RX (zstreamer pipeline, non-decode mode)\n");
-	printf(" DVR Socket:    %s\n", dvr_socket.c_str());
-	printf(" DEP SharedMem: %s\n", dep_name.c_str());
-	printf(" Channels:      %s\n", channels.c_str());
-	printf(" Sample Rate:   %u Hz\n", sample_rate);
+	if (direct_mode) {
+		printf(" SC6F0 RX DIRECT RTP (zstreamer internal, no Dante session)\n");
+		printf(" Peer (TX):     %s\n", direct_peer.c_str());
+		printf(" Local Bind:    %s\n", direct_local.c_str());
+		printf(" RTP Port:      %u\n", direct_port);
+		printf(" Audio:         disabled\n");
+		printf(" Decode:        %s\n", decode_enabled ? "enabled" : "disabled (verify RTP->packet only)");
+	} else {
+		printf(" SC6F0 Dante RX (zstreamer pipeline, non-decode mode)\n");
+		printf(" DVR Socket:    %s\n", dvr_socket.c_str());
+		printf(" DEP SharedMem: %s\n", dep_name.c_str());
+		printf(" Channels:      %s\n", channels.c_str());
+		printf(" Sample Rate:   %u Hz\n", sample_rate);
+		printf(" Decode:        %s\n", decode_enabled ? "enabled" : "disabled (--recv-only)");
+	}
 	printf(" Stat Interval: %u s\n", stat_interval);
 	printf(" Press 'q' + Enter (or Ctrl+C) to stop.\n");
 	printf("============================================================\n\n");
 
 	zst_dante_rx_t* rx = start_dante_rx(dvr_socket, dep_name, channels, sample_rate,
-	                                  stat_interval, reconstructed_path);
+	                                  stat_interval, reconstructed_path,
+	                                  decode_enabled, direct_mode, direct_peer,
+	                                  direct_local, direct_port);
 	if (!rx) {
 		LOGE("Failed to start Dante RX pipeline.");
 		return 1;
 	}
 
-	__testkit__::wait_for_test_finish([&](int ch) -> bool {
-		if (ch == 'q' || ch == 'Q' || g_stop_requested) {
-			return false;
-		}
-		return true;
-	}, 1000000LL, 10LL);
+	while (!g_stop_requested) {
+		pause();
+	}
 
 	stop_dante_rx(rx);
 	return 0;

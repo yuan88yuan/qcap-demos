@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include <atomic>
+#include <string>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
@@ -46,6 +47,12 @@ ZZ_INIT_LOG("sc6f0-dante-tx");
 
 int g_argc = 0;
 char** g_argv = NULL;
+static FILE* g_tx_dump = NULL;
+static volatile sig_atomic_t g_tx_stop = 0;
+static void tx_sig_handler(int) { g_tx_stop = 1; }
+
+static std::string g_tx_direct_rx_ip;
+static uint16_t g_tx_direct_port = 16490;
 
 ZZ_MODULE_DECL(__zz_log__);
 
@@ -121,6 +128,10 @@ struct App0 {
 		pthread_t sched_th = 0;
 		std::atomic<bool> running{false};
 
+		bool direct_mode = false;
+		std::string direct_rx_ip;
+		uint16_t direct_port = 16490;
+
 		uint32_t audio_channels = 2;
 		uint32_t audio_sample_rate = 48000;
 		uint32_t audio_bits = 16;
@@ -133,6 +144,7 @@ struct App0 {
 		std::atomic<uint64_t> tx_audio_frames{0};
 		std::atomic<uint64_t> tx_audio_bytes{0};
 		std::atomic<uint64_t> tx_audio_samples{0};
+		uint64_t start_time_ms = 0;
 	};
 
 	struct TestCase1 : public TestCase {
@@ -366,35 +378,9 @@ struct App0 {
 					break;
 				}
 
-				wait_for_test_finish([&](int ch) -> bool {
-					QRESULT qres;
-
-					switch(ch) {
-					case 's': case 'S':
-						++nSnapshot;
-						break;
-
-					case 'd': case 'D':
-						StartDmx();
-						break;
-
-#if BUILD_WITH_DAUSERVICE
-					case 'c': case 'C':
-						dau_signal_cable_change(pHdmiRxDauServ);
-						break;
-
-					case 'a': case 'A':
-						dau_signal_audio_change(pHdmiRxDauServ);
-						break;
-
-					case 'v': case 'V':
-						dau_signal_video_change(pHdmiRxDauServ);
-						break;
-#endif // BUILD_WITH_DAUSERVICE
-					}
-
-					return true;
-				}, 1000000LL, 10LL);
+				while (!g_tx_stop) {
+					pause();
+				}
 			}
 
 			_FreeStack_main_.flush();
@@ -405,10 +391,12 @@ struct App0 {
 				dau_service* pHdmiRxDauServ = NULL;
 
 #if BUILD_WITH_DAUSERVICE
-				qres = StartDauServ(_FreeStack_, &pHdmiRxDauServ);
-				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): StartDauServ() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-					break;
+				if (g_tx_direct_rx_ip.empty()) {
+					qres = StartDauServ(_FreeStack_, &pHdmiRxDauServ);
+					if(qres != QCAP_RS_SUCCESSFUL) {
+						LOGE("%s(%d): StartDauServ() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+						break;
+					}
 				}
 #endif // BUILD_WITH_DAUSERVICE
 
@@ -996,6 +984,13 @@ struct App0 {
 					qcap2_av_packet_get_sample_time(pAVPacket.get(), &dSampleTime);
 
 					if (pStreamBuffer && nStreamBufferLen > 0) {
+						if (g_tx_dump) {
+							if (fwrite(pStreamBuffer, 1, (size_t)nStreamBufferLen, g_tx_dump) != (size_t)nStreamBufferLen ||
+							    fflush(g_tx_dump) != 0) {
+								fclose(g_tx_dump);
+								g_tx_dump = NULL;
+							}
+						}
 						zst_buffer_t* zbuf = zst_buffer_create(ZST_BUFFER_VIDEO_PACKET);
 						if (zbuf) {
 							void* copy_data = malloc((size_t)nStreamBufferLen);
@@ -1470,6 +1465,13 @@ struct App0 {
 			tx->video_width = nVideoWidth;
 			tx->video_height = nVideoHeight;
 			tx->video_fps = dVideoFrameRate > 0 ? dVideoFrameRate : 30.0;
+			tx->direct_mode = !g_tx_direct_rx_ip.empty();
+			tx->direct_rx_ip = g_tx_direct_rx_ip;
+			tx->direct_port = g_tx_direct_port;
+			const bool direct_mode = tx->direct_mode;
+			struct timespec start_ts;
+			clock_gettime(CLOCK_MONOTONIC, &start_ts);
+			tx->start_time_ms = (uint64_t)start_ts.tv_sec * 1000 + start_ts.tv_nsec / 1000000;
 
 			tx->pipe = zst_pipeline_create();
 			if (!tx->pipe) {
@@ -1478,51 +1480,60 @@ struct App0 {
 				return (QRESULT)-1;
 			}
 
-			/* 1. Dante DVR Session */
-			tx->session = zst_dante_session_create("/var/run/dante/dvr");
-			set_uint(tx->session, "tx-video-channels", 1);
-			set_uint(tx->session, "rx-video-channels", 1);
+			/* 1. Dante DVR Session (skipped in direct RTP mode) */
+			if (!direct_mode) {
+				tx->session = zst_dante_session_create("/var/run/dante/dvr");
+				set_uint(tx->session, "tx-video-channels", 1);
+				set_uint(tx->session, "rx-video-channels", 1);
+			}
 
 			/* 2. Dante Video Coordinator */
 			tx->coordinator = zst_dante_video_coordinator_create();
-			zst_dante_video_coordinator_attach_session(tx->coordinator, tx->session);
+			if (tx->session)
+				zst_dante_video_coordinator_attach_session(tx->coordinator, tx->session);
 			tx->tx_video_pad = zst_dante_video_coordinator_request_tx_input_pad(tx->coordinator, 0);
 
 			tx->app_video_src_pad = zst_pad_create("app_video_src", ZST_PAD_SRC);
 			zst_pad_link(tx->app_video_src_pad, tx->tx_video_pad);
 
-			/* 3. Dante DEP Audio Sink */
-			tx->tx_dep_sink = zst_dante_dep_audio_sink_create();
-			set_str(tx->tx_dep_sink, "shm-name", "DanteEP");
-			set_str(tx->tx_dep_sink, "channels", "0,1");
-			set_str(tx->tx_dep_sink, "expected-sample-rate", "48000");
-			set_uint(tx->tx_dep_sink, "queue-periods", 2048);
+			/* 3. Dante DEP Audio Sink (skipped in direct RTP mode) */
+			if (!direct_mode) {
+				tx->tx_dep_sink = zst_dante_dep_audio_sink_create();
+				set_str(tx->tx_dep_sink, "shm-name", "DanteEP");
+				set_str(tx->tx_dep_sink, "channels", "0,1");
+				set_str(tx->tx_dep_sink, "expected-sample-rate", "48000");
+				set_uint(tx->tx_dep_sink, "queue-periods", 2048);
 
-			/* 4. Audio Resampler (ASRC + 512-sample chunking) */
-			tx->tx_resampler = zst_audio_resampler_create(48000, 2, "S32LE");
-			set_str(tx->tx_resampler, "asrc-mode", "pts");
-			set_str(tx->tx_resampler, "max-drift-ppm", "2000");
-			set_uint(tx->tx_resampler, "drift-check-interval", 4);
-			set_uint(tx->tx_resampler, "block-samples", 512);
+				/* 4. Audio Resampler (ASRC + 512-sample chunking) */
+				tx->tx_resampler = zst_audio_resampler_create(48000, 2, "S32LE");
+				set_str(tx->tx_resampler, "asrc-mode", "pts");
+				set_str(tx->tx_resampler, "max-drift-ppm", "2000");
+				set_uint(tx->tx_resampler, "drift-check-interval", 4);
+				set_uint(tx->tx_resampler, "block-samples", 512);
 
-			tx->tx_audio_pad = zst_element_get_pad(tx->tx_resampler, "sink");
-			zst_pad_link(zst_element_get_pad(tx->tx_resampler, "src"),
-			             zst_element_get_pad(tx->tx_dep_sink, "sink"));
+				tx->tx_audio_pad = zst_element_get_pad(tx->tx_resampler, "sink");
+				zst_pad_link(zst_element_get_pad(tx->tx_resampler, "src"),
+				             zst_element_get_pad(tx->tx_dep_sink, "sink"));
 
-			tx->app_audio_src_pad = zst_pad_create("app_audio_src", ZST_PAD_SRC);
-			zst_pad_link(tx->app_audio_src_pad, tx->tx_audio_pad);
+				tx->app_audio_src_pad = zst_pad_create("app_audio_src", ZST_PAD_SRC);
+				zst_pad_link(tx->app_audio_src_pad, tx->tx_audio_pad);
+			}
 
 			/* Add elements to pipeline */
 			zst_pipeline_add(tx->pipe, tx->coordinator);
-			zst_pipeline_add(tx->pipe, tx->tx_resampler);
-			zst_pipeline_add(tx->pipe, tx->tx_dep_sink);
+			if (!direct_mode) {
+				zst_pipeline_add(tx->pipe, tx->tx_resampler);
+				zst_pipeline_add(tx->pipe, tx->tx_dep_sink);
+			}
 
 			tx->clock = zst_clock_system_create();
 			zst_pipeline_set_clock(tx->pipe, tx->clock);
 			zst_pipeline_set_state(tx->pipe, ZST_STATE_PLAYING);
-			tx->session->bus = tx->pipe->bus;
-			if (zst_element_set_state(tx->session, ZST_STATE_PLAYING) != ZST_OK) {
-				LOGW("Dante session start failed (is /var/run/dante/dvr running?)");
+			if (tx->session) {
+				tx->session->bus = tx->pipe->bus;
+				if (zst_element_set_state(tx->session, ZST_STATE_PLAYING) != ZST_OK) {
+					LOGW("Dante session start failed (is /var/run/dante/dvr running?)");
+				}
 			}
 
 			/* Scheduler */
@@ -1533,6 +1544,27 @@ struct App0 {
 			tx->sched = zst_scheduler_create(&cfg);
 			zst_scheduler_attach(tx->sched, tx->pipe);
 			pthread_create(&tx->sched_th, NULL, (void* (*)(void*))zst_scheduler_run, tx->sched);
+
+			/* Direct mode: synthesize a unicast H.264 TX flow (no Dante daemon). */
+			if (direct_mode) {
+				zst_dante_flow_t flow = {};
+				flow.direction = ZST_DANTE_FLOW_TX;
+				flow.transport = ZST_DANTE_FLOW_UNICAST;
+				flow.flow_index = 0;
+				flow.channel_index = 0;
+				flow.port = tx->direct_port;
+				flow.receiver_address = (char*)(tx->direct_rx_ip.c_str());
+				flow.transmitter_address = NULL;
+				flow.multicast_address = NULL;
+				snprintf(flow.video_subtype, sizeof(flow.video_subtype), "H264");
+				zst_result_t r = zst_dante_video_coordinator_apply_flow(tx->coordinator, &flow);
+				if (r != ZST_OK) {
+					LOGE("direct TX flow apply failed, r=%d", (int)r);
+				} else {
+					LOGI("[DIRECT TX] unicasting H264 to %s:%u", tx->direct_rx_ip.c_str(),
+					     tx->direct_port);
+				}
+			}
 
 			tx->running = true;
 			pthread_create(&tx->bus_th, NULL, dante_tx_bus_worker, tx);
@@ -1574,6 +1606,30 @@ struct App0 {
 					zst_clock_unref(tx->clock);
 					tx->clock = nullptr;
 				}
+				struct timespec end_ts;
+				clock_gettime(CLOCK_MONOTONIC, &end_ts);
+				double duration = tx->start_time_ms > 0
+					? ((uint64_t)end_ts.tv_sec * 1000 + end_ts.tv_nsec / 1000000 - tx->start_time_ms) / 1000.0
+					: 0.0;
+				uint64_t video_frames = tx->tx_video_frames.load();
+				uint64_t video_bytes = tx->tx_video_bytes.load();
+				uint64_t audio_frames = tx->tx_audio_frames.load();
+				uint64_t audio_bytes = tx->tx_audio_bytes.load();
+				uint64_t audio_samples = tx->tx_audio_samples.load();
+				printf("\n================ Dante TXX Final Summary ================\n");
+				printf("  Duration:            %.2f s\n", duration);
+				printf("  Video Frames:        %llu (avg %.2f fps)\n",
+					(unsigned long long)video_frames, duration > 0 ? video_frames / duration : 0.0);
+				printf("  Video Data:          %.2f MB (avg %.2f Mbps)\n",
+					(double)video_bytes / (1024.0 * 1024.0),
+					duration > 0 ? video_bytes * 8.0 / (duration * 1000000.0) : 0.0);
+				printf("  Audio Frames:        %llu\n", (unsigned long long)audio_frames);
+				printf("  Audio Samples:       %llu (avg %.0f samples/s)\n",
+					(unsigned long long)audio_samples, duration > 0 ? audio_samples / duration : 0.0);
+				printf("  Audio Data:          %.2f MB (avg %.2f Mbps)\n",
+					(double)audio_bytes / (1024.0 * 1024.0),
+					duration > 0 ? audio_bytes * 8.0 / (duration * 1000000.0) : 0.0);
+				printf("=========================================================\n\n");
 				delete tx;
 				LOGI("Dante TX pipeline stopped.");
 			};
@@ -1588,11 +1644,43 @@ int main(int argc, char* argv[]) {
 	g_argc = argc;
 	g_argv = argv;
 
+	for (int i = 1; i < argc; i++) {
+		if (strcmp(argv[i], "--direct") == 0 && i + 1 < argc) {
+			g_tx_direct_rx_ip = argv[++i];
+		} else if (strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
+			g_tx_direct_port = (uint16_t)strtoul(argv[++i], nullptr, 10);
+		} else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
+			printf("Usage: sc6f0-dante-tx [--direct <rx-ip>] [--port <port>] [--dump-stream <file>]\n");
+			printf("  --direct <rx-ip>  Direct RTP mode: unicast H.264 to rx-ip:port,\n");
+			printf("                    bypassing the Dante daemon (audio disabled)\n");
+			printf("  --port <port>     RTP port (default: 16490)\n");
+			printf("  --dump-stream <f> Save the raw encoded Annex-B H.264 AU stream to <file>\n");
+			return 0;
+		} else if (strcmp(argv[i], "--dump-stream") == 0 && i + 1 < argc) {
+			if (g_tx_dump)
+				fclose(g_tx_dump);
+			g_tx_dump = fopen(argv[++i], "wb");
+			if (!g_tx_dump)
+				fprintf(stderr, "sc6f0-dante-tx: cannot open %s\n", argv[i]);
+			else
+				printf("Dumping encoded Annex-B H.264 to %s\n", argv[i]);
+		}
+	}
+
+	signal(SIGINT, tx_sig_handler);
+	signal(SIGTERM, tx_sig_handler);
+
 	int ret;
 	switch(1) { case 1:
 		modules_init_t _modules_init_;
 
 		ret = App0::Main();
+	}
+
+	if (g_tx_dump) {
+		fflush(g_tx_dump);
+		fclose(g_tx_dump);
+		g_tx_dump = NULL;
 	}
 
 	return ret;
