@@ -7,6 +7,10 @@
 #include <inttypes.h>
 #include <signal.h>
 #include <unistd.h>
+#include <drm.h>
+#include <xf86drm.h>
+#include <xf86drmMode.h>
+#include <drm_fourcc.h>
 
 #include <atomic>
 #include <chrono>
@@ -14,6 +18,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <alsa/asoundlib.h>
 
 #include "ZzLog.h"
 #include "ZzModules.h"
@@ -38,6 +43,8 @@
 // qcap2 headers (ALLEGRO2 hardware decode)
 #include <qcap2.h>
 #include <qcap2.allegro2.h>
+#include <qcap2.alsa.h>
+#include <qcap2.drm.h>
 #include <qcap2.user.h>
 #include <qcap.common.h>
 
@@ -75,6 +82,20 @@ namespace __sc6f0_dante_rx__ {
 		char buf[64] = {0};
 		if (el && zst_element_get_property(el, p, buf, sizeof(buf)) == ZST_OK) {
 			return (uint32_t)strtoul(buf, nullptr, 10);
+		}
+		return 0;
+	}
+
+	static uint32_t drm_property_id(int fd, uint32_t object_id, uint32_t object_type,
+		const char* name) {
+		std::shared_ptr<drmModeObjectProperties> properties(
+			drmModeObjectGetProperties(fd, object_id, object_type), drmModeFreeObjectProperties);
+		if (!properties) return 0;
+		for (uint32_t i = 0; i < properties->count_props; ++i) {
+			std::shared_ptr<drmModePropertyRes> property(
+				drmModeGetProperty(fd, properties->props[i]), drmModeFreeProperty);
+			if (property && strcmp(property->name, name) == 0)
+				return property->prop_id;
 		}
 		return 0;
 	}
@@ -424,7 +445,9 @@ namespace __sc6f0_dante_rx__ {
 	}
 
 	/* ── Audio statistics & custom sink ──────────────────────────────── */
+	struct zst_dante_rx_t;
 	struct rx_audio_stats_t {
+		zst_dante_rx_t* rx = nullptr;
 		std::atomic<uint64_t> total_periods{0};
 		std::atomic<uint64_t> total_samples{0};
 		std::atomic<uint64_t> total_bytes{0};
@@ -434,6 +457,8 @@ namespace __sc6f0_dante_rx__ {
 		std::atomic<uint64_t> last_pts{0};
 		std::atomic<uint64_t> first_pts{0};
 	};
+	static void rx_audio_playback(zst_dante_rx_t* rx, const zst_buffer_t* buf,
+		const zst_audio_frame_t* audio);
 
 	static zst_result_t rx_audio_sink_push(zst_pad_t* pad, zst_buffer_t* buf) {
 		if (!pad || !pad->parent || !buf) return ZST_ERROR;
@@ -457,6 +482,8 @@ namespace __sc6f0_dante_rx__ {
 			/* Standard DEP default: 2ch 32-bit (8 bytes/frame) */
 			stats->total_samples += buf->memory.size / 8;
 		}
+		rx_audio_playback(stats->rx, buf,
+			buf->payload ? (const zst_audio_frame_t*)buf->payload : nullptr);
 
 		return ZST_OK;
 	}
@@ -513,16 +540,33 @@ namespace __sc6f0_dante_rx__ {
 
 		// qcap2 ALLEGRO2 hardware decoder (async event-handler based)
 		qcap2_video_decoder_t*       vdec = nullptr;
+		qcap2_video_sink_t*          vdec_sink = nullptr;
+		snd_pcm_t*                    audio_pcm = nullptr;
+		int                           drm_fd = -1;
+		uint32_t                      drm_connector_id = 0;
+		uint32_t                      drm_crtc_id = 0;
+		uint32_t                      drm_primary_plane_id = 0;
+		uint32_t                      drm_primary_fb_id = 0;
+		uint32_t                      drm_primary_bo_handle = 0;
+		uint32_t                      drm_mode_blob_id = 0;
+		bool                          drm_modeset_active = false;
 		qcap2_event_t*               vdec_event = nullptr;
 		qcap2_event_handlers_t*      vdec_event_handlers = nullptr;
 		qcap2_packet_pool_t*         vdec_packet_pool = nullptr;
 		bool                         vdec_started = false;
+		bool                         vdec_sink_started = false;
+		bool                         audio_pcm_started = false;
 		bool                         vdec_init_done = false;
 		bool                         vdec_extra_set = false;
 		uint8_t*                     extra_data = nullptr;
 		int                          extra_data_size = 0;
 		std::atomic<uint64_t>        decoded_frames{0};
 		std::atomic<uint64_t>        decoded_errors{0};
+		std::atomic<uint64_t>        decoder_display_errors{0};
+		std::atomic<uint64_t>        audio_playback_errors{0};
+		std::atomic<uint64_t>        audio_unsupported_periods{0};
+		std::vector<uint8_t>         audio_pending_frame;
+		uint64_t                      audio_pending_pts = 0;
 		std::atomic<uint64_t>        decoder_input_packets{0};
 		std::atomic<uint64_t>        decoder_pushed_packets{0};
 		std::atomic<uint64_t>        decoder_dropped_packets{0};
@@ -530,6 +574,7 @@ namespace __sc6f0_dante_rx__ {
 		std::atomic<uint64_t>        packet_pool_dropped_packets{0};
 		std::atomic<uint64_t>        decoder_push_failed_packets{0};
 		std::mutex                   decoder_lock;
+		std::mutex                   audio_lock;
 		std::string                  reconstructed_path;
 		FILE*                        reconstructed_file = nullptr;
 
@@ -551,6 +596,104 @@ namespace __sc6f0_dante_rx__ {
 		std::atomic<bool> running{false};
 		uint64_t start_time_ms{0};
 	};
+
+	static int select_hdmi_formatter_route() {
+		snd_ctl_t* control = nullptr;
+		int err = snd_ctl_open(&control, "hw:xlnxhdmi1", 0);
+		if (err < 0) {
+			LOGE("snd_ctl_open(xlnxhdmi1) failed: %s", snd_strerror(err));
+			return -1;
+		}
+		snd_ctl_elem_id_t* id;
+		snd_ctl_elem_value_t* value;
+		snd_ctl_elem_id_alloca(&id);
+		snd_ctl_elem_value_alloca(&value);
+		snd_ctl_elem_id_set_interface(id, SND_CTL_ELEM_IFACE_MIXER);
+		snd_ctl_elem_id_set_name(id, "Audio Input Route Switch");
+		snd_ctl_elem_value_set_id(value, id);
+		/* SI0 is PS DDR through audio_formatter_hdmi; SI1 is FPGA Dante/AES3. */
+		snd_ctl_elem_value_set_enumerated(value, 0, 0);
+		err = snd_ctl_elem_write(control, value);
+		snd_ctl_close(control);
+		if (err < 0) {
+			LOGE("cannot select HDMI audio formatter route: %s", snd_strerror(err));
+			return -1;
+		}
+		return 0;
+	}
+
+	static int start_hdmi_audio_sink(zst_dante_rx_t* rx) {
+		if (select_hdmi_formatter_route() != 0)
+			return -1;
+		rx->audio_pending_frame.reserve(960 * 2 * sizeof(int32_t));
+		int err = snd_pcm_open(&rx->audio_pcm, "hw:xlnxhdmi1,0", SND_PCM_STREAM_PLAYBACK,
+			SND_PCM_NONBLOCK);
+		if (err >= 0)
+			err = snd_pcm_set_params(rx->audio_pcm, SND_PCM_FORMAT_S24_LE,
+				SND_PCM_ACCESS_RW_INTERLEAVED, 2, 48000, 0, 160000);
+		if (err < 0) {
+			LOGE("cannot configure hw:xlnxhdmi1,0: %s", snd_strerror(err));
+			if (rx->audio_pcm) snd_pcm_close(rx->audio_pcm);
+			rx->audio_pcm = nullptr;
+			return -1;
+		}
+		rx->audio_pcm_started = true;
+		LOGI("HDMI audio output active: xlnxhdmi1,0 via audio formatter");
+		return 0;
+	}
+
+	static void stop_hdmi_audio_sink(zst_dante_rx_t* rx) {
+		if (rx->audio_pcm) snd_pcm_close(rx->audio_pcm);
+		rx->audio_pcm = nullptr;
+		rx->audio_pcm_started = false;
+	}
+
+	static void rx_audio_playback(zst_dante_rx_t* rx, const zst_buffer_t* buf,
+		const zst_audio_frame_t* audio) {
+		if (!rx || !rx->audio_pcm || !rx->audio_pcm_started ||
+			!buf || !buf->memory.data)
+			return;
+		const uint32_t channels = audio ? audio->channels : 2;
+		const uint32_t rate = audio ? audio->sample_rate : 48000;
+		const uint32_t sample_format = audio ? audio->format : ZST_AUDIO_FMT_S32LE;
+		const size_t samples = audio ? audio->nb_samples : buf->memory.size / 8;
+		if (channels != 2 || rate != 48000 || sample_format != ZST_AUDIO_FMT_S32LE ||
+			samples == 0 || samples > 960 || buf->memory.size != samples * 8) {
+			rx->audio_unsupported_periods++;
+			return;
+		}
+
+		std::lock_guard<std::mutex> lock(rx->audio_lock);
+		const size_t input_bytes = samples * channels * sizeof(int32_t);
+		const size_t output_bytes = 960 * 2 * sizeof(int32_t);
+		if (rx->audio_pending_frame.empty())
+			rx->audio_pending_pts = buf->pts;
+		const size_t offset = rx->audio_pending_frame.size();
+		rx->audio_pending_frame.resize(offset + input_bytes);
+		const uint8_t* src = (const uint8_t*)buf->memory.data;
+		for (size_t i = 0; i < samples * channels; ++i) {
+			int32_t sample;
+			memcpy(&sample, src + i * sizeof(sample), sizeof(sample));
+			sample >>= 8;
+			uint8_t* dst = &rx->audio_pending_frame[offset + i * 4];
+			// ALSA S24_LE uses a 32-bit slot with its 24 valid bits right-aligned.
+			dst[0] = (uint8_t)sample;
+			dst[1] = (uint8_t)(sample >> 8);
+			dst[2] = (uint8_t)(sample >> 16);
+			dst[3] = 0;
+		}
+		if (rx->audio_pending_frame.size() < output_bytes)
+			return;
+
+		snd_pcm_sframes_t written = snd_pcm_writei(rx->audio_pcm,
+			rx->audio_pending_frame.data(), 960);
+		rx->audio_pending_frame.clear();
+		if (written != 960 && written != -EAGAIN) {
+			if (written < 0 && (written == -EPIPE || written == -ESTRPIPE))
+				snd_pcm_prepare(rx->audio_pcm);
+			rx->audio_playback_errors++;
+		}
+	}
 
 	/* ── qcap2 ALLEGRO2 hardware decoder ────────────────────────────── */
 
@@ -651,6 +794,13 @@ namespace __sc6f0_dante_rx__ {
 				break;
 			}
 			rx->decoded_frames++;
+			if (rx->vdec_sink && rx->vdec_sink_started) {
+				qres = qcap2_video_sink_push(rx->vdec_sink, pFrame);
+				if (qres != QCAP_RS_SUCCESSFUL) {
+					rx->decoder_display_errors++;
+					LOGE("qcap2_video_sink_push() failed, qres=%d", (int)qres);
+				}
+			}
 			qcap2_rcbuffer_release(pFrame);
 		}
 		return QCAP_RT_OK;
@@ -802,6 +952,226 @@ namespace __sc6f0_dante_rx__ {
 
 		rx->vdec_started = true;
 		LOGI("qcap2 ALLEGRO2 decoder configured; waiting for H.264 SPS/PPS/IDR");
+		return 0;
+	}
+
+	static void stop_drm_output(zst_dante_rx_t* rx) {
+		if (rx->drm_fd < 0) return;
+		if (rx->drm_modeset_active) {
+			std::shared_ptr<drmModeAtomicReq> request(drmModeAtomicAlloc(), drmModeAtomicFree);
+			if (request) {
+				uint32_t plane_crtc = drm_property_id(rx->drm_fd, rx->drm_primary_plane_id,
+					DRM_MODE_OBJECT_PLANE, "CRTC_ID");
+				uint32_t plane_fb = drm_property_id(rx->drm_fd, rx->drm_primary_plane_id,
+					DRM_MODE_OBJECT_PLANE, "FB_ID");
+				uint32_t crtc_active = drm_property_id(rx->drm_fd, rx->drm_crtc_id,
+					DRM_MODE_OBJECT_CRTC, "ACTIVE");
+				uint32_t connector_crtc = drm_property_id(rx->drm_fd, rx->drm_connector_id,
+					DRM_MODE_OBJECT_CONNECTOR, "CRTC_ID");
+				if (plane_crtc) drmModeAtomicAddProperty(request.get(), rx->drm_primary_plane_id, plane_crtc, 0);
+				if (plane_fb) drmModeAtomicAddProperty(request.get(), rx->drm_primary_plane_id, plane_fb, 0);
+				if (crtc_active) drmModeAtomicAddProperty(request.get(), rx->drm_crtc_id, crtc_active, 0);
+				if (connector_crtc) drmModeAtomicAddProperty(request.get(), rx->drm_connector_id, connector_crtc, 0);
+				drmModeAtomicCommit(rx->drm_fd, request.get(), DRM_MODE_ATOMIC_ALLOW_MODESET, nullptr);
+			}
+		}
+		if (rx->drm_primary_fb_id)
+			drmModeRmFB(rx->drm_fd, rx->drm_primary_fb_id);
+		if (rx->drm_primary_bo_handle) {
+			struct drm_mode_destroy_dumb destroy = {};
+			destroy.handle = rx->drm_primary_bo_handle;
+			drmIoctl(rx->drm_fd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
+		}
+		if (rx->drm_mode_blob_id)
+			drmModeDestroyPropertyBlob(rx->drm_fd, rx->drm_mode_blob_id);
+		drmClose(rx->drm_fd);
+		rx->drm_fd = -1;
+		rx->drm_connector_id = 0;
+		rx->drm_crtc_id = 0;
+		rx->drm_primary_plane_id = 0;
+		rx->drm_primary_fb_id = 0;
+		rx->drm_primary_bo_handle = 0;
+		rx->drm_mode_blob_id = 0;
+		rx->drm_modeset_active = false;
+	}
+
+	static int start_drm_output(zst_dante_rx_t* rx) {
+		const uint32_t video_plane_id = 36;
+		const uint32_t width = 3840;
+		const uint32_t height = 2160;
+		rx->drm_fd = drmOpen("xlnx", nullptr);
+		if (rx->drm_fd < 0 || drmSetClientCap(rx->drm_fd, DRM_CLIENT_CAP_ATOMIC, 1) ||
+			drmSetClientCap(rx->drm_fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1)) {
+			LOGE("cannot enable DRM atomic universal planes, err=%d", errno);
+			stop_drm_output(rx);
+			return -1;
+		}
+
+		std::shared_ptr<drmModeRes> resources(drmModeGetResources(rx->drm_fd), drmModeFreeResources);
+		std::shared_ptr<drmModePlaneRes> planes(
+			drmModeGetPlaneResources(rx->drm_fd), drmModeFreePlaneResources);
+		std::shared_ptr<drmModePlane> video_plane(drmModeGetPlane(rx->drm_fd, video_plane_id), drmModeFreePlane);
+		if (!resources || !planes || !video_plane) {
+			LOGE("DRM plane %u or resources are unavailable", video_plane_id);
+			stop_drm_output(rx);
+			return -1;
+		}
+
+		drmModeModeInfo mode = {};
+		bool have_mode = false;
+		int crtc_index = -1;
+		for (int i = 0; i < resources->count_connectors && crtc_index < 0; ++i) {
+			std::shared_ptr<drmModeConnector> connector(
+				drmModeGetConnector(rx->drm_fd, resources->connectors[i]), drmModeFreeConnector);
+			if (!connector || connector->connection != DRM_MODE_CONNECTED) continue;
+			drmModeModeInfo connector_mode = {};
+			bool connector_has_mode = false;
+			for (int m = 0; m < connector->count_modes; ++m) {
+				if (connector->modes[m].hdisplay == width && connector->modes[m].vdisplay == height &&
+					connector->modes[m].vrefresh == 60) {
+					connector_mode = connector->modes[m];
+					connector_has_mode = true;
+					break;
+				}
+			}
+			if (!connector_has_mode) continue;
+			uint32_t encoder_id = connector->encoder_id;
+			if (!encoder_id && connector->count_encoders > 0)
+				encoder_id = connector->encoders[0];
+			std::shared_ptr<drmModeEncoder> encoder(
+				drmModeGetEncoder(rx->drm_fd, encoder_id), drmModeFreeEncoder);
+			uint32_t possible_crtcs = encoder ? encoder->possible_crtcs : 0;
+			for (int c = 0; c < resources->count_crtcs; ++c) {
+				if ((possible_crtcs & (1u << c)) && (video_plane->possible_crtcs & (1u << c))) {
+					rx->drm_connector_id = connector->connector_id;
+					rx->drm_crtc_id = resources->crtcs[c];
+					mode = connector_mode;
+					have_mode = true;
+					crtc_index = c;
+					break;
+				}
+			}
+		}
+		if (crtc_index < 0 || !have_mode) {
+			LOGE("no connected 3840x2160@60 HDMI path supports DRM plane %u", video_plane_id);
+			stop_drm_output(rx);
+			return -1;
+		}
+
+		for (uint32_t i = 0; i < planes->count_planes; ++i) {
+			std::shared_ptr<drmModePlane> plane(drmModeGetPlane(rx->drm_fd, planes->planes[i]), drmModeFreePlane);
+			if (!plane || !(plane->possible_crtcs & (1u << crtc_index))) continue;
+			uint32_t type = drm_property_id(rx->drm_fd, plane->plane_id, DRM_MODE_OBJECT_PLANE, "type");
+			std::shared_ptr<drmModeObjectProperties> properties(
+				drmModeObjectGetProperties(rx->drm_fd, plane->plane_id, DRM_MODE_OBJECT_PLANE), drmModeFreeObjectProperties);
+			if (!type || !properties) continue;
+			for (uint32_t p = 0; p < properties->count_props; ++p) {
+				if (properties->props[p] == type && properties->prop_values[p] == DRM_PLANE_TYPE_PRIMARY) {
+					rx->drm_primary_plane_id = plane->plane_id;
+					break;
+				}
+			}
+			if (rx->drm_primary_plane_id) break;
+		}
+		if (!rx->drm_primary_plane_id) {
+			LOGE("no primary DRM plane supports selected CRTC");
+			stop_drm_output(rx);
+			return -1;
+		}
+
+		struct drm_mode_create_dumb create = {};
+		create.width = width;
+		create.height = height;
+		create.bpp = 24;
+		if (drmIoctl(rx->drm_fd, DRM_IOCTL_MODE_CREATE_DUMB, &create) ||
+			drmModeCreatePropertyBlob(rx->drm_fd, &mode, sizeof(mode), &rx->drm_mode_blob_id)) {
+			LOGE("cannot create DRM primary framebuffer, err=%d", errno);
+			stop_drm_output(rx);
+			return -1;
+		}
+		rx->drm_primary_bo_handle = create.handle;
+		uint32_t handles[4] = { create.handle, 0, 0, 0 };
+		uint32_t pitches[4] = { create.pitch, 0, 0, 0 };
+		uint32_t offsets[4] = { 0, 0, 0, 0 };
+		if (drmModeAddFB2(rx->drm_fd, width, height, DRM_FORMAT_BGR888, handles, pitches, offsets,
+			&rx->drm_primary_fb_id, 0)) {
+			LOGE("drmModeAddFB2(primary) failed, err=%d", errno);
+			stop_drm_output(rx);
+			return -1;
+		}
+
+		std::shared_ptr<drmModeAtomicReq> request(drmModeAtomicAlloc(), drmModeAtomicFree);
+		uint32_t connector_crtc = drm_property_id(rx->drm_fd, rx->drm_connector_id, DRM_MODE_OBJECT_CONNECTOR, "CRTC_ID");
+		uint32_t crtc_mode = drm_property_id(rx->drm_fd, rx->drm_crtc_id, DRM_MODE_OBJECT_CRTC, "MODE_ID");
+		uint32_t crtc_active = drm_property_id(rx->drm_fd, rx->drm_crtc_id, DRM_MODE_OBJECT_CRTC, "ACTIVE");
+		uint32_t plane_crtc = drm_property_id(rx->drm_fd, rx->drm_primary_plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_ID");
+		uint32_t plane_fb = drm_property_id(rx->drm_fd, rx->drm_primary_plane_id, DRM_MODE_OBJECT_PLANE, "FB_ID");
+		uint32_t crtc_x = drm_property_id(rx->drm_fd, rx->drm_primary_plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_X");
+		uint32_t crtc_y = drm_property_id(rx->drm_fd, rx->drm_primary_plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_Y");
+		uint32_t crtc_w = drm_property_id(rx->drm_fd, rx->drm_primary_plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_W");
+		uint32_t crtc_h = drm_property_id(rx->drm_fd, rx->drm_primary_plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_H");
+		uint32_t src_x = drm_property_id(rx->drm_fd, rx->drm_primary_plane_id, DRM_MODE_OBJECT_PLANE, "SRC_X");
+		uint32_t src_y = drm_property_id(rx->drm_fd, rx->drm_primary_plane_id, DRM_MODE_OBJECT_PLANE, "SRC_Y");
+		uint32_t src_w = drm_property_id(rx->drm_fd, rx->drm_primary_plane_id, DRM_MODE_OBJECT_PLANE, "SRC_W");
+		uint32_t src_h = drm_property_id(rx->drm_fd, rx->drm_primary_plane_id, DRM_MODE_OBJECT_PLANE, "SRC_H");
+		if (!request || !connector_crtc || !crtc_mode || !crtc_active || !plane_crtc || !plane_fb ||
+			!crtc_x || !crtc_y || !crtc_w || !crtc_h || !src_x || !src_y || !src_w || !src_h) {
+			LOGE("required DRM atomic properties are unavailable");
+			stop_drm_output(rx);
+			return -1;
+		}
+		drmModeAtomicAddProperty(request.get(), rx->drm_connector_id, connector_crtc, rx->drm_crtc_id);
+		drmModeAtomicAddProperty(request.get(), rx->drm_crtc_id, crtc_mode, rx->drm_mode_blob_id);
+		drmModeAtomicAddProperty(request.get(), rx->drm_crtc_id, crtc_active, 1);
+		drmModeAtomicAddProperty(request.get(), rx->drm_primary_plane_id, plane_crtc, rx->drm_crtc_id);
+		drmModeAtomicAddProperty(request.get(), rx->drm_primary_plane_id, plane_fb, rx->drm_primary_fb_id);
+		drmModeAtomicAddProperty(request.get(), rx->drm_primary_plane_id, crtc_x, 0);
+		drmModeAtomicAddProperty(request.get(), rx->drm_primary_plane_id, crtc_y, 0);
+		drmModeAtomicAddProperty(request.get(), rx->drm_primary_plane_id, crtc_w, width);
+		drmModeAtomicAddProperty(request.get(), rx->drm_primary_plane_id, crtc_h, height);
+		drmModeAtomicAddProperty(request.get(), rx->drm_primary_plane_id, src_x, 0);
+		drmModeAtomicAddProperty(request.get(), rx->drm_primary_plane_id, src_y, 0);
+		drmModeAtomicAddProperty(request.get(), rx->drm_primary_plane_id, src_w, width << 16);
+		drmModeAtomicAddProperty(request.get(), rx->drm_primary_plane_id, src_h, height << 16);
+		if (drmModeAtomicCommit(rx->drm_fd, request.get(), DRM_MODE_ATOMIC_ALLOW_MODESET, nullptr)) {
+			LOGE("DRM HDMI modeset failed, err=%d", errno);
+			stop_drm_output(rx);
+			return -1;
+		}
+		rx->drm_modeset_active = true;
+		LOGI("DRM HDMI active: connector %u, CRTC %u, primary plane %u, video plane %u",
+			rx->drm_connector_id, rx->drm_crtc_id, rx->drm_primary_plane_id, video_plane_id);
+		return 0;
+	}
+
+	static int start_vdec_sink(zst_dante_rx_t* rx) {
+		const uint32_t drm_plane_id = 36;
+		qcap2_video_sink_t* sink = qcap2_video_sink_new();
+		if (!sink) {
+			LOGE("qcap2_video_sink_new() failed");
+			return -1;
+		}
+
+		qcap2_video_sink_set_backend_type(sink, QCAP2_VIDEO_SINK_BACKEND_TYPE_XLNX2);
+		qcap2_video_sink_set_native_handle(sink,
+			QCAP_HWND_DRM_PLANE_ID_MASK | drm_plane_id);
+		std::shared_ptr<qcap2_video_format_t> format(
+			qcap2_video_format_new(), qcap2_video_format_delete);
+		qcap2_video_format_set_property(format.get(), QCAP_COLORSPACE_TYPE_NV12,
+			3840, 2160, FALSE, 60.0);
+		qcap2_video_sink_set_video_format(sink, format.get());
+
+		QRESULT qres = qcap2_video_sink_start(sink);
+		if (qres != QCAP_RS_SUCCESSFUL) {
+			LOGE("qcap2_video_sink_start(plane %u) failed, qres=%d",
+				drm_plane_id, (int)qres);
+			qcap2_video_sink_delete(sink);
+			return -1;
+		}
+
+		rx->vdec_sink = sink;
+		rx->vdec_sink_started = true;
+		LOGI("ALLEGRO2 decoder output is displayed on DRM plane %u", drm_plane_id);
 		return 0;
 	}
 
@@ -1300,14 +1670,35 @@ namespace __sc6f0_dante_rx__ {
 				delete rx;
 				return nullptr;
 			}
+			rx->audio_stats->rx = rx;
 			zst_pad_link(zst_element_get_pad(rx->rx_dep_src, "src"),
 			             zst_element_get_pad(rx->rx_audio_sink, "sink"));
+			if (start_hdmi_audio_sink(rx) != 0) {
+				zst_element_destroy(rx->rx_audio_sink);
+				zst_element_destroy(rx->rx_dep_src);
+				zst_element_destroy(rx->rx_video_sink);
+				zst_element_destroy(rx->coordinator);
+				if (rx->session) zst_element_destroy(rx->session);
+				zst_pipeline_destroy(rx->pipe);
+				delete rx;
+				return nullptr;
+			}
 		}
 
 		if (decode_enabled &&
-		    (SetupVdecAsync(rx) != 0 || init_vdec_decoder(rx) != 0)) {
+		    (start_drm_output(rx) != 0 || start_vdec_sink(rx) != 0 ||
+		     SetupVdecAsync(rx) != 0 || init_vdec_decoder(rx) != 0)) {
 			LOGE("qcap2 video decoder setup failed");
 			StopVdecAsync(rx);
+			if (rx->vdec_sink) {
+				if (rx->vdec_sink_started)
+					qcap2_video_sink_stop(rx->vdec_sink);
+				qcap2_video_sink_delete(rx->vdec_sink);
+				rx->vdec_sink = nullptr;
+				rx->vdec_sink_started = false;
+			}
+			stop_drm_output(rx);
+			stop_hdmi_audio_sink(rx);
 			if (rx->rx_audio_sink) zst_element_destroy(rx->rx_audio_sink);
 			if (rx->rx_dep_src) zst_element_destroy(rx->rx_dep_src);
 			zst_element_destroy(rx->rx_video_sink);
@@ -1400,6 +1791,7 @@ namespace __sc6f0_dante_rx__ {
 			zst_scheduler_destroy(rx->sched);
 			rx->sched = nullptr;
 		}
+		stop_hdmi_audio_sink(rx);
 
 		/* Snapshot statistics before elements are destroyed */
 		uint64_t vpkts = rx->video_stats ? rx->video_stats->total_packets.load() : 0;
@@ -1418,6 +1810,8 @@ namespace __sc6f0_dante_rx__ {
 		uint64_t transport_dropped = rx->transport_dropped_packets.load();
 		uint64_t pool_dropped = rx->packet_pool_dropped_packets.load();
 		uint64_t push_failed = rx->decoder_push_failed_packets.load();
+		uint64_t audio_errors = rx->audio_playback_errors.load();
+		uint64_t audio_unsupported = rx->audio_unsupported_periods.load();
 		uint64_t recovery_skipped = rx->vdec
 			? qcap2_video_decoder_get_recovery_skipped_packets(rx->vdec) : 0;
 		double dec_drop_rate = dec_input > 0
@@ -1436,6 +1830,14 @@ namespace __sc6f0_dante_rx__ {
 			rx->vdec = nullptr;
 			rx->vdec_started = false;
 		}
+		if (rx->vdec_sink) {
+			if (rx->vdec_sink_started)
+				qcap2_video_sink_stop(rx->vdec_sink);
+			qcap2_video_sink_delete(rx->vdec_sink);
+			rx->vdec_sink = nullptr;
+			rx->vdec_sink_started = false;
+		}
+		stop_drm_output(rx);
 		StopVdecAsync(rx);
 		if (rx->extra_data) {
 			free(rx->extra_data);
@@ -1491,6 +1893,8 @@ namespace __sc6f0_dante_rx__ {
 		printf("  Audio Samples:       %llu (%.2f MB)\n",
 		       (unsigned long long)asamples,
 		       (double)abytes / (1024.0 * 1024.0));
+		printf("  Audio Output Errors: %llu (unsupported periods: %llu)\n",
+		       (unsigned long long)audio_errors, (unsigned long long)audio_unsupported);
 		printf("========================================================\n\n");
 
 		delete rx;
