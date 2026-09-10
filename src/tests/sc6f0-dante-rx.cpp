@@ -597,7 +597,7 @@ namespace __sc6f0_dante_rx__ {
 		uint64_t start_time_ms{0};
 	};
 
-	static int select_hdmi_formatter_route() {
+	static int select_hdmi_audio_route(unsigned int route) {
 		snd_ctl_t* control = nullptr;
 		int err = snd_ctl_open(&control, "hw:xlnxhdmi1", 0);
 		if (err < 0) {
@@ -611,19 +611,52 @@ namespace __sc6f0_dante_rx__ {
 		snd_ctl_elem_id_set_interface(id, SND_CTL_ELEM_IFACE_MIXER);
 		snd_ctl_elem_id_set_name(id, "Audio Input Route Switch");
 		snd_ctl_elem_value_set_id(value, id);
-		/* SI0 is PS DDR through audio_formatter_hdmi; SI1 is FPGA Dante/AES3. */
-		snd_ctl_elem_value_set_enumerated(value, 0, 0);
+		snd_ctl_elem_value_set_enumerated(value, 0, route);
 		err = snd_ctl_elem_write(control, value);
 		snd_ctl_close(control);
 		if (err < 0) {
-			LOGE("cannot select HDMI audio formatter route: %s", snd_strerror(err));
+			LOGE("cannot select HDMI audio route %u: %s", route, snd_strerror(err));
 			return -1;
 		}
 		return 0;
 	}
 
+	static int read_hdmi_audio_route() {
+		snd_ctl_t* control = nullptr;
+		int err = snd_ctl_open(&control, "hw:xlnxhdmi1", 0);
+		if (err < 0) {
+			LOGE("snd_ctl_open(xlnxhdmi1) failed: %s", snd_strerror(err));
+			return -1;
+		}
+		snd_ctl_elem_id_t* id;
+		snd_ctl_elem_value_t* value;
+		snd_ctl_elem_id_alloca(&id);
+		snd_ctl_elem_value_alloca(&value);
+		snd_ctl_elem_id_set_interface(id, SND_CTL_ELEM_IFACE_MIXER);
+		snd_ctl_elem_id_set_name(id, "Audio Input Route Switch");
+		snd_ctl_elem_value_set_id(value, id);
+		err = snd_ctl_elem_read(control, value);
+		snd_ctl_close(control);
+		if (err < 0) {
+			LOGE("cannot read HDMI audio route: %s", snd_strerror(err));
+			return -1;
+		}
+		return snd_ctl_elem_value_get_enumerated(value, 0);
+	}
+
+	static const char* hdmi_audio_route_name(int route) {
+		switch (route) {
+		case 0:
+			return "PS DDR (Audio Formatter)";
+		case 1:
+			return "Custom FPGA (Dante RX)";
+		default:
+			return "unknown";
+		}
+	}
+
 	static int start_hdmi_audio_sink(zst_dante_rx_t* rx) {
-		if (select_hdmi_formatter_route() != 0)
+		if (select_hdmi_audio_route(0) != 0)
 			return -1;
 		rx->audio_pending_frame.reserve(960 * 2 * sizeof(int32_t));
 		int err = snd_pcm_open(&rx->audio_pcm, "hw:xlnxhdmi1,0", SND_PCM_STREAM_PLAYBACK,
@@ -1906,6 +1939,36 @@ namespace __sc6f0_dante_rx__ {
 		(void)sig;
 		g_stop_requested = 1;
 	}
+
+	static int run_ultra_direct(uint32_t stat_interval) {
+		if (stat_interval == 0)
+			stat_interval = 3;
+		LOGI("[ULTRA DIRECT] Dante Ultra FPGA media path: VSINK video (v_mix layer 1) and AES3 audio (SI1) -> HDMI");
+		LOGI("[ULTRA DIRECT] This mode does not create a Linux DDR/VCU/DEP/ALSA data path.");
+		if (select_hdmi_audio_route(1) != 0) {
+			LOGE("[ULTRA DIRECT] failed to select SI1 (Custom FPGA / Dante RX) audio route");
+			return 1;
+		}
+		int initial = read_hdmi_audio_route();
+		LOGI("[ULTRA DIRECT] HDMI audio route set to SI1 (%s)",
+		     hdmi_audio_route_name(initial));
+
+		uint64_t last_report_ms = 0;
+		while (!g_stop_requested) {
+			struct timespec ts;
+			clock_gettime(CLOCK_MONOTONIC, &ts);
+			uint64_t now_ms = (uint64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+			if (now_ms - last_report_ms >= (uint64_t)stat_interval * 1000) {
+				last_report_ms = now_ms;
+				int route = read_hdmi_audio_route();
+				LOGI("[ULTRA DIRECT] status: HDMI audio route=%d (%s) | formatter PCM untouched (SI0 dormant) | Dante runtime owns VSINK/HDMI",
+				     route, hdmi_audio_route_name(route));
+			}
+			usleep(200000);
+		}
+		LOGI("[ULTRA DIRECT] stopping: leaving HDMI audio route on SI1 (Dante RX).");
+		return 0;
+	}
 }
 
 using namespace __sc6f0_dante_rx__;
@@ -1922,6 +1985,7 @@ int main(int argc, char* argv[]) {
 	uint32_t sample_rate = 48000;
 	uint32_t stat_interval = 3;
 	std::string reconstructed_path;
+	std::string media_path = "linux-decode";
 	bool direct_mode = false;
 	bool decode_enabled = true;
 	bool decode_requested = false;
@@ -1939,6 +2003,9 @@ int main(int argc, char* argv[]) {
 			printf("  --channels <list>  Audio channels to monitor (default: 0,1)\n");
 			printf("  --rate <hz>        Audio sample rate in Hz (default: 48000)\n");
 			printf("  --interval <sec>   Periodic statistics interval (default: 3)\n");
+			printf("  --media-path <mode>  Media path: 'linux-decode' (default; DVR->VCU->DRM +\n");
+			printf("                     DEP->ALSA formatter) or 'ultra-direct' (FPGA VSINK\n");
+			printf("                     video + AES3 audio straight to HDMI, no DDR path)\n");
 			printf("  --dump-reconstructed <path>  Write depayloaded Annex-B video AUs\n");
 			printf("  --direct <tx-ip>   Direct RTP mode: receive unicast RTP from tx-ip:port,\n");
 			printf("                     bypassing the Dante daemon entirely (no decode by default)\n");
@@ -1958,6 +2025,8 @@ int main(int argc, char* argv[]) {
 			sample_rate = (uint32_t)strtoul(argv[++i], nullptr, 10);
 		} else if (strcmp(argv[i], "--interval") == 0 && i + 1 < argc) {
 			stat_interval = (uint32_t)strtoul(argv[++i], nullptr, 10);
+		} else if (strcmp(argv[i], "--media-path") == 0 && i + 1 < argc) {
+			media_path = argv[++i];
 		} else if (strcmp(argv[i], "--dump-reconstructed") == 0 && i + 1 < argc) {
 			reconstructed_path = argv[++i];
 		} else if (strcmp(argv[i], "--direct") == 0 && i + 1 < argc) {
@@ -1975,6 +2044,15 @@ int main(int argc, char* argv[]) {
 	}
 
 	decode_enabled = recv_only ? false : (direct_mode ? decode_requested : true);
+	if (direct_mode && media_path == "ultra-direct") {
+		LOGE("--direct and --media-path ultra-direct are mutually exclusive");
+		return 1;
+	}
+	if (media_path != "linux-decode" && media_path != "ultra-direct") {
+		LOGE("unknown --media-path '%s' (expected 'linux-decode' or 'ultra-direct')",
+		     media_path.c_str());
+		return 1;
+	}
 
 	signal(SIGINT, sig_handler);
 	signal(SIGTERM, sig_handler);
@@ -1987,6 +2065,10 @@ int main(int argc, char* argv[]) {
 		printf(" RTP Port:      %u\n", direct_port);
 		printf(" Audio:         disabled\n");
 		printf(" Decode:        %s\n", decode_enabled ? "enabled" : "disabled (verify RTP->packet only)");
+	} else if (media_path == "ultra-direct") {
+		printf(" SC6F0 RX DANTE ULTRA DIRECT (FPGA passthrough, no zstreamer)\n");
+		printf(" Video: VSINK -> v_mix layer1 -> HDMI | Audio: AES3 -> SI1 -> HDMI\n");
+		printf(" This mode does not open the DVR socket, DEP, VCU, DRM or ALSA PCM.\n");
 	} else {
 		printf(" SC6F0 Dante RX (zstreamer pipeline, non-decode mode)\n");
 		printf(" DVR Socket:    %s\n", dvr_socket.c_str());
@@ -1998,6 +2080,10 @@ int main(int argc, char* argv[]) {
 	printf(" Stat Interval: %u s\n", stat_interval);
 	printf(" Press 'q' + Enter (or Ctrl+C) to stop.\n");
 	printf("============================================================\n\n");
+
+	if (media_path == "ultra-direct") {
+		return run_ultra_direct(stat_interval);
+	}
 
 	zst_dante_rx_t* rx = start_dante_rx(dvr_socket, dep_name, channels, sample_rate,
 	                                  stat_interval, reconstructed_path,
