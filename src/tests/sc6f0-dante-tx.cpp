@@ -557,7 +557,7 @@ struct App0 {
 				ULONG nSrcColorSpaceType = QCAP_COLORSPACE_TYPE_UNDEFINED;
 				const ULONG nColorSpaceType = QCAP_COLORSPACE_TYPE_NV12;
 				const ULONG nVideoEncoderFormat = QCAP_ENCODER_FORMAT_H264;
-				const ULONG nVideoBitRate = 10 * 1000000;
+				const ULONG nVideoBitRate = 24 * 1000000;
 				ULONG nVideoWidth = 0;
 				ULONG nVideoHeight = 0;
 				BOOL bVideoIsInterleaved;
@@ -618,7 +618,7 @@ struct App0 {
 							break;
 						}
 
-#if 1
+#if 0
 						qres = StartVenc(_FreeStack_, nColorSpaceType, nVideoWidth, nVideoHeight,
 							bVideoIsInterleaved, dVideoFrameRate, nVideoEncoderFormat, nVideoBitRate, &pVenc, &pVencEvent);
 						if(qres != QCAP_RS_SUCCESSFUL) {
@@ -680,7 +680,7 @@ struct App0 {
 						}
 #endif
 
-#if 1
+#if 0
 						qres = StartAenc(_FreeStack_, nAudioChannels, nAudioBitsPerSample,
 							nAudioSampleFrequency, nAudioEncoderFormat, &pAenc, &pAencEvent);
 						if(qres != QCAP_RS_SUCCESSFUL) {
@@ -723,7 +723,7 @@ struct App0 {
 					}
 #endif
 
-#if 1
+#if 0
 					qres = StartDanteServer(_FreeStack_, nColorSpaceType, nVideoWidth, nVideoHeight,
 						bVideoIsInterleaved, dVideoFrameRate, nVideoEncoderFormat, nVideoBitRate,
 						nAudioChannels, nAudioBitsPerSample, nAudioSampleFrequency, nAudioEncoderFormat,

@@ -7,10 +7,21 @@
 #include <inttypes.h>
 #include <signal.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <math.h>
+#include <poll.h>
+#include <dirent.h>
+#include <sys/mman.h>
+#include <sys/socket.h>
+#include <linux/netlink.h>
 #include <drm.h>
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 #include <drm_fourcc.h>
+
+extern "C" {
+#include "dauservice.h"
+}
 
 #include <atomic>
 #include <chrono>
@@ -1937,36 +1948,919 @@ namespace __sc6f0_dante_rx__ {
 	static volatile sig_atomic_t g_stop_requested = 0;
 	static void sig_handler(int sig) {
 		(void)sig;
-		g_stop_requested = 1;
+		g_stop_requested++;
+		if (g_stop_requested > 1) {
+			_exit(130);
+		}
 	}
 
-	static int run_ultra_direct(uint32_t stat_interval) {
+	/* ── Ultra-Direct FPGA Passthrough Mode ──────────────────────────── */
+
+	static inline float mode_vrefresh(const drmModeModeInfo* mode) {
+		if (!mode || mode->htotal == 0 || mode->vtotal == 0) return 0.0f;
+		return mode->clock * 1000.0f / (mode->htotal * mode->vtotal);
+	}
+
+	static bool is_valid_edid(const unsigned char* edid, size_t len) {
+		static const unsigned char edid_header[8] = {
+			0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00
+		};
+		if (!edid || len < 128) return false;
+		if (memcmp(edid, edid_header, sizeof(edid_header)) != 0) return false;
+		size_t blocks = len / 128;
+		if (blocks > 2) blocks = 2;
+		if (blocks == 0) return false;
+		for (size_t b = 0; b < blocks; b++) {
+			unsigned int sum = 0;
+			for (size_t i = 0; i < 128; i++)
+				sum += edid[b * 128 + i];
+			if ((sum & 0xff) != 0) return false;
+		}
+		return true;
+	}
+
+	static const unsigned char g_fallback_edid[EDID_LEN] = {
+		0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x61, 0x98, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12,
+		0x03, 0x1c, 0x01, 0x03, 0x80, 0x59, 0x32, 0x78, 0x0a, 0xee, 0x91, 0xa3, 0x54, 0x4c, 0x99, 0x26,
+		0x0f, 0x50, 0x54, 0x21, 0x08, 0x00, 0x71, 0x4f, 0x81, 0xc0, 0x81, 0x00, 0x81, 0x80, 0x95, 0x00,
+		0xa9, 0xc0, 0xb3, 0x00, 0x01, 0x01, 0x02, 0x3a, 0x80, 0x18, 0x71, 0x38, 0x2d, 0x40, 0x58, 0x2c,
+		0x45, 0x00, 0x20, 0xc2, 0x31, 0x00, 0x00, 0x1e, 0x00, 0x00, 0x00, 0xfc, 0x00, 0x58, 0x49, 0x4c,
+		0x49, 0x4e, 0x58, 0x20, 0x48, 0x44, 0x4d, 0x49, 0x0a, 0x20, 0x00, 0x00, 0x00, 0xfd, 0x00, 0x18,
+		0x4b, 0x0f, 0x8c, 0x3c, 0x00, 0x0a, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x00, 0x00, 0x00, 0x10,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x36,
+		0x02, 0x03, 0x3d, 0x70, 0x5c, 0x61, 0x10, 0x1f, 0x21, 0x20, 0x5d, 0x5e, 0x5f, 0x60, 0x65, 0x66,
+		0x62, 0x63, 0x64, 0x48, 0x67, 0x68, 0x69, 0x6b, 0x6a, 0x22, 0x3e, 0x04, 0x3e, 0x3d, 0x41, 0x43,
+		0x45, 0x23, 0x09, 0x07, 0x07, 0x6d, 0x03, 0x0c, 0x00, 0x10, 0x00, 0x78, 0x3c, 0x20, 0x00, 0x60,
+		0x01, 0x02, 0x03, 0x67, 0xd8, 0x5d, 0xc4, 0x01, 0x78, 0x80, 0x07, 0xe1, 0x0f, 0x02, 0x3a, 0x80,
+		0x18, 0x71, 0x38, 0x2d, 0x40, 0x58, 0x2c, 0x45, 0x00, 0x20, 0xc2, 0x31, 0x00, 0x00, 0x1e, 0x08,
+		0xe8, 0x00, 0x30, 0xf2, 0x70, 0x5a, 0x80, 0xb0, 0x58, 0x8a, 0x00, 0x20, 0xc2, 0x31, 0x00, 0x00,
+		0x1e, 0x04, 0x74, 0x00, 0x30, 0xf2, 0x70, 0x5a, 0x80, 0xb0, 0x58, 0x8a, 0x00, 0x20, 0x52, 0x31,
+		0x00, 0x00, 0x1e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2c
+	};
+
+	static bool read_connector_edid(int fd, uint32_t connector_id, unsigned char* out_edid, size_t max_len) {
+		if (fd < 0 || connector_id == 0 || !out_edid || max_len < EDID_LEN) return false;
+		std::shared_ptr<drmModeObjectProperties> props(
+			drmModeObjectGetProperties(fd, connector_id, DRM_MODE_OBJECT_CONNECTOR), drmModeFreeObjectProperties);
+		if (!props) return false;
+		uint32_t prop_id = drm_property_id(fd, connector_id, DRM_MODE_OBJECT_CONNECTOR, "EDID");
+		if (prop_id == 0) return false;
+		for (uint32_t i = 0; i < props->count_props; i++) {
+			if (props->props[i] == prop_id) {
+				uint64_t blob_id = props->prop_values[i];
+				if (blob_id == 0) break;
+				std::shared_ptr<drmModePropertyBlobRes> blob(
+					drmModeGetPropertyBlob(fd, blob_id), drmModeFreePropertyBlob);
+				if (blob && blob->data && blob->length >= 128) {
+					size_t copy_len = blob->length < max_len ? blob->length : max_len;
+					memset(out_edid, 0, max_len);
+					memcpy(out_edid, blob->data, copy_len);
+					if (is_valid_edid(out_edid, copy_len))
+						return true;
+				}
+				break;
+			}
+		}
+		return false;
+	}
+
+	static int open_drm_uevent_socket() {
+		int fd = socket(AF_NETLINK, SOCK_DGRAM, NETLINK_KOBJECT_UEVENT);
+		if (fd < 0) return -1;
+		int flags = fcntl(fd, F_GETFL, 0);
+		if (flags >= 0) fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+		flags = fcntl(fd, F_GETFD, 0);
+		if (flags >= 0) fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
+
+		struct sockaddr_nl addr;
+		memset(&addr, 0, sizeof(addr));
+		addr.nl_family = AF_NETLINK;
+		addr.nl_pid = (uint32_t)getpid();
+		addr.nl_groups = 1;
+
+		if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+			close(fd);
+			return -1;
+		}
+		return fd;
+	}
+
+	static bool is_target_connector_uevent(const char* buf, ssize_t len) {
+		bool is_drm = false;
+		bool is_hotplug = false;
+		bool connector_matched = false;
+		bool has_connector_name = false;
+
+		for (ssize_t off = 0; off < len; ) {
+			const char* s = buf + off;
+			size_t left = (size_t)(len - off);
+			size_t n = strnlen(s, left);
+			if (n == 0) {
+				off++;
+				continue;
+			}
+			if (strcmp(s, "SUBSYSTEM=drm") == 0) {
+				is_drm = true;
+			} else if (strcmp(s, "HOTPLUG=1") == 0) {
+				is_hotplug = true;
+			} else if (strncmp(s, "CONNECTOR=", 10) == 0) {
+				has_connector_name = true;
+				if (strcmp(s + 10, "HDMI-A-1") == 0)
+					connector_matched = true;
+			} else if (strncmp(s, "DEVPATH=", 8) == 0 || strncmp(s, "change@", 7) == 0) {
+				if (strstr(s, "HDMI-A-1") != nullptr)
+					connector_matched = true;
+			}
+			off += (ssize_t)n + 1;
+		}
+		return is_drm && is_hotplug && (!has_connector_name || connector_matched);
+	}
+
+	static bool find_matching_mode(drmModeConnector* connector, uint32_t width, uint32_t height,
+	                               double framerate, bool interlaced, drmModeModeInfo* out_mode) {
+		if (!connector || !out_mode) return false;
+		for (int i = 0; i < connector->count_modes; i++) {
+			drmModeModeInfo* candidate = &connector->modes[i];
+			bool mode_interlaced = (candidate->flags & DRM_MODE_FLAG_INTERLACE) != 0;
+			double refresh = mode_vrefresh(candidate);
+			bool refresh_matched = (framerate <= 0.0) ||
+				(fabs(refresh - framerate) < 0.5) ||
+				(candidate->vrefresh == (int)framerate);
+			if (candidate->hdisplay == (int)width &&
+				candidate->vdisplay == (int)height &&
+				mode_interlaced == interlaced &&
+				refresh_matched) {
+				*out_mode = *candidate;
+				return true;
+			}
+		}
+		for (int i = 0; i < connector->count_modes; i++) {
+			drmModeModeInfo* candidate = &connector->modes[i];
+			bool mode_interlaced = (candidate->flags & DRM_MODE_FLAG_INTERLACE) != 0;
+			if (candidate->hdisplay == (int)width &&
+				candidate->vdisplay == (int)height &&
+				mode_interlaced == interlaced) {
+				*out_mode = *candidate;
+				return true;
+			}
+		}
+		return false;
+	}
+
+	static bool find_connector_crtc(int fd, drmModeRes* resources, drmModeConnector* connector,
+	                                uint32_t* out_crtc_id, int* out_crtc_index) {
+		if (!resources || !connector || !out_crtc_id || !out_crtc_index) return false;
+		if (connector->encoder_id != 0) {
+			std::shared_ptr<drmModeEncoder> encoder(
+				drmModeGetEncoder(fd, connector->encoder_id), drmModeFreeEncoder);
+			if (encoder && encoder->crtc_id != 0) {
+				for (int i = 0; i < resources->count_crtcs; i++) {
+					if (resources->crtcs[i] == encoder->crtc_id) {
+						*out_crtc_id = encoder->crtc_id;
+						*out_crtc_index = i;
+						return true;
+					}
+				}
+			}
+		}
+		for (int i = 0; i < connector->count_encoders; i++) {
+			std::shared_ptr<drmModeEncoder> encoder(
+				drmModeGetEncoder(fd, connector->encoders[i]), drmModeFreeEncoder);
+			if (!encoder) continue;
+			for (int j = 0; j < resources->count_crtcs; j++) {
+				if (encoder->possible_crtcs & (1u << j)) {
+					*out_crtc_id = resources->crtcs[j];
+					*out_crtc_index = j;
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
+	static uint32_t find_plane_by_type(int fd, int crtc_index, uint32_t plane_type) {
+		std::shared_ptr<drmModePlaneRes> planes(drmModeGetPlaneResources(fd), drmModeFreePlaneResources);
+		if (!planes) return 0;
+		for (uint32_t i = 0; i < planes->count_planes; i++) {
+			std::shared_ptr<drmModePlane> plane(drmModeGetPlane(fd, planes->planes[i]), drmModeFreePlane);
+			if (!plane || !(plane->possible_crtcs & (1u << crtc_index))) continue;
+			uint32_t type = drm_property_id(fd, plane->plane_id, DRM_MODE_OBJECT_PLANE, "type");
+			std::shared_ptr<drmModeObjectProperties> props(
+				drmModeObjectGetProperties(fd, plane->plane_id, DRM_MODE_OBJECT_PLANE), drmModeFreeObjectProperties);
+			if (!type || !props) continue;
+			for (uint32_t p = 0; p < props->count_props; ++p) {
+				if (props->props[p] == type && props->prop_values[p] == plane_type) {
+					return plane->plane_id;
+				}
+			}
+		}
+		return 0;
+	}
+
+	static uint32_t find_overlay_plane_yuyv(int fd, int crtc_index) {
+		std::shared_ptr<drmModePlaneRes> planes(drmModeGetPlaneResources(fd), drmModeFreePlaneResources);
+		if (!planes) return 0;
+		for (uint32_t i = 0; i < planes->count_planes; i++) {
+			std::shared_ptr<drmModePlane> plane(drmModeGetPlane(fd, planes->planes[i]), drmModeFreePlane);
+			if (!plane || !(plane->possible_crtcs & (1u << crtc_index))) continue;
+			uint32_t type = drm_property_id(fd, plane->plane_id, DRM_MODE_OBJECT_PLANE, "type");
+			std::shared_ptr<drmModeObjectProperties> props(
+				drmModeObjectGetProperties(fd, plane->plane_id, DRM_MODE_OBJECT_PLANE), drmModeFreeObjectProperties);
+			if (!type || !props) continue;
+			bool is_overlay = false;
+			for (uint32_t p = 0; p < props->count_props; ++p) {
+				if (props->props[p] == type && props->prop_values[p] == DRM_PLANE_TYPE_OVERLAY) {
+					is_overlay = true;
+					break;
+				}
+			}
+			if (!is_overlay) continue;
+			for (uint32_t f = 0; f < plane->count_formats; ++f) {
+				if (plane->formats[f] == DRM_FORMAT_YUYV) {
+					return plane->plane_id;
+				}
+			}
+		}
+		return 34; // fallback ID if enumeration doesn't find YUYV
+	}
+
+	static int create_dumb_fb(int fd, uint32_t width, uint32_t height, uint32_t drm_format, uint32_t bpp,
+	                          uint32_t* out_fb_id, uint32_t* out_bo_handle, uint32_t* out_pitch) {
+		struct drm_mode_create_dumb create = {};
+		create.width = width;
+		create.height = height;
+		create.bpp = bpp;
+		if (drmIoctl(fd, DRM_IOCTL_MODE_CREATE_DUMB, &create) < 0) {
+			LOGE("DRM_IOCTL_MODE_CREATE_DUMB(%ux%u, bpp=%u) failed: %d", width, height, bpp, errno);
+			return -1;
+		}
+		uint32_t handles[4] = { create.handle, 0, 0, 0 };
+		uint32_t pitches[4] = { create.pitch, 0, 0, 0 };
+		uint32_t offsets[4] = { 0, 0, 0, 0 };
+		uint32_t fb_id = 0;
+		if (drmModeAddFB2(fd, width, height, drm_format, handles, pitches, offsets, &fb_id, 0) < 0) {
+			LOGE("drmModeAddFB2(%ux%u, format=0x%x) failed: %d", width, height, drm_format, errno);
+			struct drm_mode_destroy_dumb destroy = {};
+			destroy.handle = create.handle;
+			drmIoctl(fd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
+			return -1;
+		}
+		*out_fb_id = fb_id;
+		*out_bo_handle = create.handle;
+		if (out_pitch) *out_pitch = create.pitch;
+		return 0;
+	}
+
+	static void destroy_dumb_fb(int fd, uint32_t* p_fb_id, uint32_t* p_bo_handle) {
+		if (fd < 0) return;
+		if (p_fb_id && *p_fb_id) {
+			drmModeRmFB(fd, *p_fb_id);
+			*p_fb_id = 0;
+		}
+		if (p_bo_handle && *p_bo_handle) {
+			struct drm_mode_destroy_dumb destroy = {};
+			destroy.handle = *p_bo_handle;
+			drmIoctl(fd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
+			*p_bo_handle = 0;
+		}
+	}
+
+	static int fill_yuyv_dumb_fb(int fd, uint32_t bo, uint32_t width, uint32_t height, uint32_t pitch) {
+		struct drm_mode_map_dumb mreq = {};
+		mreq.handle = bo;
+		if (drmIoctl(fd, DRM_IOCTL_MODE_MAP_DUMB, &mreq) < 0)
+			return -1;
+		size_t map_len = (size_t)pitch * height;
+		void* map = mmap(nullptr, map_len, PROT_READ | PROT_WRITE, MAP_SHARED, fd, mreq.offset);
+		if (map == MAP_FAILED)
+			return -1;
+		for (uint32_t y = 0; y < height; y++) {
+			uint8_t* row = (uint8_t*)map + (size_t)y * pitch;
+			for (uint32_t x = 0; x + 1 < width; x += 2) {
+				row[x * 2 + 0] = 0x10; // Y0: limited-range black
+				row[x * 2 + 1] = 0x80; // U
+				row[x * 2 + 2] = 0x10; // Y1
+				row[x * 2 + 3] = 0x80; // V
+			}
+		}
+		munmap(map, map_len);
+		return 0;
+	}
+
+	struct ultra_direct_context_t {
+		int drm_fd{-1};
+		uint32_t connector_id{0};
+		uint32_t crtc_id{0};
+		int crtc_index{-1};
+		uint32_t primary_plane_id{0};
+		uint32_t primary_fb_id{0};
+		uint32_t primary_bo_handle{0};
+		uint32_t overlay_plane_id{0};
+		uint32_t overlay_fb_id{0};
+		uint32_t overlay_bo_handle{0};
+		uint32_t mode_blob_id{0};
+		bool modeset_active{false};
+		bool overlay_active{false};
+		drmModeModeInfo current_mode{};
+
+		struct video_format current_video_format{};
+		bool fixed_mode_override{false};
+		uint32_t fixed_width{3840};
+		uint32_t fixed_height{2160};
+		uint32_t fixed_fps{60};
+
+		bool last_connector_connected{false};
+		bool have_last_connector_state{false};
+		int uevent_fd{-1};
+
+		struct dau_service* dau{nullptr};
+		int dau_fd{-1};
+
+		uint64_t format_changes{0};
+		uint64_t hotplug_events{0};
+	};
+
+	static uint32_t g_tpg_pattern = 7; // 7 = XTPG_BKGND_SOLID_BLACK, 9 = XTPG_BKGND_COLOR_BARS
+
+	static std::string find_platform_driver_dir(const char* driver_sub) {
+		const char* base_paths[] = {
+			"/sys/bus/platform/drivers/zzlab-embeddedsw",
+			"/sys/devices/platform/amba_pl",
+			"/sys/devices/platform"
+		};
+		for (const char* base : base_paths) {
+			DIR* dir = opendir(base);
+			if (!dir) continue;
+			struct dirent* ent;
+			while ((ent = readdir(dir)) != nullptr) {
+				if (ent->d_name[0] == '.') continue;
+				if (strstr(ent->d_name, driver_sub)) {
+					std::string res = std::string(base) + "/" + ent->d_name;
+					closedir(dir);
+					return res;
+				}
+			}
+			closedir(dir);
+		}
+		return "";
+	}
+
+	static bool configure_vtpg(uint32_t width, uint32_t height, uint32_t bckgnd_id) {
+		std::string dir = find_platform_driver_dir("v-tpg");
+		if (dir.empty()) dir = find_platform_driver_dir("tpg");
+		if (dir.empty()) {
+			LOGW("[ULTRA DIRECT] VTPG sysfs directory not found");
+			return false;
+		}
+		auto write_attr = [&](const char* attr, uint32_t val) {
+			std::string file = dir + "/" + attr;
+			FILE* f = fopen(file.c_str(), "w");
+			if (!f) return false;
+			fprintf(f, "%u\n", val);
+			fclose(f);
+			return true;
+		};
+		write_attr("width", width);
+		write_attr("height", height);
+		write_attr("color_format", 0); // 0 = RGB
+		write_attr("bckgnd_id", bckgnd_id); // 7 = solid black, 9 = color bars
+		write_attr("ovrlay_id", 0);
+		write_attr("mask_id", 0);
+		write_attr("enable_input", 0);
+		write_attr("auto_restart", 1);
+		write_attr("start", 1);
+		LOGI("[ULTRA DIRECT] Configured VTPG at %s: %ux%u, bckgnd_id=%u", dir.c_str(), width, height, bckgnd_id);
+		return true;
+	}
+
+	static bool set_vmix_layer1_opaque() {
+		std::string dir = find_platform_driver_dir("v-mix");
+		if (dir.empty()) dir = find_platform_driver_dir("mix");
+		if (dir.empty()) return false;
+		auto write_attr = [&](const char* attr, uint32_t val) {
+			std::string file = dir + "/" + attr;
+			FILE* f = fopen(file.c_str(), "w");
+			if (!f) return false;
+			fprintf(f, "%u\n", val);
+			fclose(f);
+			return true;
+		};
+		write_attr("selected_layer", 1);
+		write_attr("layer_alpha", 255);
+		return true;
+	}
+
+	static int apply_drm_modeset(ultra_direct_context_t* ctx, uint32_t width, uint32_t height,
+	                             double fps, bool enable_overlay, uint32_t overlay_format = DRM_FORMAT_YUYV) {
+		if (!ctx || ctx->drm_fd < 0 || ctx->connector_id == 0 || ctx->crtc_id == 0)
+			return -1;
+
+		std::shared_ptr<drmModeConnector> connector(
+			drmModeGetConnector(ctx->drm_fd, ctx->connector_id), drmModeFreeConnector);
+		if (!connector) return -1;
+
+		drmModeModeInfo mode = {};
+		if (!find_matching_mode(connector.get(), width, height, fps, false, &mode)) {
+			if (connector->count_modes > 0) {
+				mode = connector->modes[0];
+				LOGW("[ULTRA DIRECT] mode %ux%u@%.2f not found, using %s (%ux%u@%u)",
+				     width, height, fps, mode.name, mode.hdisplay, mode.vdisplay, mode.vrefresh);
+				width = mode.hdisplay;
+				height = mode.vdisplay;
+			} else {
+				LOGE("[ULTRA DIRECT] connector has no display modes");
+				return -1;
+			}
+		}
+
+		uint32_t new_mode_blob_id = 0;
+		if (drmModeCreatePropertyBlob(ctx->drm_fd, &mode, sizeof(mode), &new_mode_blob_id) != 0) {
+			LOGE("[ULTRA DIRECT] drmModeCreatePropertyBlob failed: %d", errno);
+			return -1;
+		}
+
+		uint32_t new_primary_fb = 0;
+		uint32_t new_primary_bo = 0;
+		if (create_dumb_fb(ctx->drm_fd, width, height, DRM_FORMAT_BGR888, 24,
+		                   &new_primary_fb, &new_primary_bo, nullptr) != 0) {
+			drmModeDestroyPropertyBlob(ctx->drm_fd, new_mode_blob_id);
+			return -1;
+		}
+
+		uint32_t new_overlay_fb = 0;
+		uint32_t new_overlay_bo = 0;
+		uint32_t overlay_pitch = 0;
+		if (enable_overlay && ctx->overlay_plane_id != 0) {
+			uint32_t bpp = (overlay_format == DRM_FORMAT_YUYV) ? 16 : 24;
+			if (create_dumb_fb(ctx->drm_fd, width, height, overlay_format, bpp,
+			                   &new_overlay_fb, &new_overlay_bo, &overlay_pitch) == 0) {
+				if (overlay_format == DRM_FORMAT_YUYV) {
+					fill_yuyv_dumb_fb(ctx->drm_fd, new_overlay_bo, width, height, overlay_pitch);
+				}
+			} else {
+				LOGW("[ULTRA DIRECT] failed to create overlay dumb FB, proceeding without overlay");
+				enable_overlay = false;
+			}
+		}
+
+		std::shared_ptr<drmModeAtomicReq> req(drmModeAtomicAlloc(), drmModeAtomicFree);
+		if (!req) {
+			destroy_dumb_fb(ctx->drm_fd, &new_primary_fb, &new_primary_bo);
+			destroy_dumb_fb(ctx->drm_fd, &new_overlay_fb, &new_overlay_bo);
+			drmModeDestroyPropertyBlob(ctx->drm_fd, new_mode_blob_id);
+			return -1;
+		}
+
+		uint32_t connector_crtc = drm_property_id(ctx->drm_fd, ctx->connector_id, DRM_MODE_OBJECT_CONNECTOR, "CRTC_ID");
+		uint32_t crtc_mode = drm_property_id(ctx->drm_fd, ctx->crtc_id, DRM_MODE_OBJECT_CRTC, "MODE_ID");
+		uint32_t crtc_active = drm_property_id(ctx->drm_fd, ctx->crtc_id, DRM_MODE_OBJECT_CRTC, "ACTIVE");
+
+		uint32_t p_crtc = drm_property_id(ctx->drm_fd, ctx->primary_plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_ID");
+		uint32_t p_fb = drm_property_id(ctx->drm_fd, ctx->primary_plane_id, DRM_MODE_OBJECT_PLANE, "FB_ID");
+		uint32_t p_cx = drm_property_id(ctx->drm_fd, ctx->primary_plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_X");
+		uint32_t p_cy = drm_property_id(ctx->drm_fd, ctx->primary_plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_Y");
+		uint32_t p_cw = drm_property_id(ctx->drm_fd, ctx->primary_plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_W");
+		uint32_t p_ch = drm_property_id(ctx->drm_fd, ctx->primary_plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_H");
+		uint32_t p_sx = drm_property_id(ctx->drm_fd, ctx->primary_plane_id, DRM_MODE_OBJECT_PLANE, "SRC_X");
+		uint32_t p_sy = drm_property_id(ctx->drm_fd, ctx->primary_plane_id, DRM_MODE_OBJECT_PLANE, "SRC_Y");
+		uint32_t p_sw = drm_property_id(ctx->drm_fd, ctx->primary_plane_id, DRM_MODE_OBJECT_PLANE, "SRC_W");
+		uint32_t p_sh = drm_property_id(ctx->drm_fd, ctx->primary_plane_id, DRM_MODE_OBJECT_PLANE, "SRC_H");
+		uint32_t p_alpha = drm_property_id(ctx->drm_fd, ctx->primary_plane_id, DRM_MODE_OBJECT_PLANE, "alpha");
+
+		drmModeAtomicAddProperty(req.get(), ctx->connector_id, connector_crtc, ctx->crtc_id);
+		drmModeAtomicAddProperty(req.get(), ctx->crtc_id, crtc_mode, new_mode_blob_id);
+		drmModeAtomicAddProperty(req.get(), ctx->crtc_id, crtc_active, 1);
+
+		drmModeAtomicAddProperty(req.get(), ctx->primary_plane_id, p_crtc, ctx->crtc_id);
+		drmModeAtomicAddProperty(req.get(), ctx->primary_plane_id, p_fb, new_primary_fb);
+		drmModeAtomicAddProperty(req.get(), ctx->primary_plane_id, p_cx, 0);
+		drmModeAtomicAddProperty(req.get(), ctx->primary_plane_id, p_cy, 0);
+		drmModeAtomicAddProperty(req.get(), ctx->primary_plane_id, p_cw, width);
+		drmModeAtomicAddProperty(req.get(), ctx->primary_plane_id, p_ch, height);
+		drmModeAtomicAddProperty(req.get(), ctx->primary_plane_id, p_sx, 0);
+		drmModeAtomicAddProperty(req.get(), ctx->primary_plane_id, p_sy, 0);
+		drmModeAtomicAddProperty(req.get(), ctx->primary_plane_id, p_sw, width << 16);
+		drmModeAtomicAddProperty(req.get(), ctx->primary_plane_id, p_sh, height << 16);
+		if (p_alpha) drmModeAtomicAddProperty(req.get(), ctx->primary_plane_id, p_alpha, 0xffff);
+
+		if (ctx->overlay_plane_id != 0) {
+			uint32_t o_crtc = drm_property_id(ctx->drm_fd, ctx->overlay_plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_ID");
+			uint32_t o_fb = drm_property_id(ctx->drm_fd, ctx->overlay_plane_id, DRM_MODE_OBJECT_PLANE, "FB_ID");
+			uint32_t o_cx = drm_property_id(ctx->drm_fd, ctx->overlay_plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_X");
+			uint32_t o_cy = drm_property_id(ctx->drm_fd, ctx->overlay_plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_Y");
+			uint32_t o_cw = drm_property_id(ctx->drm_fd, ctx->overlay_plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_W");
+			uint32_t o_ch = drm_property_id(ctx->drm_fd, ctx->overlay_plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_H");
+			uint32_t o_sx = drm_property_id(ctx->drm_fd, ctx->overlay_plane_id, DRM_MODE_OBJECT_PLANE, "SRC_X");
+			uint32_t o_sy = drm_property_id(ctx->drm_fd, ctx->overlay_plane_id, DRM_MODE_OBJECT_PLANE, "SRC_Y");
+			uint32_t o_sw = drm_property_id(ctx->drm_fd, ctx->overlay_plane_id, DRM_MODE_OBJECT_PLANE, "SRC_W");
+			uint32_t o_sh = drm_property_id(ctx->drm_fd, ctx->overlay_plane_id, DRM_MODE_OBJECT_PLANE, "SRC_H");
+			uint32_t o_alpha = drm_property_id(ctx->drm_fd, ctx->overlay_plane_id, DRM_MODE_OBJECT_PLANE, "alpha");
+
+			if (enable_overlay && new_overlay_fb != 0) {
+				drmModeAtomicAddProperty(req.get(), ctx->overlay_plane_id, o_crtc, ctx->crtc_id);
+				drmModeAtomicAddProperty(req.get(), ctx->overlay_plane_id, o_fb, new_overlay_fb);
+				drmModeAtomicAddProperty(req.get(), ctx->overlay_plane_id, o_cx, 0);
+				drmModeAtomicAddProperty(req.get(), ctx->overlay_plane_id, o_cy, 0);
+				drmModeAtomicAddProperty(req.get(), ctx->overlay_plane_id, o_cw, width);
+				drmModeAtomicAddProperty(req.get(), ctx->overlay_plane_id, o_ch, height);
+				drmModeAtomicAddProperty(req.get(), ctx->overlay_plane_id, o_sx, 0);
+				drmModeAtomicAddProperty(req.get(), ctx->overlay_plane_id, o_sy, 0);
+				drmModeAtomicAddProperty(req.get(), ctx->overlay_plane_id, o_sw, width << 16);
+				drmModeAtomicAddProperty(req.get(), ctx->overlay_plane_id, o_sh, height << 16);
+				if (o_alpha) drmModeAtomicAddProperty(req.get(), ctx->overlay_plane_id, o_alpha, 0xffff);
+			} else {
+				drmModeAtomicAddProperty(req.get(), ctx->overlay_plane_id, o_crtc, 0);
+				drmModeAtomicAddProperty(req.get(), ctx->overlay_plane_id, o_fb, 0);
+			}
+		}
+
+		int err = drmModeAtomicCommit(ctx->drm_fd, req.get(), DRM_MODE_ATOMIC_ALLOW_MODESET, nullptr);
+		if (err != 0) {
+			LOGE("[ULTRA DIRECT] drmModeAtomicCommit failed: %d", errno);
+			destroy_dumb_fb(ctx->drm_fd, &new_primary_fb, &new_primary_bo);
+			destroy_dumb_fb(ctx->drm_fd, &new_overlay_fb, &new_overlay_bo);
+			drmModeDestroyPropertyBlob(ctx->drm_fd, new_mode_blob_id);
+			return -1;
+		}
+
+		destroy_dumb_fb(ctx->drm_fd, &ctx->primary_fb_id, &ctx->primary_bo_handle);
+		destroy_dumb_fb(ctx->drm_fd, &ctx->overlay_fb_id, &ctx->overlay_bo_handle);
+		if (ctx->mode_blob_id)
+			drmModeDestroyPropertyBlob(ctx->drm_fd, ctx->mode_blob_id);
+
+		ctx->primary_fb_id = new_primary_fb;
+		ctx->primary_bo_handle = new_primary_bo;
+		ctx->overlay_fb_id = new_overlay_fb;
+		ctx->overlay_bo_handle = new_overlay_bo;
+		ctx->mode_blob_id = new_mode_blob_id;
+		ctx->modeset_active = true;
+		ctx->overlay_active = enable_overlay;
+		ctx->current_mode = mode;
+
+		// Ensure VTPG is generating frames to keep v_mix master layer active
+		configure_vtpg(width, height, g_tpg_pattern);
+		if (enable_overlay) {
+			set_vmix_layer1_opaque();
+		}
+
+		LOGI("[ULTRA DIRECT] DRM modeset active: %ux%u@%uHz (%s) | primary plane %u, overlay plane %u (active=%d)",
+		     mode.hdisplay, mode.vdisplay, mode.vrefresh, mode.name,
+		     ctx->primary_plane_id, ctx->overlay_plane_id, (int)enable_overlay);
+		return 0;
+	}
+
+	static void cleanup_ultra_direct_drm(ultra_direct_context_t* ctx) {
+		if (!ctx || ctx->drm_fd < 0) return;
+		destroy_dumb_fb(ctx->drm_fd, &ctx->primary_fb_id, &ctx->primary_bo_handle);
+		destroy_dumb_fb(ctx->drm_fd, &ctx->overlay_fb_id, &ctx->overlay_bo_handle);
+		if (ctx->mode_blob_id) {
+			drmModeDestroyPropertyBlob(ctx->drm_fd, ctx->mode_blob_id);
+			ctx->mode_blob_id = 0;
+		}
+		drmClose(ctx->drm_fd);
+		ctx->drm_fd = -1;
+		ctx->modeset_active = false;
+	}
+
+	static const char* dau_colorformat_str(enum video_colorformat fmt) {
+		switch (fmt) {
+		case VIDEO_COLORFORMAT_YUV444: return "YUV444";
+		case VIDEO_COLORFORMAT_YUV422: return "YUV422";
+		case VIDEO_COLORFORMAT_YUV420: return "YUV420";
+		case VIDEO_COLORFORMAT_RGB:    return "RGB";
+		default: return "unknown";
+		}
+	}
+
+	static void dau_get_cable_status(struct dau_service *dau, struct DBusMessage *reply, void *ctxt) {
+		auto* ctx = static_cast<ultra_direct_context_t*>(ctxt);
+		bool connected = false;
+		if (ctx && ctx->drm_fd >= 0 && ctx->connector_id != 0) {
+			std::shared_ptr<drmModeConnector> conn(
+				drmModeGetConnector(ctx->drm_fd, ctx->connector_id), drmModeFreeConnector);
+			if (conn) connected = (conn->connection == DRM_MODE_CONNECTED);
+		}
+		LOGI("[ULTRA DIRECT][DAU] get_cable_status -> %s", connected ? "connected" : "disconnected");
+		dau_reply_get_cable_status(dau, reply, connected);
+	}
+
+	static void dau_get_hdcp(struct dau_service *dau, struct DBusMessage *reply, void *ctxt) {
+		(void)ctxt;
+		struct hdcp h = {};
+		h.current = HDCP_VERSION_22;
+		h.hdcp14_supported = false;
+		h.hdcp22_supported = true;
+		LOGI("[ULTRA DIRECT][DAU] get_hdcp -> HDCP 2.2");
+		dau_reply_get_hdcp(dau, reply, &h);
+	}
+
+	static void dau_set_hdcp(struct dau_service *dau, struct DBusMessage *reply,
+	                         enum hdcp_version version, void *ctxt) {
+		(void)ctxt;
+		LOGI("[ULTRA DIRECT][DAU] set_hdcp (version=%d)", (int)version);
+		dau_reply_success(dau, reply);
+	}
+
+	static void dau_get_edid(struct dau_service *dau, struct DBusMessage *reply, void *ctxt) {
+		auto* ctx = static_cast<ultra_direct_context_t*>(ctxt);
+		unsigned char edid[EDID_LEN];
+		memset(edid, 0, sizeof(edid));
+		bool valid = false;
+		if (ctx && ctx->drm_fd >= 0 && ctx->connector_id != 0) {
+			valid = read_connector_edid(ctx->drm_fd, ctx->connector_id, edid, sizeof(edid));
+		}
+		if (valid) {
+			LOGI("[ULTRA DIRECT][DAU] get_edid -> returning display EDID");
+			dau_reply_get_edid(dau, reply, edid);
+		} else {
+			LOGI("[ULTRA DIRECT][DAU] get_edid -> display EDID unavailable, returning fallback EDID");
+			dau_reply_get_edid(dau, reply, g_fallback_edid);
+		}
+	}
+
+	static void dau_set_video_format(struct dau_service *dau, struct DBusMessage *reply,
+	                                 const struct video_format *format, void *ctxt) {
+		auto* ctx = static_cast<ultra_direct_context_t*>(ctxt);
+		if (!format || !ctx) {
+			LOGW("[ULTRA DIRECT][DAU] set_video_format: invalid parameter");
+			dau_reply_error(dau, reply, "NULL format");
+			return;
+		}
+		LOGI("[ULTRA DIRECT][DAU] set_video_format: %ux%u@%uHz, color=%s, bpp=%u, interlaced=%s, locked=%s",
+		     format->width, format->height, format->framerate,
+		     dau_colorformat_str(format->colorformat), format->bpp,
+		     format->interlaced ? "true" : "false",
+		     format->locked ? "true" : "false");
+
+		ctx->current_video_format = *format;
+		ctx->format_changes++;
+
+		uint32_t target_w = ctx->fixed_mode_override ? ctx->fixed_width : format->width;
+		uint32_t target_h = ctx->fixed_mode_override ? ctx->fixed_height : format->height;
+		double target_fps = ctx->fixed_mode_override ? (double)ctx->fixed_fps : (double)format->framerate;
+		uint32_t overlay_format = (format->colorformat == VIDEO_COLORFORMAT_RGB) ? DRM_FORMAT_BGR888 : DRM_FORMAT_YUYV;
+
+		if (format->locked) {
+			apply_drm_modeset(ctx, target_w, target_h, target_fps, true, overlay_format);
+		} else {
+			LOGI("[ULTRA DIRECT][DAU] stream unlocked: disabling overlay plane");
+			apply_drm_modeset(ctx, target_w, target_h, target_fps, false);
+		}
+		dau_reply_success(dau, reply);
+	}
+
+	static void dau_set_audio_info(struct dau_service *dau, struct DBusMessage *reply,
+	                               const struct audio_info *info, void *ctxt) {
+		(void)ctxt;
+		if (info) {
+			LOGI("[ULTRA DIRECT][DAU] set_audio_info: %u ch, %u Hz, %u bits, enc=%d",
+			     info->channel_count, info->sample_rate, info->sample_bits, (int)info->encoding);
+		}
+		dau_reply_success(dau, reply);
+	}
+
+	static void dau_set_hdr(struct dau_service *dau, struct DBusMessage *reply,
+	                        const struct hdr_info *info, void *ctxt) {
+		(void)ctxt;
+		if (info) {
+			LOGI("[ULTRA DIRECT][DAU] set_hdr: avi_c=%u, avi_ec=%u, avi_q=%u, dv_tunneling=%s",
+			     (unsigned int)info->avi_c, (unsigned int)info->avi_ec, (unsigned int)info->avi_q,
+			     info->dv_tunneling ? "true" : "false");
+		}
+		dau_reply_success(dau, reply);
+	}
+
+	static void dau_toggle_hpd(struct dau_service *dau, struct DBusMessage *reply, void *ctxt) {
+		(void)ctxt;
+		LOGI("[ULTRA DIRECT][DAU] toggle_hpd");
+		dau_reply_success(dau, reply);
+	}
+
+	static const struct dau_service_methods g_ultra_direct_dau_methods = {
+		.get_cable_status = dau_get_cable_status,
+		.get_hdcp = dau_get_hdcp,
+		.set_hdcp = dau_set_hdcp,
+
+		.get_video_format = nullptr,
+		.get_audio_info = nullptr,
+		.get_hdr = nullptr,
+		.set_edid = nullptr,
+		.toggle_hpd = dau_toggle_hpd,
+
+		.set_video_format = dau_set_video_format,
+		.set_audio_info = dau_set_audio_info,
+		.set_hdr = dau_set_hdr,
+		.get_edid = dau_get_edid,
+	};
+
+	static int run_ultra_direct(uint32_t stat_interval, bool fixed_mode_override,
+	                            uint32_t fixed_w, uint32_t fixed_h, uint32_t fixed_fps) {
 		if (stat_interval == 0)
 			stat_interval = 3;
 		LOGI("[ULTRA DIRECT] Dante Ultra FPGA media path: VSINK video (v_mix layer 1) and AES3 audio (SI1) -> HDMI");
-		LOGI("[ULTRA DIRECT] This mode does not create a Linux DDR/VCU/DEP/ALSA data path.");
+		LOGI("[ULTRA DIRECT] Hardware passthrough: bypasses DVR socket, DEP, VCU, and ALSA PCM playback.");
+
 		if (select_hdmi_audio_route(1) != 0) {
 			LOGE("[ULTRA DIRECT] failed to select SI1 (Custom FPGA / Dante RX) audio route");
 			return 1;
 		}
-		int initial = read_hdmi_audio_route();
+		int initial_route = read_hdmi_audio_route();
 		LOGI("[ULTRA DIRECT] HDMI audio route set to SI1 (%s)",
-		     hdmi_audio_route_name(initial));
+		     hdmi_audio_route_name(initial_route));
+
+		ultra_direct_context_t ctx;
+		ctx.fixed_mode_override = fixed_mode_override;
+		ctx.fixed_width = fixed_w;
+		ctx.fixed_height = fixed_h;
+		ctx.fixed_fps = fixed_fps;
+
+		ctx.drm_fd = drmOpen("xlnx", nullptr);
+		if (ctx.drm_fd < 0 ||
+		    drmSetClientCap(ctx.drm_fd, DRM_CLIENT_CAP_ATOMIC, 1) ||
+		    drmSetClientCap(ctx.drm_fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1)) {
+			LOGE("[ULTRA DIRECT] failed to open DRM xlnx device or enable universal planes: %d", errno);
+			return 1;
+		}
+
+		std::shared_ptr<drmModeRes> resources(drmModeGetResources(ctx.drm_fd), drmModeFreeResources);
+		if (!resources) {
+			LOGE("[ULTRA DIRECT] drmModeGetResources failed");
+			cleanup_ultra_direct_drm(&ctx);
+			return 1;
+		}
+
+		for (int i = 0; i < resources->count_connectors; i++) {
+			std::shared_ptr<drmModeConnector> conn(
+				drmModeGetConnector(ctx.drm_fd, resources->connectors[i]), drmModeFreeConnector);
+			if (!conn) continue;
+			if (conn->connector_type == DRM_MODE_CONNECTOR_HDMIA) {
+				ctx.connector_id = conn->connector_id;
+				ctx.last_connector_connected = (conn->connection == DRM_MODE_CONNECTED);
+				ctx.have_last_connector_state = true;
+				break;
+			}
+		}
+		if (ctx.connector_id == 0) {
+			LOGE("[ULTRA DIRECT] HDMI-A connector not found");
+			cleanup_ultra_direct_drm(&ctx);
+			return 1;
+		}
+
+		std::shared_ptr<drmModeConnector> connector(
+			drmModeGetConnector(ctx.drm_fd, ctx.connector_id), drmModeFreeConnector);
+		if (!find_connector_crtc(ctx.drm_fd, resources.get(), connector.get(),
+		                         &ctx.crtc_id, &ctx.crtc_index)) {
+			LOGE("[ULTRA DIRECT] no usable CRTC found for HDMI connector %u", ctx.connector_id);
+			cleanup_ultra_direct_drm(&ctx);
+			return 1;
+		}
+
+		ctx.primary_plane_id = find_plane_by_type(ctx.drm_fd, ctx.crtc_index, DRM_PLANE_TYPE_PRIMARY);
+		ctx.overlay_plane_id = find_overlay_plane_yuyv(ctx.drm_fd, ctx.crtc_index);
+		LOGI("[ULTRA DIRECT] DRM setup: connector=%u (connected=%d), CRTC=%u (idx=%d), primary plane=%u, overlay plane=%u",
+		     ctx.connector_id, (int)ctx.last_connector_connected, ctx.crtc_id, ctx.crtc_index,
+		     ctx.primary_plane_id, ctx.overlay_plane_id);
+
+		uint32_t init_w = fixed_mode_override ? fixed_w : 3840;
+		uint32_t init_h = fixed_mode_override ? fixed_h : 2160;
+		double init_fps = fixed_mode_override ? (double)fixed_fps : 60.0;
+		if (apply_drm_modeset(&ctx, init_w, init_h, init_fps, false) != 0) {
+			LOGW("[ULTRA DIRECT] initial DRM modeset failed, will retry on format update or hotplug");
+		}
+
+		ctx.uevent_fd = open_drm_uevent_socket();
+		if (ctx.uevent_fd < 0) {
+			LOGW("[ULTRA DIRECT] open_drm_uevent_socket failed: %d (hotplug detection degraded)", errno);
+		} else {
+			LOGI("[ULTRA DIRECT] DRM connector monitor active (uevent fd=%d)", ctx.uevent_fd);
+		}
+
+		ctx.dau = dau_service_register(DAU_SERVICE_SINK, 0, &g_ultra_direct_dau_methods, &ctx);
+		if (!ctx.dau) {
+			LOGE("[ULTRA DIRECT] dau_service_register(DAU_SERVICE_SINK) failed");
+			cleanup_ultra_direct_drm(&ctx);
+			if (ctx.uevent_fd >= 0) close(ctx.uevent_fd);
+			return 1;
+		}
+		ctx.dau_fd = dau_service_get_fd(ctx.dau);
+		LOGI("[ULTRA DIRECT] DAU SINK service registered (fd=%d)", ctx.dau_fd);
+		if (ctx.last_connector_connected) {
+			dau_signal_cable_change(ctx.dau);
+		}
+
+		int stdin_flags = fcntl(STDIN_FILENO, F_GETFL, 0);
+		if (stdin_flags >= 0)
+			fcntl(STDIN_FILENO, F_SETFL, stdin_flags | O_NONBLOCK);
 
 		uint64_t last_report_ms = 0;
+		struct pollfd pfds[3];
+
 		while (!g_stop_requested) {
+			int nfds = 0;
+			int idx_dau = -1, idx_uevent = -1, idx_stdin = -1;
+
+			if (ctx.dau_fd >= 0) {
+				idx_dau = nfds;
+				pfds[nfds].fd = ctx.dau_fd;
+				pfds[nfds].events = POLLIN;
+				pfds[nfds].revents = 0;
+				nfds++;
+			}
+			if (ctx.uevent_fd >= 0) {
+				idx_uevent = nfds;
+				pfds[nfds].fd = ctx.uevent_fd;
+				pfds[nfds].events = POLLIN;
+				pfds[nfds].revents = 0;
+				nfds++;
+			}
+			idx_stdin = nfds;
+			pfds[nfds].fd = STDIN_FILENO;
+			pfds[nfds].events = POLLIN;
+			pfds[nfds].revents = 0;
+			nfds++;
+
+			int ret = poll(pfds, nfds, 500);
+			if (ret < 0) {
+				if (errno == EINTR) continue;
+				LOGE("[ULTRA DIRECT] poll error: %d", errno);
+				break;
+			}
+
+			if (idx_dau >= 0 && (pfds[idx_dau].revents & POLLIN)) {
+				dau_service_dispatch(ctx.dau, 0);
+			}
+
+			if (idx_uevent >= 0 && (pfds[idx_uevent].revents & POLLIN)) {
+				char uevent_buf[4096];
+				bool have_connector_event = false;
+				while (true) {
+					ssize_t n = recv(ctx.uevent_fd, uevent_buf, sizeof(uevent_buf), 0);
+					if (n < 0) break;
+					if (is_target_connector_uevent(uevent_buf, n))
+						have_connector_event = true;
+				}
+				if (have_connector_event) {
+					std::shared_ptr<drmModeConnector> conn(
+						drmModeGetConnector(ctx.drm_fd, ctx.connector_id), drmModeFreeConnector);
+					bool connected = conn && (conn->connection == DRM_MODE_CONNECTED);
+					if (!ctx.have_last_connector_state || connected != ctx.last_connector_connected) {
+						ctx.last_connector_connected = connected;
+						ctx.have_last_connector_state = true;
+						ctx.hotplug_events++;
+						LOGI("[ULTRA DIRECT] HDMI connector state changed -> %s (event)",
+						     connected ? "connected" : "disconnected");
+						if (ctx.dau)
+							dau_signal_cable_change(ctx.dau);
+						if (!connected && ctx.overlay_active) {
+							apply_drm_modeset(&ctx, ctx.current_mode.hdisplay, ctx.current_mode.vdisplay,
+							                  mode_vrefresh(&ctx.current_mode), false);
+						}
+					}
+				}
+			}
+
+			if (idx_stdin >= 0 && (pfds[idx_stdin].revents & POLLIN)) {
+				char ch = 0;
+				if (read(STDIN_FILENO, &ch, 1) > 0) {
+					if (ch == 'q' || ch == 'Q') {
+						LOGI("[ULTRA DIRECT] 'q' pressed, stopping...");
+						g_stop_requested = 1;
+						break;
+					}
+				}
+			}
+
 			struct timespec ts;
 			clock_gettime(CLOCK_MONOTONIC, &ts);
 			uint64_t now_ms = (uint64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 			if (now_ms - last_report_ms >= (uint64_t)stat_interval * 1000) {
 				last_report_ms = now_ms;
 				int route = read_hdmi_audio_route();
-				LOGI("[ULTRA DIRECT] status: HDMI audio route=%d (%s) | formatter PCM untouched (SI0 dormant) | Dante runtime owns VSINK/HDMI",
-				     route, hdmi_audio_route_name(route));
+				LOGI("[ULTRA DIRECT] status: audio route=%d (%s) | display: %ux%u@%uHz (%s) | overlay=%s | fmt changes=%llu | hotplug=%llu",
+				     route, hdmi_audio_route_name(route),
+				     ctx.current_mode.hdisplay, ctx.current_mode.vdisplay, ctx.current_mode.vrefresh,
+				     ctx.current_mode.name,
+				     ctx.overlay_active ? "active (Dante RX stream visible)" : "inactive (background)",
+				     (unsigned long long)ctx.format_changes,
+				     (unsigned long long)ctx.hotplug_events);
 			}
-			usleep(200000);
 		}
-		LOGI("[ULTRA DIRECT] stopping: leaving HDMI audio route on SI1 (Dante RX).");
+
+		if (stdin_flags >= 0)
+			fcntl(STDIN_FILENO, F_SETFL, stdin_flags);
+
+		LOGI("[ULTRA DIRECT] Shutting down, unregistering DAU service...");
+		if (ctx.dau) {
+			dau_service_unregister(ctx.dau);
+			ctx.dau = nullptr;
+		}
+		if (ctx.uevent_fd >= 0) {
+			close(ctx.uevent_fd);
+			ctx.uevent_fd = -1;
+		}
+		LOGI("[ULTRA DIRECT] Releasing DRM resources...");
+		cleanup_ultra_direct_drm(&ctx);
+		LOGI("[ULTRA DIRECT] Stopped cleanly.");
 		return 0;
 	}
 }
@@ -1986,6 +2880,11 @@ int main(int argc, char* argv[]) {
 	uint32_t stat_interval = 3;
 	std::string reconstructed_path;
 	std::string media_path = "linux-decode";
+	std::string custom_mode;
+	bool fixed_mode_override = false;
+	uint32_t fixed_w = 3840;
+	uint32_t fixed_h = 2160;
+	uint32_t fixed_fps = 60;
 	bool direct_mode = false;
 	bool decode_enabled = true;
 	bool decode_requested = false;
@@ -2006,6 +2905,10 @@ int main(int argc, char* argv[]) {
 			printf("  --media-path <mode>  Media path: 'linux-decode' (default; DVR->VCU->DRM +\n");
 			printf("                     DEP->ALSA formatter) or 'ultra-direct' (FPGA VSINK\n");
 			printf("                     video + AES3 audio straight to HDMI, no DDR path)\n");
+			printf("  --mode <WxH[@fps]> Override DRM display mode for ultra-direct (e.g. 3840x2160@60)\n");
+			printf("                     If omitted, mode dynamically tracks Dante TX format via DAU\n");
+			printf("  --tpg-pattern <id> VTPG background pattern ID for ultra-direct mode\n");
+			printf("                     (7=solid black [default], 9=color bars, 0=pass-through)\n");
 			printf("  --dump-reconstructed <path>  Write depayloaded Annex-B video AUs\n");
 			printf("  --direct <tx-ip>   Direct RTP mode: receive unicast RTP from tx-ip:port,\n");
 			printf("                     bypassing the Dante daemon entirely (no decode by default)\n");
@@ -2027,6 +2930,25 @@ int main(int argc, char* argv[]) {
 			stat_interval = (uint32_t)strtoul(argv[++i], nullptr, 10);
 		} else if (strcmp(argv[i], "--media-path") == 0 && i + 1 < argc) {
 			media_path = argv[++i];
+		} else if (strcmp(argv[i], "--tpg-pattern") == 0 && i + 1 < argc) {
+			g_tpg_pattern = (uint32_t)strtoul(argv[++i], nullptr, 10);
+		} else if (strcmp(argv[i], "--mode") == 0 && i + 1 < argc) {
+			custom_mode = argv[++i];
+			uint32_t w = 0, h = 0, fps = 60;
+			if (sscanf(custom_mode.c_str(), "%ux%u@%u", &w, &h, &fps) == 3) {
+				fixed_w = w;
+				fixed_h = h;
+				fixed_fps = fps;
+				fixed_mode_override = true;
+			} else if (sscanf(custom_mode.c_str(), "%ux%u", &w, &h) == 2) {
+				fixed_w = w;
+				fixed_h = h;
+				fixed_fps = 60;
+				fixed_mode_override = true;
+			} else {
+				LOGE("Invalid --mode format '%s'. Expected WxH[@fps], e.g. 3840x2160@60", custom_mode.c_str());
+				return 1;
+			}
 		} else if (strcmp(argv[i], "--dump-reconstructed") == 0 && i + 1 < argc) {
 			reconstructed_path = argv[++i];
 		} else if (strcmp(argv[i], "--direct") == 0 && i + 1 < argc) {
@@ -2066,9 +2988,19 @@ int main(int argc, char* argv[]) {
 		printf(" Audio:         disabled\n");
 		printf(" Decode:        %s\n", decode_enabled ? "enabled" : "disabled (verify RTP->packet only)");
 	} else if (media_path == "ultra-direct") {
-		printf(" SC6F0 RX DANTE ULTRA DIRECT (FPGA passthrough, no zstreamer)\n");
+		printf(" SC6F0 RX DANTE ULTRA DIRECT (FPGA passthrough, DRM KMS + DAU service)\n");
 		printf(" Video: VSINK -> v_mix layer1 -> HDMI | Audio: AES3 -> SI1 -> HDMI\n");
-		printf(" This mode does not open the DVR socket, DEP, VCU, DRM or ALSA PCM.\n");
+		if (fixed_mode_override) {
+			printf(" Mode:          %ux%u@%u (Fixed override)\n", fixed_w, fixed_h, fixed_fps);
+		} else {
+			printf(" Mode:          Dynamic (tracks Dante TX format via DAU)\n");
+		}
+		printf(" TPG Pattern:   %u (%s)\n", g_tpg_pattern,
+		       g_tpg_pattern == 7 ? "solid black" :
+		       g_tpg_pattern == 9 ? "color bars" :
+		       g_tpg_pattern == 0 ? "pass-through" : "custom");
+		printf(" DAU Service:   sink0 registered (D-Bus)\n");
+		printf(" This mode bypasses DVR socket, DEP, VCU, and ALSA PCM.\n");
 	} else {
 		printf(" SC6F0 Dante RX (zstreamer pipeline, non-decode mode)\n");
 		printf(" DVR Socket:    %s\n", dvr_socket.c_str());
@@ -2082,7 +3014,7 @@ int main(int argc, char* argv[]) {
 	printf("============================================================\n\n");
 
 	if (media_path == "ultra-direct") {
-		return run_ultra_direct(stat_interval);
+		return run_ultra_direct(stat_interval, fixed_mode_override, fixed_w, fixed_h, fixed_fps);
 	}
 
 	zst_dante_rx_t* rx = start_dante_rx(dvr_socket, dep_name, channels, sample_rate,

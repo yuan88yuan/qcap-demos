@@ -542,9 +542,9 @@ struct App0 {
 					break;
 				}
 
-				uint32_t nConnectorId = (uint32_t)44;
-				uint32_t nCrtcId = (uint32_t)42;
-				uint32_t nPrimaryPlaneId = (uint32_t)36;
+				uint32_t nConnectorId = (uint32_t)40;
+				uint32_t nCrtcId = (uint32_t)38;
+				uint32_t nPrimaryPlaneId = (uint32_t)32;
 				uint32_t nOverlayPlaneId = (uint32_t)34;
 
 				std::shared_ptr<drmModeRes> pResources(drmModeGetResources(drm_fd), drmModeFreeResources);
