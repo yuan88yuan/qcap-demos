@@ -1523,6 +1523,12 @@ namespace __sc6f0_dante_rx__ {
 
 				uint64_t rtp_in = get_uint_prop(rx->coordinator, "rx-in-packets");
 				uint64_t rtp_lost = get_uint_prop(rx->coordinator, "rx-lost-packets");
+				uint64_t probe_rtp_in = get_uint_prop(rx->coordinator,
+					ZST_DANTE_VIDEO_COORDINATOR_PROP_RX_PROBE_IN_PACKETS);
+				uint64_t probe_rtp_lost = get_uint_prop(rx->coordinator,
+					ZST_DANTE_VIDEO_COORDINATOR_PROP_RX_PROBE_LOST_PACKETS);
+				uint64_t rtp_late = get_uint_prop(rx->coordinator,
+					ZST_DANTE_VIDEO_COORDINATOR_PROP_RX_LATE_PACKETS);
 				uint64_t rtp_old = get_uint_prop(rx->coordinator, "rx-old-packets");
 				uint64_t rtp_dup = get_uint_prop(rx->coordinator, "rx-dup-packets");
 				uint64_t parse_fail = get_uint_prop(rx->coordinator, "rx-parse-fail");
@@ -1560,7 +1566,7 @@ namespace __sc6f0_dante_rx__ {
 					(unsigned long)decoded, decoded_fps);
 
 				if (active_flows > 0 || cur_vpkts > 0) {
-					LOGI("[DANTE RX STATS] flows=%u | VIDEO: %lu AUs (%.2f MB, %.1f fps, %.2f Mbps) | RTP: %lu udp-in, %lu reord-in (%.0f/s), lost=%lu, old=%lu, dup=%lu, parse-fail=%lu, dep-in=%lu, dep-drop=%lu, qof=%lu, qd=%lu | AUDIO: %u Hz, %u ch, fmt=%u, %lu periods (%.2f MB, %.2f Mbps, %lu samples, %.1f p/s, underflow=%u, overrun=%u)",
+					LOGI("[DANTE RX STATS] flows=%u | VIDEO: %lu AUs (%.2f MB, %.1f fps, %.2f Mbps) | RTP: %lu udp-in, %lu reord-in (%.0f/s), lost=%lu, late=%lu, old=%lu, dup=%lu, parse-fail=%lu, dep-in=%lu, dep-drop=%lu, qof=%lu, qd=%lu | PROBE port+10: reord-in=%lu lost=%lu | AUDIO: %u Hz, %u ch, fmt=%u, %lu periods (%.2f MB, %.2f Mbps, %lu samples, %.1f p/s, underflow=%u, overrun=%u)",
 						active_flows,
 						(unsigned long)cur_vpkts,
 						(double)cur_vbytes / (1024.0 * 1024.0),
@@ -1568,6 +1574,7 @@ namespace __sc6f0_dante_rx__ {
 						(unsigned long)udp_in,
 						(unsigned long)rtp_in, rtp_rate,
 						(unsigned long)rtp_lost,
+						(unsigned long)rtp_late,
 						(unsigned long)rtp_old,
 						(unsigned long)rtp_dup,
 						(unsigned long)parse_fail,
@@ -1575,6 +1582,8 @@ namespace __sc6f0_dante_rx__ {
 						(unsigned long)dep_dropped,
 						(unsigned long)udp_qoverflow,
 						(unsigned long)udp_qdepth,
+						(unsigned long)probe_rtp_in,
+						(unsigned long)probe_rtp_lost,
 						audio_rate, audio_channels, audio_format,
 						(unsigned long)cur_apds,
 						(double)cur_abytes / (1024.0 * 1024.0),
@@ -1601,6 +1610,7 @@ namespace __sc6f0_dante_rx__ {
 	                                     uint32_t stat_interval,
 	                                     const std::string& reconstructed_path,
 	                                     bool decode_enabled = true,
+	                                     bool rtp_stats_only = false,
 	                                     bool direct_mode = false,
 	                                     const std::string& direct_peer = "",
 	                                     const std::string& direct_local = "0.0.0.0",
@@ -1660,9 +1670,10 @@ namespace __sc6f0_dante_rx__ {
 		}
 		if (rx->session)
 			zst_dante_video_coordinator_attach_session(rx->coordinator, rx->session);
-		/* The default 64-packet/20-ms window is too short for bursty QDMA delivery. */
-		set_uint(rx->coordinator, ZST_DANTE_VIDEO_COORDINATOR_PROP_REORDER_WINDOW, 512);
-		set_uint(rx->coordinator, ZST_DANTE_VIDEO_COORDINATOR_PROP_REORDER_TIMEOUT_MS, 100);
+		/* This network does not reorder RTP. Advance immediately over a missing
+		 * sequence number instead of holding subsequent H.264 fragments. */
+		set_uint(rx->coordinator, ZST_DANTE_VIDEO_COORDINATOR_PROP_REORDER_WINDOW, 1);
+		set_uint(rx->coordinator, ZST_DANTE_VIDEO_COORDINATOR_PROP_REORDER_TIMEOUT_MS, 1);
 		rx->rx_video_pad = zst_dante_video_coordinator_request_rx_output_pad(rx->coordinator, 0);
 		if (!rx->rx_video_pad) {
 			LOGE("zst_dante_video_coordinator_request_rx_output_pad() failed");
@@ -1686,8 +1697,8 @@ namespace __sc6f0_dante_rx__ {
 		rx->video_stats->rx = rx;
 		zst_pad_link(rx->rx_video_pad, zst_element_get_pad(rx->rx_video_sink, "sink"));
 
-		/* 4. Dante DEP Audio Source (skipped in direct RTP mode) */
-		if (!direct_mode) {
+		/* 4. Dante DEP audio is excluded from RTP-only measurement mode. */
+		if (!direct_mode && !rtp_stats_only) {
 			rx->rx_dep_src = zst_dante_dep_audio_source_create();
 			if (!rx->rx_dep_src) {
 				LOGE("zst_dante_dep_audio_source_create() failed");
@@ -1756,7 +1767,7 @@ namespace __sc6f0_dante_rx__ {
 		/* Add elements to pipeline */
 		zst_pipeline_add(rx->pipe, rx->coordinator);
 		zst_pipeline_add(rx->pipe, rx->rx_video_sink);
-		if (!direct_mode) {
+		if (!direct_mode && !rtp_stats_only) {
 			zst_pipeline_add(rx->pipe, rx->rx_dep_src);
 			zst_pipeline_add(rx->pipe, rx->rx_audio_sink);
 		}
@@ -1807,7 +1818,7 @@ namespace __sc6f0_dante_rx__ {
 			if (r != ZST_OK) {
 				LOGE("direct RX flow apply failed, r=%d", (int)r);
 			} else {
-				LOGI("[DIRECT RX] listening on %s:%u from %s (reorder 512/100ms)",
+				LOGI("[DIRECT RX] listening on %s:%u from %s (loss-first reorder 1/1ms)",
 				     rx->direct_local.c_str(), rx->direct_port,
 				     rx->direct_transmitter.c_str());
 			}
@@ -2889,6 +2900,7 @@ int main(int argc, char* argv[]) {
 	bool decode_enabled = true;
 	bool decode_requested = false;
 	bool recv_only = false;
+	bool rtp_stats_only = false;
 	std::string direct_peer;
 	std::string direct_local = "192.168.190.145";
 	uint16_t direct_port = 16490;
@@ -2914,6 +2926,7 @@ int main(int argc, char* argv[]) {
 			printf("                     bypassing the Dante daemon entirely (no decode by default)\n");
 			printf("  --decode           Enable the ALLEGRO2 decoder in --direct mode\n");
 			printf("  --recv-only        Disable the decoder entirely (verify RTP->packet only)\n");
+			printf("  --rtp-stats-only   Measure Dante RTP transport only; disable decode, display, and audio\n");
 			printf("  --local-ip <ip>    Local bind address for --direct (default: 0.0.0.0)\n");
 			printf("  --port <port>      RTP port for --direct (default: 16490)\n");
 			printf("  -h, --help         Show this help message\n");
@@ -2958,6 +2971,8 @@ int main(int argc, char* argv[]) {
 			decode_requested = true;
 		} else if (strcmp(argv[i], "--recv-only") == 0) {
 			recv_only = true;
+		} else if (strcmp(argv[i], "--rtp-stats-only") == 0) {
+			rtp_stats_only = true;
 		} else if (strcmp(argv[i], "--local-ip") == 0 && i + 1 < argc) {
 			direct_local = argv[++i];
 		} else if (strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
@@ -2965,7 +2980,7 @@ int main(int argc, char* argv[]) {
 		}
 	}
 
-	decode_enabled = recv_only ? false : (direct_mode ? decode_requested : true);
+	decode_enabled = (recv_only || rtp_stats_only) ? false : (direct_mode ? decode_requested : true);
 	if (direct_mode && media_path == "ultra-direct") {
 		LOGE("--direct and --media-path ultra-direct are mutually exclusive");
 		return 1;
@@ -3002,12 +3017,15 @@ int main(int argc, char* argv[]) {
 		printf(" DAU Service:   sink0 registered (D-Bus)\n");
 		printf(" This mode bypasses DVR socket, DEP, VCU, and ALSA PCM.\n");
 	} else {
-		printf(" SC6F0 Dante RX (zstreamer pipeline, non-decode mode)\n");
+		printf(" SC6F0 Dante RX (%s)\n", rtp_stats_only ? "RTP transport stats only" : "zstreamer pipeline");
 		printf(" DVR Socket:    %s\n", dvr_socket.c_str());
-		printf(" DEP SharedMem: %s\n", dep_name.c_str());
-		printf(" Channels:      %s\n", channels.c_str());
-		printf(" Sample Rate:   %u Hz\n", sample_rate);
-		printf(" Decode:        %s\n", decode_enabled ? "enabled" : "disabled (--recv-only)");
+		if (!rtp_stats_only) {
+			printf(" DEP SharedMem: %s\n", dep_name.c_str());
+			printf(" Channels:      %s\n", channels.c_str());
+			printf(" Sample Rate:   %u Hz\n", sample_rate);
+		}
+		printf(" Decode/display/audio: %s\n", rtp_stats_only ? "disabled" :
+		       (decode_enabled ? "enabled" : "decoder disabled (--recv-only)"));
 	}
 	printf(" Stat Interval: %u s\n", stat_interval);
 	printf(" Press 'q' + Enter (or Ctrl+C) to stop.\n");
@@ -3019,7 +3037,7 @@ int main(int argc, char* argv[]) {
 
 	zst_dante_rx_t* rx = start_dante_rx(dvr_socket, dep_name, channels, sample_rate,
 	                                  stat_interval, reconstructed_path,
-	                                  decode_enabled, direct_mode, direct_peer,
+	                                  decode_enabled, rtp_stats_only, direct_mode, direct_peer,
 	                                  direct_local, direct_port);
 	if (!rx) {
 		LOGE("Failed to start Dante RX pipeline.");

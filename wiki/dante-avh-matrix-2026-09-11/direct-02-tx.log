@@ -1,0 +1,119 @@
+[1;34mModule __zz_log__ init...[0m
+[0:01:22:535] [0mINFO[sc6f0-dante-tx]: v: 34343459 3840x2160'0, 60.00
+[0m[0:01:22:897] [0mINFO[sc6f0-dante-tx]: H.264 encoder started: 3840x2160@60.00, 10 Mbps
+[0m[0:01:22:897] [0mINFO[sc6f0-dante-tx]: a: 2x16'48000
+[0m[0:01:22:957] [0mINFO[sc6f0-dante-tx]: StartDanteServer (zstreamer): V: 3840x2160@60.00 (bitrate=10000000) A: 2ch 16bit 48000Hz
+[0m[0:01:23:006] [0mINFO[sc6f0-dante-tx]: [DIRECT TX] unicasting H264 to 192.168.190.101:16491
+[0m[0:01:23:033] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:01:23:975] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[0:01:24:028] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:01:24:975] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[0:01:25:027] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:01:25:975] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[0:01:26:029] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:01:26:080] [0mINFO[sc6f0-dante-tx]: [DANTE TX STATS] flows=1 | VIDEO: 184 frames (3.9 MB, 59.9 fps, 10.75 Mbps) | AUDIO: 0 frames (0.0 MB, 0.0 frames/s, 0 samples/s, 0.00 Mbps)
+[0m[0:01:26:080] [0mINFO[sc6f0-dante-tx]: [DANTE TX ROUTE idx=0] sent 4156 pkts (3.9 MB), 0 send-errors (eagain=0 eintr=0 other=0 last_errno=0 sndbuf=212992)
+[0m[0:01:26:976] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[0:01:27:037] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:01:27:976] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[0:01:28:038] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:01:28:993] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[0:01:29:058] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:01:29:082] [0mINFO[sc6f0-dante-tx]: [DANTE TX STATS] flows=1 | VIDEO: 362 frames (7.8 MB, 59.3 fps, 10.84 Mbps) | AUDIO: 0 frames (0.0 MB, 0.0 frames/s, 0 samples/s, 0.00 Mbps)
+[0m[0:01:29:083] [0mINFO[sc6f0-dante-tx]: [DANTE TX ROUTE idx=0] sent 8350 pkts (7.8 MB), 0 send-errors (eagain=0 eintr=0 other=0 last_errno=0 sndbuf=212992)
+[0m[0:01:29:993] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[0:01:30:058] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:01:30:993] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[0:01:31:060] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:01:31:994] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[0:01:32:056] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:01:32:085] [0mINFO[sc6f0-dante-tx]: [DANTE TX STATS] flows=1 | VIDEO: 543 frames (11.4 MB, 60.3 fps, 9.87 Mbps) | AUDIO: 0 frames (0.0 MB, 0.0 frames/s, 0 samples/s, 0.00 Mbps)
+[0m[0:01:32:085] [0mINFO[sc6f0-dante-tx]: [DANTE TX ROUTE idx=0] sent 12261 pkts (11.4 MB), 0 send-errors (eagain=0 eintr=0 other=0 last_errno=0 sndbuf=212992)
+[0m[0:01:32:994] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[0:01:33:056] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:01:33:994] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[0:01:34:057] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:01:34:994] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[0:01:35:057] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:01:35:087] [0mINFO[sc6f0-dante-tx]: [DANTE TX STATS] flows=1 | VIDEO: 723 frames (14.9 MB, 60.0 fps, 9.90 Mbps) | AUDIO: 0 frames (0.0 MB, 0.0 frames/s, 0 samples/s, 0.00 Mbps)
+[0m[0:01:35:088] [0mINFO[sc6f0-dante-tx]: [DANTE TX ROUTE idx=0] sent 16179 pkts (15.0 MB), 0 send-errors (eagain=0 eintr=0 other=0 last_errno=0 sndbuf=212992)
+[0m[0:01:35:995] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[0:01:36:053] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:01:36:995] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[0:01:37:056] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:01:37:995] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[0:01:38:057] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:01:38:090] [0mINFO[sc6f0-dante-tx]: [DANTE TX STATS] flows=1 | VIDEO: 903 frames (18.4 MB, 59.9 fps, 9.81 Mbps) | AUDIO: 0 frames (0.0 MB, 0.0 frames/s, 0 samples/s, 0.00 Mbps)
+[0m[0:01:38:090] [0mINFO[sc6f0-dante-tx]: [DANTE TX ROUTE idx=0] sent 20055 pkts (18.6 MB), 0 send-errors (eagain=0 eintr=0 other=0 last_errno=0 sndbuf=212992)
+[0m[0:01:38:995] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[0:01:39:055] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:01:39:995] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[0:01:40:056] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:01:40:996] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[0:01:41:057] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:01:41:093] [0mINFO[sc6f0-dante-tx]: [DANTE TX STATS] flows=1 | VIDEO: 1083 frames (22.1 MB, 59.9 fps, 10.25 Mbps) | AUDIO: 0 frames (0.0 MB, 0.0 frames/s, 0 samples/s, 0.00 Mbps)
+[0m[0:01:41:093] [0mINFO[sc6f0-dante-tx]: [DANTE TX ROUTE idx=0] sent 24072 pkts (22.3 MB), 0 send-errors (eagain=0 eintr=0 other=0 last_errno=0 sndbuf=212992)
+[0m[0:01:41:996] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[0:01:42:057] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:01:42:996] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[0:01:43:057] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:01:43:996] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[0:01:44:053] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:01:44:095] [0mINFO[sc6f0-dante-tx]: [DANTE TX STATS] flows=1 | VIDEO: 1264 frames (25.5 MB, 60.3 fps, 9.60 Mbps) | AUDIO: 0 frames (0.0 MB, 0.0 frames/s, 0 samples/s, 0.00 Mbps)
+[0m[0:01:44:095] [0mINFO[sc6f0-dante-tx]: [DANTE TX ROUTE idx=0] sent 27883 pkts (25.8 MB), 0 send-errors (eagain=0 eintr=0 other=0 last_errno=0 sndbuf=212992)
+[0m[0:01:44:996] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[0:01:45:057] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:01:45:996] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[0:01:46:055] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:01:46:996] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[0:01:47:058] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:01:47:098] [0mINFO[sc6f0-dante-tx]: [DANTE TX STATS] flows=1 | VIDEO: 1443 frames (29.2 MB, 59.6 fps, 10.17 Mbps) | AUDIO: 0 frames (0.0 MB, 0.0 frames/s, 0 samples/s, 0.00 Mbps)
+[0m[0:01:47:098] [0mINFO[sc6f0-dante-tx]: [DANTE TX ROUTE idx=0] sent 31867 pkts (29.4 MB), 0 send-errors (eagain=0 eintr=0 other=0 last_errno=0 sndbuf=212992)
+[0m[0:01:47:997] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[0:01:48:058] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:01:48:997] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[0:01:49:058] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:01:49:997] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[0:01:50:054] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:01:50:100] [0mINFO[sc6f0-dante-tx]: [DANTE TX STATS] flows=1 | VIDEO: 1624 frames (32.6 MB, 60.3 fps, 9.57 Mbps) | AUDIO: 0 frames (0.0 MB, 0.0 frames/s, 0 samples/s, 0.00 Mbps)
+[0m[0:01:50:100] [0mINFO[sc6f0-dante-tx]: [DANTE TX ROUTE idx=0] sent 35680 pkts (32.9 MB), 0 send-errors (eagain=0 eintr=0 other=0 last_errno=0 sndbuf=212992)
+[0m[0:01:50:997] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[0:01:51:056] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:01:51:997] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[0:01:52:056] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:01:52:997] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[0:01:53:058] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:01:53:103] [0mINFO[sc6f0-dante-tx]: [DANTE TX STATS] flows=1 | VIDEO: 1804 frames (36.4 MB, 59.9 fps, 10.78 Mbps) | AUDIO: 0 frames (0.0 MB, 0.0 frames/s, 0 samples/s, 0.00 Mbps)
+[0m[0:01:53:103] [0mINFO[sc6f0-dante-tx]: [DANTE TX ROUTE idx=0] sent 39868 pkts (36.8 MB), 0 send-errors (eagain=0 eintr=0 other=0 last_errno=0 sndbuf=212992)
+[0m[0:01:53:997] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[0:01:54:056] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:01:54:998] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[0:01:55:056] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:01:55:998] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[0:01:56:050] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:01:56:105] [0mINFO[sc6f0-dante-tx]: [DANTE TX STATS] flows=1 | VIDEO: 1984 frames (39.5 MB, 60.0 fps, 8.58 Mbps) | AUDIO: 0 frames (0.0 MB, 0.0 frames/s, 0 samples/s, 0.00 Mbps)
+[0m[0:01:56:105] [0mINFO[sc6f0-dante-tx]: [DANTE TX ROUTE idx=0] sent 43379 pkts (39.9 MB), 0 send-errors (eagain=0 eintr=0 other=0 last_errno=0 sndbuf=212992)
+[0m[0:01:56:998] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[0:01:57:061] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:01:57:998] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[0:01:58:063] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:01:58:998] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[0:01:59:065] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:01:59:108] [0mINFO[sc6f0-dante-tx]: [DANTE TX STATS] flows=1 | VIDEO: 2163 frames (43.7 MB, 59.6 fps, 11.64 Mbps) | AUDIO: 0 frames (0.0 MB, 0.0 frames/s, 0 samples/s, 0.00 Mbps)
+[0m[0:01:59:108] [0mINFO[sc6f0-dante-tx]: [DANTE TX ROUTE idx=0] sent 47833 pkts (44.2 MB), 0 send-errors (eagain=0 eintr=0 other=0 last_errno=0 sndbuf=212992)
+[0m[0:01:59:998] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[0:02:00:059] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:02:00:998] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[0:02:01:015] [0mINFO[sc6f0-dante-tx]: Stopping Dante TX pipeline (zstreamer)...
+[0m
+================ Dante TXX Final Summary ================
+  Duration:            38.16 s
+  Video Frames:        2279 (avg 59.73 fps)
+  Video Data:          45.36 MB (avg 9.97 Mbps)
+  Audio Frames:        0
+  Audio Samples:       0 (avg 0 samples/s)
+  Audio Data:          0.00 MB (avg 0.00 Mbps)
+=========================================================
+
+[0:02:01:112] [0mINFO[sc6f0-dante-tx]: Dante TX pipeline stopped.
+[0m

@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <string>
+#include <vector>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
@@ -41,6 +42,8 @@ extern "C" {
 #include "zstreamer/elements/zst_dante_video_coordinator.h"
 #include "zstreamer/elements/zst_dante_dep_audio.h"
 #include "zstreamer/elements/zst_audio_resampler.h"
+#include "zstreamer/elements/zst_rtp_payloader.h"
+#include "zstreamer/elements/zst_dante_udp_sink.h"
 }
 
 ZZ_INIT_LOG("sc6f0-dante-tx");
@@ -53,6 +56,8 @@ static void tx_sig_handler(int) { g_tx_stop = 1; }
 
 static std::string g_tx_direct_rx_ip;
 static uint16_t g_tx_direct_port = 16490;
+static std::string g_tx_direct_mirror_rx_ip;
+static uint16_t g_tx_direct_mirror_port = 16491;
 
 ZZ_MODULE_DECL(__zz_log__);
 
@@ -120,13 +125,17 @@ struct App0 {
 		zst_element_t* coordinator = nullptr;
 		zst_element_t* tx_dep_sink = nullptr;
 		zst_element_t* tx_resampler = nullptr;
+		zst_element_t* mirror_rtp_payloader = nullptr;
+		zst_element_t* mirror_udp_sink = nullptr;
 		zst_pad_t* tx_video_pad = nullptr;
 		zst_pad_t* tx_audio_pad = nullptr;
 		zst_pad_t* app_video_src_pad = nullptr;
+		zst_pad_t* app_video_mirror_src_pad = nullptr;
 		zst_pad_t* app_audio_src_pad = nullptr;
 		pthread_t bus_th = 0;
 		pthread_t sched_th = 0;
 		std::atomic<bool> running{false};
+		std::vector<uint8_t> h264_parameter_sets;
 
 		bool direct_mode = false;
 		std::string direct_rx_ip;
@@ -154,6 +163,7 @@ struct App0 {
 		free_stack_t _FreeStack_vsrc_;
 
 		int nSnapshot;
+		std::atomic<uint64_t> frames_since_idr{0};
 
 		std::atomic_flag current_video_format_spinlock = ATOMIC_FLAG_INIT;
 		struct video_format current_video_format;
@@ -557,7 +567,7 @@ struct App0 {
 				ULONG nSrcColorSpaceType = QCAP_COLORSPACE_TYPE_UNDEFINED;
 				const ULONG nColorSpaceType = QCAP_COLORSPACE_TYPE_NV12;
 				const ULONG nVideoEncoderFormat = QCAP_ENCODER_FORMAT_H264;
-				const ULONG nVideoBitRate = 24 * 1000000;
+				const ULONG nVideoBitRate = 10 * 1000000;
 				ULONG nVideoWidth = 0;
 				ULONG nVideoHeight = 0;
 				BOOL bVideoIsInterleaved;
@@ -618,7 +628,7 @@ struct App0 {
 							break;
 						}
 
-#if 0
+#if 1
 						qres = StartVenc(_FreeStack_, nColorSpaceType, nVideoWidth, nVideoHeight,
 							bVideoIsInterleaved, dVideoFrameRate, nVideoEncoderFormat, nVideoBitRate, &pVenc, &pVencEvent);
 						if(qres != QCAP_RS_SUCCESSFUL) {
@@ -723,7 +733,7 @@ struct App0 {
 					}
 #endif
 
-#if 0
+#if 1
 					qres = StartDanteServer(_FreeStack_, nColorSpaceType, nVideoWidth, nVideoHeight,
 						bVideoIsInterleaved, dVideoFrameRate, nVideoEncoderFormat, nVideoBitRate,
 						nAudioChannels, nAudioBitsPerSample, nAudioSampleFrequency, nAudioEncoderFormat,
@@ -837,6 +847,11 @@ struct App0 {
 					qcap2_rcbuffer_release);
 
 				if(pVenc) {
+					if (++frames_since_idr >= 60) {
+						frames_since_idr = 0;
+						qcap2_video_encoder_request_idr(pVenc);
+						LOGI("requested encoder IDR after 60 input frames");
+					}
 					qres = qcap2_video_encoder_push(pVenc, pRCBuffer);
 					if(qres != QCAP_RS_SUCCESSFUL) {
 						LOGE("%s(%d): qcap2_video_encoder_push() failed, qres=%d", __FUNCTION__, __LINE__, qres);
@@ -928,6 +943,8 @@ struct App0 {
 					LOGD("%s(%d): qcap2_video_encoder_start() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 					break;
 				}
+				LOGI("H.264 encoder started: %ux%u@%.2f, %u Mbps", (unsigned)nVideoWidth,
+					(unsigned)nVideoHeight, dVideoFrameRate, (unsigned)(nVideoBitRate / 1000000));
 				_FreeStack_ += [pVenc]() {
 					QRESULT qres;
 
@@ -984,6 +1001,50 @@ struct App0 {
 					qcap2_av_packet_get_sample_time(pAVPacket.get(), &dSampleTime);
 
 					if (pStreamBuffer && nStreamBufferLen > 0) {
+						std::vector<uint8_t> parameter_sets;
+						bool has_idr = false;
+						bool has_sps = false;
+						bool has_pps = false;
+						for (size_t pos = 0; pos + 4 <= (size_t)nStreamBufferLen;) {
+							size_t prefix = pStreamBuffer[pos] == 0 && pStreamBuffer[pos + 1] == 0 &&
+								pStreamBuffer[pos + 2] == 1 ? 3 :
+								(pos + 4 <= (size_t)nStreamBufferLen && pStreamBuffer[pos] == 0 &&
+								 pStreamBuffer[pos + 1] == 0 && pStreamBuffer[pos + 2] == 0 &&
+								 pStreamBuffer[pos + 3] == 1 ? 4 : 0);
+							if (!prefix) { ++pos; continue; }
+							size_t nal = pos + prefix;
+							size_t end = nal + 1;
+							while (end + 3 < (size_t)nStreamBufferLen &&
+								!(pStreamBuffer[end] == 0 && pStreamBuffer[end + 1] == 0 &&
+								  (pStreamBuffer[end + 2] == 1 || (end + 3 < (size_t)nStreamBufferLen &&
+								   pStreamBuffer[end + 2] == 0 && pStreamBuffer[end + 3] == 1)))) ++end;
+							uint8_t type = pStreamBuffer[nal] & 0x1f;
+							if (type == 7 || type == 8) {
+								if (type == 7) has_sps = true;
+								else has_pps = true;
+								parameter_sets.insert(parameter_sets.end(), {0, 0, 0, 1});
+								parameter_sets.insert(parameter_sets.end(), pStreamBuffer + nal, pStreamBuffer + end);
+							} else if (type == 5) {
+								has_idr = true;
+							}
+							pos = end;
+						}
+						if (has_sps && has_pps)
+							pDanteTx->h264_parameter_sets = parameter_sets;
+
+						std::vector<uint8_t> keyframe_with_config;
+						if ((bIsKeyFrame || has_idr) && !(has_sps && has_pps) &&
+							!pDanteTx->h264_parameter_sets.empty()) {
+							keyframe_with_config = pDanteTx->h264_parameter_sets;
+							keyframe_with_config.insert(keyframe_with_config.end(), pStreamBuffer,
+								pStreamBuffer + nStreamBufferLen);
+							pStreamBuffer = keyframe_with_config.data();
+							nStreamBufferLen = (int)keyframe_with_config.size();
+							LOGI("prepended cached SPS/PPS to H.264 keyframe");
+						}
+						if (has_idr)
+							LOGI("encoded H.264 IDR received (keyframe=%d, SPS/PPS=%s)",
+								(int)bIsKeyFrame, has_sps && has_pps ? "inline" : "cached");
 						if (g_tx_dump) {
 							if (fwrite(pStreamBuffer, 1, (size_t)nStreamBufferLen, g_tx_dump) != (size_t)nStreamBufferLen ||
 							    fflush(g_tx_dump) != 0) {
@@ -1003,10 +1064,12 @@ struct App0 {
 								zbuf->memory.release = free;
 								zbuf->pts = (zst_time_t)(dSampleTime * 1000000000.0);
 								zbuf->dts = zbuf->pts;
-								if (bIsKeyFrame) {
+								if (bIsKeyFrame || has_idr) {
 									zbuf->flags |= ZST_BUFFER_FLAG_KEYFRAME;
 								}
 								zst_pad_push(pDanteTx->app_video_src_pad, zbuf);
+								if (pDanteTx->app_video_mirror_src_pad)
+									zst_pad_push(pDanteTx->app_video_mirror_src_pad, zbuf);
 								pDanteTx->tx_video_frames++;
 								pDanteTx->tx_video_bytes += (size_t)nStreamBufferLen;
 							}
@@ -1368,6 +1431,12 @@ struct App0 {
 			char buf[32]; snprintf(buf, sizeof(buf), "%lu", (unsigned long)v);
 			zst_element_set_property(el, p, buf);
 		}
+		static uint64_t get_uint_prop(zst_element_t* el, const char* p) {
+			char buf[32] = {0};
+			if (zst_element_get_property(el, p, buf, sizeof(buf)) == ZST_OK)
+				return (uint64_t)strtoull(buf, NULL, 10);
+			return 0;
+		}
 
 		static void* dante_tx_bus_worker(void* arg) {
 			zst_dante_tx_t* tx = (zst_dante_tx_t*)arg;
@@ -1436,6 +1505,80 @@ struct App0 {
 						(double)audio_bytes / (1024.0 * 1024.0), audio_frame_rate,
 						audio_sample_rate, audio_mbps);
 
+					for (uint32_t fi = 0; fi < active_flows; fi++) {
+							zst_element_t* rts = zst_dante_video_coordinator_get_tx_udp_sink(tx->coordinator, fi);
+							if (rts) {
+								uint64_t pkt = get_uint_prop(rts, ZST_DANTE_UDP_SINK_PROP_PACKETS_SENT);
+								uint64_t byt = get_uint_prop(rts, ZST_DANTE_UDP_SINK_PROP_BYTES_SENT);
+								uint64_t err = get_uint_prop(rts, ZST_DANTE_UDP_SINK_PROP_SEND_ERRORS);
+								uint64_t eagain = get_uint_prop(rts, ZST_DANTE_UDP_SINK_PROP_SEND_ERRORS_EAGAIN);
+								uint64_t eintr = get_uint_prop(rts, ZST_DANTE_UDP_SINK_PROP_SEND_ERRORS_EINTR);
+								uint64_t othr = get_uint_prop(rts, ZST_DANTE_UDP_SINK_PROP_SEND_ERRORS_OTHER);
+								uint64_t lerr = get_uint_prop(rts, ZST_DANTE_UDP_SINK_PROP_SEND_LAST_ERRNO);
+								uint64_t sndbuf = get_uint_prop(rts, ZST_DANTE_UDP_SINK_PROP_SEND_BUFFER_SIZE);
+								uint64_t gap_count = get_uint_prop(rts, ZST_DANTE_UDP_SINK_PROP_SEND_GAP_COUNT);
+								uint64_t gap_total = get_uint_prop(rts, ZST_DANTE_UDP_SINK_PROP_SEND_GAP_TOTAL_NS);
+								uint64_t gap_min = get_uint_prop(rts, ZST_DANTE_UDP_SINK_PROP_SEND_GAP_MIN_NS);
+								uint64_t gap_max = get_uint_prop(rts, ZST_DANTE_UDP_SINK_PROP_SEND_GAP_MAX_NS);
+								uint64_t gap_5us = get_uint_prop(rts, ZST_DANTE_UDP_SINK_PROP_SEND_GAP_LE_5US);
+								uint64_t gap_20us = get_uint_prop(rts, ZST_DANTE_UDP_SINK_PROP_SEND_GAP_LE_20US);
+								uint64_t gap_100us = get_uint_prop(rts, ZST_DANTE_UDP_SINK_PROP_SEND_GAP_LE_100US);
+								uint64_t send_total = get_uint_prop(rts, ZST_DANTE_UDP_SINK_PROP_SEND_DURATION_TOTAL_NS);
+								uint64_t send_min = get_uint_prop(rts, ZST_DANTE_UDP_SINK_PROP_SEND_DURATION_MIN_NS);
+								uint64_t send_max = get_uint_prop(rts, ZST_DANTE_UDP_SINK_PROP_SEND_DURATION_MAX_NS);
+								uint64_t eagain_gap = get_uint_prop(rts, ZST_DANTE_UDP_SINK_PROP_EAGAIN_LAST_GAP_NS);
+								uint64_t eagain_burst = get_uint_prop(rts, ZST_DANTE_UDP_SINK_PROP_EAGAIN_LAST_BURST_PACKETS);
+								uint64_t eagain_max_burst = get_uint_prop(rts, ZST_DANTE_UDP_SINK_PROP_EAGAIN_MAX_BURST_PACKETS);
+								LOGI("[DANTE TX ROUTE idx=%u] sent %llu pkts (%.1f MB), %llu send-errors "
+									"(eagain=%llu eintr=%llu other=%llu last_errno=%llu sndbuf=%llu)",
+									fi, (unsigned long long)pkt,
+									(double)byt / (1024.0 * 1024.0), (unsigned long long)err,
+									(unsigned long long)eagain, (unsigned long long)eintr,
+									(unsigned long long)othr, (unsigned long long)lerr,
+									(unsigned long long)sndbuf);
+								if (gap_count) {
+									LOGI("[DANTE TX TIMING idx=%u] gaps=%llu avg=%.1fns min=%lluns max=%lluns "
+										"le5us=%llu le20us=%llu le100us=%llu | sendto avg=%.1fns min=%lluns max=%lluns "
+										"eagain-last-gap=%lluns burst=%llu max-burst=%llu",
+										fi, (unsigned long long)gap_count, (double)gap_total / gap_count,
+										(unsigned long long)gap_min, (unsigned long long)gap_max,
+										(unsigned long long)gap_5us, (unsigned long long)gap_20us,
+										(unsigned long long)gap_100us, (double)send_total / (gap_count + 1),
+										(unsigned long long)send_min, (unsigned long long)send_max,
+										(unsigned long long)eagain_gap, (unsigned long long)eagain_burst,
+										(unsigned long long)eagain_max_burst);
+								}
+								zst_element_t* probe = zst_dante_video_coordinator_get_tx_probe_udp_sink(
+									tx->coordinator, fi);
+								if (probe) {
+									uint64_t probe_pkt = get_uint_prop(probe, ZST_DANTE_UDP_SINK_PROP_PACKETS_SENT);
+									uint64_t probe_err = get_uint_prop(probe, ZST_DANTE_UDP_SINK_PROP_SEND_ERRORS);
+									uint64_t probe_eagain = get_uint_prop(probe, ZST_DANTE_UDP_SINK_PROP_SEND_ERRORS_EAGAIN);
+									LOGI("[DANTE TX PROBE idx=%u port+10] sent %llu pkts, %llu send-errors "
+										"(eagain=%llu)",
+										fi, (unsigned long long)probe_pkt, (unsigned long long)probe_err,
+										(unsigned long long)probe_eagain);
+								}
+							}
+						}
+						if (tx->mirror_udp_sink) {
+							uint64_t pkt = get_uint_prop(tx->mirror_udp_sink, ZST_DANTE_UDP_SINK_PROP_PACKETS_SENT);
+							uint64_t byt = get_uint_prop(tx->mirror_udp_sink, ZST_DANTE_UDP_SINK_PROP_BYTES_SENT);
+							uint64_t err = get_uint_prop(tx->mirror_udp_sink, ZST_DANTE_UDP_SINK_PROP_SEND_ERRORS);
+							uint64_t eagain = get_uint_prop(tx->mirror_udp_sink, ZST_DANTE_UDP_SINK_PROP_SEND_ERRORS_EAGAIN);
+							uint64_t eintr = get_uint_prop(tx->mirror_udp_sink, ZST_DANTE_UDP_SINK_PROP_SEND_ERRORS_EINTR);
+							uint64_t othr = get_uint_prop(tx->mirror_udp_sink, ZST_DANTE_UDP_SINK_PROP_SEND_ERRORS_OTHER);
+							uint64_t lerr = get_uint_prop(tx->mirror_udp_sink, ZST_DANTE_UDP_SINK_PROP_SEND_LAST_ERRNO);
+							uint64_t sndbuf = get_uint_prop(tx->mirror_udp_sink, ZST_DANTE_UDP_SINK_PROP_SEND_BUFFER_SIZE);
+							LOGI("[MIRROR TX ROUTE] sent %llu pkts (%.1f MB), %llu send-errors "
+								"(eagain=%llu eintr=%llu other=%llu last_errno=%llu sndbuf=%llu)",
+								(unsigned long long)pkt,
+								(double)byt / (1024.0 * 1024.0), (unsigned long long)err,
+								(unsigned long long)eagain, (unsigned long long)eintr,
+								(unsigned long long)othr, (unsigned long long)lerr,
+								(unsigned long long)sndbuf);
+						}
+
 					last_stat_time = now_ms;
 					last_video_frames = video_frames;
 					last_video_bytes = video_bytes;
@@ -1495,6 +1638,26 @@ struct App0 {
 
 			tx->app_video_src_pad = zst_pad_create("app_video_src", ZST_PAD_SRC);
 			zst_pad_link(tx->app_video_src_pad, tx->tx_video_pad);
+			if (!direct_mode && !g_tx_direct_mirror_rx_ip.empty()) {
+				tx->mirror_rtp_payloader = zst_rtp_payloader_create();
+				tx->mirror_udp_sink = zst_dante_udp_sink_create();
+				if (!tx->mirror_rtp_payloader || !tx->mirror_udp_sink) {
+					LOGE("direct mirror RTP elements creation failed");
+					return (QRESULT)-1;
+				}
+				set_str(tx->mirror_rtp_payloader, "codec", "h264");
+				set_uint(tx->mirror_rtp_payloader, "payload-type", 96);
+				set_uint(tx->mirror_rtp_payloader, "mtu", 1200);
+				set_str(tx->mirror_udp_sink, "destination-address", g_tx_direct_mirror_rx_ip.c_str());
+				set_uint(tx->mirror_udp_sink, "port", g_tx_direct_mirror_port);
+				tx->app_video_mirror_src_pad = zst_pad_create("app_video_mirror_src", ZST_PAD_SRC);
+				zst_pad_link(tx->app_video_mirror_src_pad,
+					zst_element_get_pad(tx->mirror_rtp_payloader, "sink"));
+				zst_pad_link(zst_element_get_pad(tx->mirror_rtp_payloader, "src"),
+					zst_element_get_pad(tx->mirror_udp_sink, "sink"));
+				LOGI("[DIRECT MIRROR TX] standalone RTP to %s:%u",
+					g_tx_direct_mirror_rx_ip.c_str(), g_tx_direct_mirror_port);
+			}
 
 			/* 3. Dante DEP Audio Sink (skipped in direct RTP mode) */
 			if (!direct_mode) {
@@ -1521,6 +1684,10 @@ struct App0 {
 
 			/* Add elements to pipeline */
 			zst_pipeline_add(tx->pipe, tx->coordinator);
+			if (tx->mirror_rtp_payloader) {
+				zst_pipeline_add(tx->pipe, tx->mirror_rtp_payloader);
+				zst_pipeline_add(tx->pipe, tx->mirror_udp_sink);
+			}
 			if (!direct_mode) {
 				zst_pipeline_add(tx->pipe, tx->tx_resampler);
 				zst_pipeline_add(tx->pipe, tx->tx_dep_sink);
@@ -1565,7 +1732,6 @@ struct App0 {
 					     tx->direct_port);
 				}
 			}
-
 			tx->running = true;
 			pthread_create(&tx->bus_th, NULL, dante_tx_bus_worker, tx);
 
@@ -1580,6 +1746,11 @@ struct App0 {
 					zst_pad_unlink(tx->app_video_src_pad);
 					zst_pad_destroy(tx->app_video_src_pad);
 					tx->app_video_src_pad = nullptr;
+				}
+				if (tx->app_video_mirror_src_pad) {
+					zst_pad_unlink(tx->app_video_mirror_src_pad);
+					zst_pad_destroy(tx->app_video_mirror_src_pad);
+					tx->app_video_mirror_src_pad = nullptr;
 				}
 				if (tx->app_audio_src_pad) {
 					zst_pad_unlink(tx->app_audio_src_pad);
@@ -1649,11 +1820,17 @@ int main(int argc, char* argv[]) {
 			g_tx_direct_rx_ip = argv[++i];
 		} else if (strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
 			g_tx_direct_port = (uint16_t)strtoul(argv[++i], nullptr, 10);
+		} else if (strcmp(argv[i], "--direct-mirror") == 0 && i + 1 < argc) {
+			g_tx_direct_mirror_rx_ip = argv[++i];
+		} else if (strcmp(argv[i], "--mirror-port") == 0 && i + 1 < argc) {
+			g_tx_direct_mirror_port = (uint16_t)strtoul(argv[++i], nullptr, 10);
 		} else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
-			printf("Usage: sc6f0-dante-tx [--direct <rx-ip>] [--port <port>] [--dump-stream <file>]\n");
+			printf("Usage: sc6f0-dante-tx [--direct <rx-ip>] [--port <port>] [--direct-mirror <rx-ip>] [--mirror-port <port>] [--dump-stream <file>]\n");
 			printf("  --direct <rx-ip>  Direct RTP mode: unicast H.264 to rx-ip:port,\n");
 			printf("                    bypassing the Dante daemon (audio disabled)\n");
 			printf("  --port <port>     RTP port (default: 16490)\n");
+			printf("  --direct-mirror <rx-ip>  Add direct RTP alongside the Dante AVH flow\n");
+			printf("  --mirror-port <port>     Direct mirror RTP port (default: 16491)\n");
 			printf("  --dump-stream <f> Save the raw encoded Annex-B H.264 AU stream to <file>\n");
 			return 0;
 		} else if (strcmp(argv[i], "--dump-stream") == 0 && i + 1 < argc) {

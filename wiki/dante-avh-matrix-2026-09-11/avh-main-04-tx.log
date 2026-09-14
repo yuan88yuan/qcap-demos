@@ -1,0 +1,161 @@
+[1;34mModule __zz_log__ init...[0m
+[0:04:20:769] [0mINFO[sc6f0-dante-tx]: v: 34343459 3840x2160'0, 60.00
+[0m[0:04:21:146] [0mINFO[sc6f0-dante-tx]: H.264 encoder started: 3840x2160@60.00, 10 Mbps
+[0m[0:04:21:147] [0mINFO[sc6f0-dante-tx]: a: 2x16'48000
+[0m[0:04:21:209] [0mINFO[sc6f0-dante-tx]: StartDanteServer (zstreamer): V: 3840x2160@60.00 (bitrate=10000000) A: 2ch 16bit 48000Hz
+[0mdbus_service_dbus_message_handler: org.audinate.dau.source0/GetCableStatus
+dbus_service_dbus_message_handler: org.audinate.dau.source0/GetVideoFormat
+dbus_service_dbus_message_handler: org.audinate.dau.source0/SetEDID
+[0:04:21:380] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0mdbus_service_dbus_message_handler: org.audinate.dau.source0/GetAudioInfo
+dbus_service_dbus_message_handler: org.audinate.dau.source0/GetAudioInfo
+dbus_service_dbus_message_handler: org.audinate.dau.source0/GetAudioInfo
+[0:04:22:314] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[0:04:22:375] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:04:22:672] [0mINFO[sc6f0-dante-tx]: [DANTE BUS] TX video flow created: idx=0 ch=0 port=16490 to=192.168.190.101
+[0m[danteudpsink tx=192.168.190.101:16490] sendto failed: Resource temporarily unavailable (errno=11) size=1200
+[0:04:23:331] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[0:04:23:388] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[danteudpsink tx=192.168.190.101:16490] sendto failed: Resource temporarily unavailable (errno=11) size=1200
+[0:04:24:277] [0mINFO[sc6f0-dante-tx]: [DANTE TX STATS] flows=1 | VIDEO: 173 frames (3.8 MB, 57.4 fps, 10.49 Mbps) | AUDIO: 114 frames (0.6 MB, 37.8 frames/s, 48398 samples/s, 1.55 Mbps)
+[0m[0:04:24:277] [0mINFO[sc6f0-dante-tx]: [DANTE TX ROUTE idx=0] sent 1987 pkts (1.8 MB), 99 send-errors (eagain=99 eintr=0 other=0 last_errno=11 sndbuf=212992)
+[0m[0:04:24:347] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[danteudpsink tx=192.168.190.101:16490] sendto failed: Resource temporarily unavailable (errno=11) size=1200
+[0:04:24:407] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:04:25:364] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[0:04:25:434] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[danteudpsink tx=192.168.190.101:16490] sendto failed: Resource temporarily unavailable (errno=11) size=1200
+[0:04:26:381] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[0:04:26:447] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[danteudpsink tx=192.168.190.101:16490] sendto failed: Resource temporarily unavailable (errno=11) size=1200
+[0:04:27:290] [0mINFO[sc6f0-dante-tx]: [DANTE TX STATS] flows=1 | VIDEO: 351 frames (7.3 MB, 59.1 fps, 9.71 Mbps) | AUDIO: 227 frames (1.1 MB, 37.5 frames/s, 48005 samples/s, 1.54 Mbps)
+[0m[0:04:27:290] [0mINFO[sc6f0-dante-tx]: [DANTE TX ROUTE idx=0] sent 5544 pkts (5.0 MB), 373 send-errors (eagain=373 eintr=0 other=0 last_errno=11 sndbuf=212992)
+[0m[0:04:27:406] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[danteudpsink tx=192.168.190.101:16490] sendto failed: Resource temporarily unavailable (errno=11) size=1200
+[0:04:27:462] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:04:28:420] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[danteudpsink tx=192.168.190.101:16490] sendto failed: Resource temporarily unavailable (errno=11) size=1200
+[0:04:28:475] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:04:29:433] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[0:04:29:523] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[danteudpsink tx=192.168.190.101:16490] sendto failed: Resource temporarily unavailable (errno=11) size=1200
+[0:04:30:298] [0mINFO[sc6f0-dante-tx]: [DANTE TX STATS] flows=1 | VIDEO: 526 frames (10.8 MB, 58.2 fps, 9.83 Mbps) | AUDIO: 340 frames (1.7 MB, 37.6 frames/s, 48085 samples/s, 1.54 Mbps)
+[0m[0:04:30:298] [0mINFO[sc6f0-dante-tx]: [DANTE TX ROUTE idx=0] sent 8996 pkts (8.1 MB), 794 send-errors (eagain=794 eintr=0 other=0 last_errno=11 sndbuf=212992)
+[0m[0:04:30:481] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[0:04:30:543] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:04:31:497] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[danteudpsink tx=192.168.190.101:16490] sendto failed: Resource temporarily unavailable (errno=11) size=1200
+[0:04:31:570] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:04:32:514] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[danteudpsink tx=192.168.190.101:16490] sendto failed: Resource temporarily unavailable (errno=11) size=1200
+[0:04:32:582] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:04:33:306] [0mINFO[sc6f0-dante-tx]: [DANTE TX STATS] flows=1 | VIDEO: 704 frames (14.3 MB, 59.2 fps, 9.95 Mbps) | AUDIO: 453 frames (2.2 MB, 37.6 frames/s, 48085 samples/s, 1.54 Mbps)
+[0m[0:04:33:306] [0mINFO[sc6f0-dante-tx]: [DANTE TX ROUTE idx=0] sent 12426 pkts (11.2 MB), 1281 send-errors (eagain=1281 eintr=0 other=0 last_errno=11 sndbuf=212992)
+[0m[0:04:33:540] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[danteudpsink tx=192.168.190.101:16490] sendto failed: Resource temporarily unavailable (errno=11) size=1200
+[0:04:33:601] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:04:34:553] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[danteudpsink tx=192.168.190.101:16490] sendto failed: Resource temporarily unavailable (errno=11) size=1200
+[0:04:34:618] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:04:35:566] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[danteudpsink tx=192.168.190.101:16490] sendto failed: Resource temporarily unavailable (errno=11) size=1200
+[0:04:35:635] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:04:36:314] [0mINFO[sc6f0-dante-tx]: [DANTE TX STATS] flows=1 | VIDEO: 881 frames (17.9 MB, 58.8 fps, 9.82 Mbps) | AUDIO: 566 frames (2.8 MB, 37.6 frames/s, 48085 samples/s, 1.54 Mbps)
+[0m[0:04:36:314] [0mINFO[sc6f0-dante-tx]: [DANTE TX ROUTE idx=0] sent 15736 pkts (14.1 MB), 1858 send-errors (eagain=1858 eintr=0 other=0 last_errno=11 sndbuf=212992)
+[0m[0:04:36:581] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[danteudpsink tx=192.168.190.101:16490] sendto failed: Resource temporarily unavailable (errno=11) size=1200
+[0:04:36:663] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:04:37:598] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[danteudpsink tx=192.168.190.101:16490] sendto failed: Resource temporarily unavailable (errno=11) size=1200
+[0:04:37:676] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:04:38:614] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[danteudpsink tx=192.168.190.101:16490] sendto failed: Resource temporarily unavailable (errno=11) size=1200
+[0:04:38:690] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:04:39:322] [0mINFO[sc6f0-dante-tx]: [DANTE TX STATS] flows=1 | VIDEO: 1057 frames (21.4 MB, 58.5 fps, 9.91 Mbps) | AUDIO: 678 frames (3.3 MB, 37.2 frames/s, 47660 samples/s, 1.53 Mbps)
+[0m[0:04:39:322] [0mINFO[sc6f0-dante-tx]: [DANTE TX ROUTE idx=0] sent 19006 pkts (17.0 MB), 2487 send-errors (eagain=2487 eintr=0 other=0 last_errno=11 sndbuf=212992)
+[0m[0:04:39:648] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[danteudpsink tx=192.168.190.101:16490] sendto failed: Resource temporarily unavailable (errno=11) size=1200
+[0:04:39:719] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:04:40:665] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[danteudpsink tx=192.168.190.101:16490] sendto failed: Resource temporarily unavailable (errno=11) size=1200
+[0:04:40:731] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[danteudpsink tx=192.168.190.101:16490] sendto failed: Resource temporarily unavailable (errno=11) size=1200
+[0:04:41:681] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[0:04:41:757] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:04:42:322] [0mINFO[sc6f0-dante-tx]: [DANTE TX STATS] flows=1 | VIDEO: 1234 frames (25.0 MB, 59.0 fps, 9.92 Mbps) | AUDIO: 791 frames (3.9 MB, 37.7 frames/s, 48213 samples/s, 1.54 Mbps)
+[0m[0:04:42:322] [0mINFO[sc6f0-dante-tx]: [DANTE TX ROUTE idx=0] sent 22165 pkts (19.7 MB), 3254 send-errors (eagain=3254 eintr=0 other=0 last_errno=11 sndbuf=212992)
+[0m[0:04:42:698] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[danteudpsink tx=192.168.190.101:16490] sendto failed: Resource temporarily unavailable (errno=11) size=1200
+[0:04:42:770] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:04:43:715] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[danteudpsink tx=192.168.190.101:16490] sendto failed: Resource temporarily unavailable (errno=11) size=1200
+[0:04:43:791] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:04:44:740] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[danteudpsink tx=192.168.190.101:16490] sendto failed: Resource temporarily unavailable (errno=11) size=1200
+[0:04:44:808] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:04:45:326] [0mINFO[sc6f0-dante-tx]: [DANTE TX STATS] flows=1 | VIDEO: 1411 frames (28.6 MB, 58.9 fps, 10.04 Mbps) | AUDIO: 903 frames (4.4 MB, 37.3 frames/s, 47723 samples/s, 1.53 Mbps)
+[0m[0:04:45:326] [0mINFO[sc6f0-dante-tx]: [DANTE TX ROUTE idx=0] sent 25294 pkts (22.4 MB), 4057 send-errors (eagain=4057 eintr=0 other=0 last_errno=11 sndbuf=212992)
+[0m[0:04:45:754] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[danteudpsink tx=192.168.190.101:16490] sendto failed: Resource temporarily unavailable (errno=11) size=1200
+[0:04:45:817] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[danteudpsink tx=192.168.190.101:16490] sendto failed: Resource temporarily unavailable (errno=11) size=1200
+[0:04:46:767] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[0:04:46:833] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:04:47:782] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[danteudpsink tx=192.168.190.101:16490] sendto failed: Resource temporarily unavailable (errno=11) size=1200
+[0:04:47:851] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:04:48:326] [0mINFO[sc6f0-dante-tx]: [DANTE TX STATS] flows=1 | VIDEO: 1589 frames (32.0 MB, 59.3 fps, 9.72 Mbps) | AUDIO: 1016 frames (5.0 MB, 37.7 frames/s, 48213 samples/s, 1.54 Mbps)
+[0m[0:04:48:326] [0mINFO[sc6f0-dante-tx]: [DANTE TX ROUTE idx=0] sent 28431 pkts (25.2 MB), 4765 send-errors (eagain=4765 eintr=0 other=0 last_errno=11 sndbuf=212992)
+[0m[0:04:48:798] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[danteudpsink tx=192.168.190.101:16490] sendto failed: Resource temporarily unavailable (errno=11) size=1200
+[0:04:48:878] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:04:49:834] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[danteudpsink tx=192.168.190.101:16490] sendto failed: Resource temporarily unavailable (errno=11) size=1200
+[0:04:49:903] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:04:50:848] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[danteudpsink tx=192.168.190.101:16490] sendto failed: Resource temporarily unavailable (errno=11) size=1200
+[0:04:50:931] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:04:51:334] [0mINFO[sc6f0-dante-tx]: [DANTE TX STATS] flows=1 | VIDEO: 1765 frames (35.5 MB, 58.5 fps, 9.54 Mbps) | AUDIO: 1129 frames (5.5 MB, 37.6 frames/s, 48085 samples/s, 1.54 Mbps)
+[0m[0:04:51:334] [0mINFO[sc6f0-dante-tx]: [DANTE TX ROUTE idx=0] sent 31485 pkts (27.8 MB), 5498 send-errors (eagain=5498 eintr=0 other=0 last_errno=11 sndbuf=212992)
+[0m[0:04:51:865] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[danteudpsink tx=192.168.190.101:16490] sendto failed: Resource temporarily unavailable (errno=11) size=1200
+[0:04:51:944] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:04:52:882] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[danteudpsink tx=192.168.190.101:16490] sendto failed: Resource temporarily unavailable (errno=11) size=1200
+[0:04:52:958] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:04:53:898] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[danteudpsink tx=192.168.190.101:16490] sendto failed: Resource temporarily unavailable (errno=11) size=1200
+[0:04:53:971] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:04:54:334] [0mINFO[sc6f0-dante-tx]: [DANTE TX STATS] flows=1 | VIDEO: 1942 frames (39.2 MB, 59.0 fps, 10.34 Mbps) | AUDIO: 1241 frames (6.1 MB, 37.3 frames/s, 47787 samples/s, 1.53 Mbps)
+[0m[0:04:54:334] [0mINFO[sc6f0-dante-tx]: [DANTE TX ROUTE idx=0] sent 34697 pkts (30.6 MB), 6315 send-errors (eagain=6315 eintr=0 other=0 last_errno=11 sndbuf=212992)
+[0m[0:04:54:915] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[danteudpsink tx=192.168.190.101:16490] sendto failed: Resource temporarily unavailable (errno=11) size=1200
+[0:04:54:987] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:04:55:941] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[danteudpsink tx=192.168.190.101:16490] sendto failed: Resource temporarily unavailable (errno=11) size=1200
+[0:04:56:000] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:04:56:954] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[danteudpsink tx=192.168.190.101:16490] sendto failed: Resource temporarily unavailable (errno=11) size=1200
+[0:04:57:019] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:04:57:334] [0mINFO[sc6f0-dante-tx]: [DANTE TX STATS] flows=1 | VIDEO: 2119 frames (42.6 MB, 59.0 fps, 9.61 Mbps) | AUDIO: 1354 frames (6.6 MB, 37.7 frames/s, 48213 samples/s, 1.54 Mbps)
+[0m[0:04:57:334] [0mINFO[sc6f0-dante-tx]: [DANTE TX ROUTE idx=0] sent 37786 pkts (33.3 MB), 7030 send-errors (eagain=7030 eintr=0 other=0 last_errno=11 sndbuf=212992)
+[0m[0:04:57:967] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[danteudpsink tx=192.168.190.101:16490] sendto failed: Resource temporarily unavailable (errno=11) size=1200
+[0:04:58:033] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0m[0:04:58:981] [0mINFO[sc6f0-dante-tx]: requested encoder IDR after 60 input frames
+[0m[danteudpsink tx=192.168.190.101:16490] sendto failed: Resource temporarily unavailable (errno=11) size=1200
+[0:04:59:050] [0mINFO[sc6f0-dante-tx]: encoded H.264 IDR received (keyframe=1, SPS/PPS=inline)
+[0mdbusservice.c:126:ERROR: epoll_ctl returned an error, errno: 2 (No such file or directory)
+[0:04:59:289] [0mINFO[sc6f0-dante-tx]: Stopping Dante TX pipeline (zstreamer)...
+[0m
+================ Dante TXX Final Summary ================
+  Duration:            40.15 s
+  Video Frames:        2235 (avg 55.66 fps)
+  Video Data:          45.07 MB (avg 9.42 Mbps)
+  Audio Frames:        1427
+  Audio Samples:       1826560 (avg 45491 samples/s)
+  Audio Data:          6.97 MB (avg 1.46 Mbps)
+=========================================================
+
+[0:05:01:361] [0mINFO[sc6f0-dante-tx]: Dante TX pipeline stopped.
+[0m

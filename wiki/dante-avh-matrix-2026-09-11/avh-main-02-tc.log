@@ -1,0 +1,31 @@
+qdisc htb 1: root refcnt 3 r2q 10 default 0x10 direct_packets_stat 22 direct_qlen 1000
+ Sent 5779017 bytes 10662 pkt (dropped 0, overlimits 6409 requeues 0) 
+ backlog 0b 0p requeues 0
+class htb 1:10 parent 1:1 prio 0 rate 10Gbit ceil 10Gbit burst 0b cburst 0b
+ Sent 1536468 bytes 6299 pkt (dropped 0, overlimits 9 requeues 0) 
+ backlog 0b 0p requeues 0
+ lended: 6299 borrowed: 0 giants: 0
+ tokens: 11 ctokens: 11
+
+class htb 1:1 root rate 10Gbit ceil 10Gbit burst 0b cburst 0b
+ Sent 5805236 bytes 10731 pkt (dropped 0, overlimits 3107 requeues 0) 
+ backlog 0b 0p requeues 0
+ lended: 0 borrowed: 0 giants: 0
+ tokens: 11 ctokens: 11
+
+class htb 1:20 parent 1:1 prio 0 rate 200Mbit ceil 200Mbit burst 1500b cburst 1500b
+ Sent 4268768 bytes 4432 pkt (dropped 0, overlimits 3312 requeues 0) 
+ backlog 0b 0p requeues 0
+ lended: 4432 borrowed: 0 giants: 0
+ tokens: 696 ctokens: 696
+
+filter parent 1: protocol ip pref 9990 u32 chain 0 
+filter parent 1: protocol ip pref 9990 u32 chain 0 fh 801: ht divisor 1 
+filter parent 1: protocol ip pref 9990 u32 chain 0 fh 801::800 order 2048 key ht 801 bkt 0 flowid 1:20 not_in_hw 
+  match 0000406a/0000ffff at 20
+  match 00110000/00ff0000 at 8
+  match c0a8be65/ffffffff at 16
+filter parent 1: protocol ip pref 49152 u32 chain 0 
+filter parent 1: protocol ip pref 49152 u32 chain 0 fh 800: ht divisor 1 
+filter parent 1: protocol ip pref 49152 u32 chain 0 fh 800::800 order 2048 key ht 800 bkt 0 flowid 1:1 not_in_hw 
+  match 00000000/00000000 at 0

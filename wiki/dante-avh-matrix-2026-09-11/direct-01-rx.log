@@ -1,0 +1,141 @@
+[1;34mModule __zz_log__ init...[0m
+============================================================
+ SC6F0 RX DIRECT RTP (zstreamer internal, no Dante session)
+ Peer (TX):     192.168.190.99
+ Local Bind:    192.168.190.101
+ RTP Port:      16491
+ Audio:         disabled
+ Decode:        enabled
+ Stat Interval: 5 s
+ Press 'q' + Enter (or Ctrl+C) to stop.
+============================================================
+
+[0:02:59:371] [0mINFO[sc6f0-dante-rx]: Initializing Dante RX pipeline (zstreamer)...
+[0m[0:02:59:371] [0mINFO[sc6f0-dante-rx]:   DVR Socket: /var/run/dante/dvr
+[0m[0:02:59:371] [0mINFO[sc6f0-dante-rx]:   DEP SHM:    DanteEP
+[0m[0:02:59:371] [0mINFO[sc6f0-dante-rx]:   Channels:   0,1
+[0m[0:02:59:371] [0mINFO[sc6f0-dante-rx]:   Audio Rate: 48000 Hz
+[0m[0:02:59:745] [0mINFO[sc6f0-dante-rx]: DRM HDMI active: connector 40, CRTC 38, primary plane 32, video plane 36
+[0m[0:02:59:843] [0mINFO[sc6f0-dante-rx]: ALLEGRO2 decoder output is displayed on DRM plane 36
+[0m[0:03:00:024] [0mINFO[sc6f0-dante-rx]: qcap2 ALLEGRO2 decoder configured; waiting for H.264 SPS/PPS/IDR
+[0m[0:03:00:056] [0mINFO[sc6f0-dante-rx]: [DIRECT RX] listening on 192.168.190.101:16491 from 192.168.190.99 (loss-first reorder 1/1ms)
+[0m[0:03:00:056] [0mINFO[sc6f0-dante-rx]: Dante RX pipeline started successfully.
+[0m[0:03:04:851] [0mINFO[sc6f0-dante-rx]: ALLEGRO2 decoder extra_data set: avcC=49 bytes (SPS=34, PPS=4)
+[0m[0:03:05:082] [0mINFO[sc6f0-dante-rx]: [DANTE RX DECODER] input=63 pushed=62 dropped=0 (0.00%: transport=0, pool=0, push=0, recovery=0) decoded=3 (0.6 fps)
+[0m[0:03:05:082] [0mINFO[sc6f0-dante-rx]: [DANTE RX STATS] flows=1 | VIDEO: 62 AUs (1.67 MB, 12.4 fps, 2.80 Mbps) | RTP: 2083 udp-in, 1725 reord-in (345/s), lost=0, late=0, old=0, dup=0, parse-fail=0, dep-in=1737, dep-drop=0, qof=0, qd=346 | PROBE port+10: reord-in=0 lost=0 | AUDIO: 0 Hz, 0 ch, fmt=0, 0 periods (0.00 MB, 0.00 Mbps, 0 samples, 0.0 p/s, underflow=0, overrun=0)
+[0m
+***** /!\ Timeout - resetting the decoder /!\ *****
+
+***** /!\ Timeout - resetting the decoder /!\ *****
+
+***** /!\ Timeout - resetting the decoder /!\ *****
+
+***** /!\ Timeout - resetting the decoder /!\ *****
+
+***** /!\ Timeout - resetting the decoder /!\ *****
+
+***** /!\ Timeout - resetting the decoder /!\ *****
+[0:03:10:087] [0mINFO[sc6f0-dante-rx]: [DANTE RX DECODER] input=372 pushed=372 dropped=0 (0.00%: transport=0, pool=0, push=0, recovery=0) decoded=303 (59.7 fps)
+[0m[0:03:10:087] [0mINFO[sc6f0-dante-rx]: [DANTE RX STATS] flows=1 | VIDEO: 372 AUs (7.92 MB, 61.7 fps, 10.44 Mbps) | RTP: 8584 udp-in, 8584 reord-in (1365/s), lost=0, late=0, old=0, dup=0, parse-fail=0, dep-in=8584, dep-drop=0, qof=0, qd=0 | PROBE port+10: reord-in=0 lost=0 | AUDIO: 0 Hz, 0 ch, fmt=0, 0 periods (0.00 MB, 0.00 Mbps, 0 samples, 0.0 p/s, underflow=0, overrun=0)
+[0m
+***** /!\ Timeout - resetting the decoder /!\ *****
+
+***** /!\ Timeout - resetting the decoder /!\ *****
+
+***** /!\ Timeout - resetting the decoder /!\ *****
+
+***** /!\ Timeout - resetting the decoder /!\ *****
+[0:03:15:091] [0mINFO[sc6f0-dante-rx]: [DANTE RX DECODER] input=670 pushed=670 dropped=0 (0.00%: transport=1, pool=0, push=0, recovery=58) decoded=548 (49.0 fps)
+[0m[0:03:15:091] [0mINFO[sc6f0-dante-rx]: [DANTE RX STATS] flows=1 | VIDEO: 670 AUs (13.29 MB, 59.5 fps, 9.00 Mbps) | RTP: 14930 udp-in, 14930 reord-in (1268/s), lost=210, late=0, old=0, dup=0, parse-fail=0, dep-in=14930, dep-drop=99, qof=0, qd=0 | PROBE port+10: reord-in=0 lost=0 | AUDIO: 0 Hz, 0 ch, fmt=0, 0 periods (0.00 MB, 0.00 Mbps, 0 samples, 0.0 p/s, underflow=0, overrun=0)
+[0m
+***** /!\ Timeout - resetting the decoder /!\ *****
+
+***** /!\ Timeout - resetting the decoder /!\ *****
+
+***** /!\ Timeout - resetting the decoder /!\ *****
+
+***** /!\ Timeout - resetting the decoder /!\ *****
+[0:03:20:095] [0mINFO[sc6f0-dante-rx]: [DANTE RX DECODER] input=970 pushed=970 dropped=0 (0.00%: transport=1, pool=0, push=0, recovery=58) decoded=847 (59.8 fps)
+[0m[0:03:20:095] [0mINFO[sc6f0-dante-rx]: [DANTE RX STATS] flows=1 | VIDEO: 970 AUs (19.35 MB, 60.0 fps, 10.15 Mbps) | RTP: 21585 udp-in, 21585 reord-in (1330/s), lost=210, late=0, old=0, dup=0, parse-fail=0, dep-in=21585, dep-drop=99, qof=0, qd=0 | PROBE port+10: reord-in=0 lost=0 | AUDIO: 0 Hz, 0 ch, fmt=0, 0 periods (0.00 MB, 0.00 Mbps, 0 samples, 0.0 p/s, underflow=0, overrun=0)
+[0m
+***** /!\ Timeout - resetting the decoder /!\ *****
+
+***** /!\ Timeout - resetting the decoder /!\ *****
+
+***** /!\ Timeout - resetting the decoder /!\ *****
+
+***** /!\ Timeout - resetting the decoder /!\ *****
+
+***** /!\ Timeout - resetting the decoder /!\ *****
+
+***** /!\ Timeout - resetting the decoder /!\ *****
+[0:03:25:099] [0mINFO[sc6f0-dante-rx]: [DANTE RX DECODER] input=1269 pushed=1269 dropped=0 (0.00%: transport=1, pool=0, push=0, recovery=58) decoded=1148 (60.2 fps)
+[0m[0:03:25:099] [0mINFO[sc6f0-dante-rx]: [DANTE RX STATS] flows=1 | VIDEO: 1269 AUs (25.27 MB, 59.8 fps, 9.93 Mbps) | RTP: 28116 udp-in, 28116 reord-in (1305/s), lost=210, late=0, old=0, dup=0, parse-fail=0, dep-in=28116, dep-drop=99, qof=0, qd=0 | PROBE port+10: reord-in=0 lost=0 | AUDIO: 0 Hz, 0 ch, fmt=0, 0 periods (0.00 MB, 0.00 Mbps, 0 samples, 0.0 p/s, underflow=0, overrun=0)
+[0m
+***** /!\ Timeout - resetting the decoder /!\ *****
+
+***** /!\ Timeout - resetting the decoder /!\ *****
+
+***** /!\ Timeout - resetting the decoder /!\ *****
+
+***** /!\ Timeout - resetting the decoder /!\ *****
+
+***** /!\ Timeout - resetting the decoder /!\ *****
+[0:03:30:103] [0mINFO[sc6f0-dante-rx]: [DANTE RX DECODER] input=1570 pushed=1570 dropped=0 (0.00%: transport=1, pool=0, push=0, recovery=58) decoded=1448 (60.0 fps)
+[0m[0:03:30:103] [0mINFO[sc6f0-dante-rx]: [DANTE RX STATS] flows=1 | VIDEO: 1570 AUs (31.36 MB, 60.2 fps, 10.20 Mbps) | RTP: 34790 udp-in, 34790 reord-in (1334/s), lost=210, late=0, old=0, dup=0, parse-fail=0, dep-in=34790, dep-drop=99, qof=0, qd=0 | PROBE port+10: reord-in=0 lost=0 | AUDIO: 0 Hz, 0 ch, fmt=0, 0 periods (0.00 MB, 0.00 Mbps, 0 samples, 0.0 p/s, underflow=0, overrun=0)
+[0m
+***** /!\ Timeout - resetting the decoder /!\ *****
+
+***** /!\ Timeout - resetting the decoder /!\ *****
+
+***** /!\ Timeout - resetting the decoder /!\ *****
+
+***** /!\ Timeout - resetting the decoder /!\ *****
+
+***** /!\ Timeout - resetting the decoder /!\ *****
+
+***** /!\ Timeout - resetting the decoder /!\ *****
+
+***** /!\ Timeout - resetting the decoder /!\ *****
+[0:03:35:107] [0mINFO[sc6f0-dante-rx]: [DANTE RX DECODER] input=1869 pushed=1869 dropped=0 (0.00%: transport=1, pool=0, push=0, recovery=58) decoded=1748 (60.0 fps)
+[0m[0:03:35:107] [0mINFO[sc6f0-dante-rx]: [DANTE RX STATS] flows=1 | VIDEO: 1869 AUs (37.14 MB, 59.8 fps, 9.69 Mbps) | RTP: 41180 udp-in, 41180 reord-in (1277/s), lost=210, late=0, old=0, dup=0, parse-fail=0, dep-in=41180, dep-drop=99, qof=0, qd=0 | PROBE port+10: reord-in=0 lost=0 | AUDIO: 0 Hz, 0 ch, fmt=0, 0 periods (0.00 MB, 0.00 Mbps, 0 samples, 0.0 p/s, underflow=0, overrun=0)
+[0m
+***** /!\ Timeout - resetting the decoder /!\ *****
+
+***** /!\ Timeout - resetting the decoder /!\ *****
+
+***** /!\ Timeout - resetting the decoder /!\ *****
+
+***** /!\ Timeout - resetting the decoder /!\ *****
+
+***** /!\ Timeout - resetting the decoder /!\ *****
+[0:03:40:112] [0mINFO[sc6f0-dante-rx]: [DANTE RX DECODER] input=2167 pushed=2166 dropped=0 (0.00%: transport=2, pool=0, push=0, recovery=71) decoded=2034 (57.2 fps)
+[0m[0:03:40:112] [0mINFO[sc6f0-dante-rx]: [DANTE RX STATS] flows=1 | VIDEO: 2167 AUs (42.61 MB, 59.6 fps, 9.17 Mbps) | RTP: 47715 udp-in, 47715 reord-in (1306/s), lost=470, late=0, old=0, dup=0, parse-fail=0, dep-in=47715, dep-drop=218, qof=0, qd=0 | PROBE port+10: reord-in=0 lost=0 | AUDIO: 0 Hz, 0 ch, fmt=0, 0 periods (0.00 MB, 0.00 Mbps, 0 samples, 0.0 p/s, underflow=0, overrun=0)
+[0m
+***** /!\ Timeout - resetting the decoder /!\ *****
+
+***** /!\ Timeout - resetting the decoder /!\ *****
+[0:03:42:592] [0mINFO[sc6f0-dante-rx]: Stopping Dante RX pipeline...
+[0m
+***** /!\ Timeout - resetting the decoder /!\ *****
+
+================ Dante RX Final Summary ================
+  Duration:            43.38 s
+  Video Packets:       2262
+  Video Data:          43.89 MB (avg 8.49 Mbps)
+  Video Keyframes:     35
+  Video IDR Slices:    35
+  Video SPS/PPS NALs:  35
+  Decoder Input AUs:   2262
+  Decoder Pushed AUs:  2262
+  Decoder Dropped AUs: 0 (0.00%)
+    Transport / Pool / Push / Recovery: 2 / 0 / 0 / 116
+  Decoded Frames:      2084
+  Decode Errors:       0
+  Audio Periods:       0
+  Audio Samples:       0 (0.00 MB)
+  Audio Output Errors: 0 (unsupported periods: 0)
+========================================================
+
+[0:03:42:756] [0mINFO[sc6f0-dante-rx]: Dante RX pipeline stopped.
+[0m
