@@ -20,6 +20,7 @@
 #include "qcap2.h"
 #include "qcap2.v4l2.h"
 #include "qcap2.allegro2.h"
+#include "qcap.common.h"
 
 #include "ZzLog.h"
 #include "ZzModules.h"
@@ -58,6 +59,8 @@ static std::string g_tx_direct_rx_ip;
 static uint16_t g_tx_direct_port = 16490;
 static std::string g_tx_direct_mirror_rx_ip;
 static uint16_t g_tx_direct_mirror_port = 16491;
+static bool g_tx_use_qcap = false;
+static bool g_tx_direct_option_used = false;
 
 ZZ_MODULE_DECL(__zz_log__);
 
@@ -116,6 +119,14 @@ struct App0 {
 
 		return 0;
 	}
+
+	struct qcap_dante_tx_t {
+		PVOID server = nullptr;
+		PVOID sender = nullptr;
+		bool server_started = false;
+		bool sender_started = false;
+		std::vector<uint8_t> h264_parameter_sets;
+	};
 
 	struct zst_dante_tx_t {
 		zst_pipeline_t* pipe = nullptr;
@@ -720,6 +731,7 @@ struct App0 {
 				qcap2_video_decoder_t* pVdec_rtsp = NULL;
 				qcap2_audio_decoder_t* pAdec_rtsp = NULL;
 				zst_dante_tx_t* pDanteTx = NULL;
+				qcap_dante_tx_t* pQcapDanteTx = NULL;
 				if(nSrcColorSpaceType != QCAP_COLORSPACE_TYPE_UNDEFINED && nVideoWidth > 0 && nVideoHeight > 0) {
 #if 0
 					qcap2_muxer_t* pRTSPMuxer;
@@ -733,16 +745,24 @@ struct App0 {
 					}
 #endif
 
-#if 1
-					qres = StartDanteServer(_FreeStack_, nColorSpaceType, nVideoWidth, nVideoHeight,
-						bVideoIsInterleaved, dVideoFrameRate, nVideoEncoderFormat, nVideoBitRate,
-						nAudioChannels, nAudioBitsPerSample, nAudioSampleFrequency, nAudioEncoderFormat,
-						&pDanteTx);
-					if(qres != QCAP_RS_SUCCESSFUL) {
-						LOGE("%s(%d): StartDanteServer() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-						break;
+					if (g_tx_use_qcap) {
+						qres = StartQcapDanteServer(_FreeStack_, nColorSpaceType, nVideoWidth, nVideoHeight,
+							dVideoFrameRate, nVideoBitRate, nAudioChannels, nAudioSampleFrequency,
+							&pQcapDanteTx);
+						if(qres != QCAP_RS_SUCCESSFUL) {
+							LOGE("%s(%d): StartQcapDanteServer() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+							break;
+						}
+					} else {
+						qres = StartDanteServer(_FreeStack_, nColorSpaceType, nVideoWidth, nVideoHeight,
+							bVideoIsInterleaved, dVideoFrameRate, nVideoEncoderFormat, nVideoBitRate,
+							nAudioChannels, nAudioBitsPerSample, nAudioSampleFrequency, nAudioEncoderFormat,
+							&pDanteTx);
+						if(qres != QCAP_RS_SUCCESSFUL) {
+							LOGE("%s(%d): StartDanteServer() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+							break;
+						}
 					}
-#endif
 
 					if(pVsrcEvent) {
 						qres = AddEventHandler(_FreeStack_, pVsrcEvent,
@@ -755,7 +775,7 @@ struct App0 {
 
 					if(pAsrcEvent) {
 						qres = AddEventHandler(_FreeStack_, pAsrcEvent,
-							std::bind(&self_t::OnAsrc, this, pAsrc, pAenc, pDanteTx));
+							std::bind(&self_t::OnAsrc, this, pAsrc, pAenc, pDanteTx, pQcapDanteTx));
 						if(qres != QCAP_RS_SUCCESSFUL) {
 							LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 							break;
@@ -765,7 +785,7 @@ struct App0 {
 
 					if(pVencEvent) {
 						qres = AddEventHandler(_FreeStack_, pVencEvent,
-							std::bind(&self_t::OnVenc, this, pVenc, pVdec_rtsp, pDanteTx));
+							std::bind(&self_t::OnVenc, this, pVenc, pVdec_rtsp, pDanteTx, pQcapDanteTx));
 						if(qres != QCAP_RS_SUCCESSFUL) {
 							LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 							break;
@@ -961,7 +981,8 @@ struct App0 {
 			return qres;
 		}
 
-		QRETURN OnVenc(qcap2_video_encoder_t* pVenc, qcap2_video_decoder_t* pVdec_rtsp, zst_dante_tx_t* pDanteTx) {
+		QRETURN OnVenc(qcap2_video_encoder_t* pVenc, qcap2_video_decoder_t* pVdec_rtsp,
+			zst_dante_tx_t* pDanteTx, qcap_dante_tx_t* pQcapDanteTx) {
 			QRESULT qres;
 
 			switch(1) { case 1:
@@ -980,6 +1001,59 @@ struct App0 {
 						LOGE("%s(%d): qcap2_video_decoder_push() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 						break;
 					}
+				}
+
+				if (pQcapDanteTx && pQcapDanteTx->sender) {
+					std::shared_ptr<qcap2_av_packet_t> pAVPacket((qcap2_av_packet_t*)qcap2_rcbuffer_lock_data(pRCBuffer),
+						[pRCBuffer](qcap2_av_packet_t*) { qcap2_rcbuffer_unlock_data(pRCBuffer); });
+					uint8_t* pStreamBuffer = nullptr;
+					int nStreamBufferLen = 0, nStreamIndex = 0;
+					BOOL bIsKeyFrame = FALSE;
+					double dSampleTime = 0.0;
+					qcap2_av_packet_get_buffer(pAVPacket.get(), &pStreamBuffer, &nStreamBufferLen);
+					qcap2_av_packet_get_property(pAVPacket.get(), &nStreamIndex, &bIsKeyFrame);
+					qcap2_av_packet_get_sample_time(pAVPacket.get(), &dSampleTime);
+					if (pStreamBuffer && nStreamBufferLen > 0) {
+						std::vector<uint8_t> parameter_sets;
+						bool has_idr = false, has_sps = false, has_pps = false;
+						for (size_t pos = 0; pos + 4 <= (size_t)nStreamBufferLen;) {
+							size_t prefix = pStreamBuffer[pos] == 0 && pStreamBuffer[pos + 1] == 0 &&
+								pStreamBuffer[pos + 2] == 1 ? 3 :
+								(pos + 4 <= (size_t)nStreamBufferLen && pStreamBuffer[pos] == 0 &&
+								 pStreamBuffer[pos + 1] == 0 && pStreamBuffer[pos + 2] == 0 &&
+								 pStreamBuffer[pos + 3] == 1 ? 4 : 0);
+							if (!prefix) { ++pos; continue; }
+							size_t nal = pos + prefix, end = nal + 1;
+							while (end + 3 < (size_t)nStreamBufferLen &&
+								!(pStreamBuffer[end] == 0 && pStreamBuffer[end + 1] == 0 &&
+								  (pStreamBuffer[end + 2] == 1 || (end + 3 < (size_t)nStreamBufferLen &&
+								   pStreamBuffer[end + 2] == 0 && pStreamBuffer[end + 3] == 1)))) ++end;
+							uint8_t type = pStreamBuffer[nal] & 0x1f;
+							if (type == 7 || type == 8) {
+								if (type == 7) has_sps = true; else has_pps = true;
+								parameter_sets.insert(parameter_sets.end(), {0, 0, 0, 1});
+								parameter_sets.insert(parameter_sets.end(), pStreamBuffer + nal, pStreamBuffer + end);
+							} else if (type == 5) has_idr = true;
+							pos = end;
+						}
+						if (has_sps && has_pps) pQcapDanteTx->h264_parameter_sets = parameter_sets;
+						std::vector<uint8_t> keyframe_with_config;
+						BYTE* pQcapBuffer = pStreamBuffer;
+						ULONG nQcapBufferLen = (ULONG)nStreamBufferLen;
+						if ((bIsKeyFrame || has_idr) && !(has_sps && has_pps) &&
+							!pQcapDanteTx->h264_parameter_sets.empty()) {
+							keyframe_with_config = pQcapDanteTx->h264_parameter_sets;
+							keyframe_with_config.insert(keyframe_with_config.end(), pStreamBuffer,
+								pStreamBuffer + nStreamBufferLen);
+							pQcapBuffer = keyframe_with_config.data();
+							nQcapBufferLen = (ULONG)keyframe_with_config.size();
+						}
+						qres = QCAP_SET_VIDEO_BROADCAST_SERVER_COMPRESSION_BUFFER(
+							pQcapDanteTx->sender, 0, pQcapBuffer, nQcapBufferLen, bIsKeyFrame, dSampleTime);
+						if (qres != QCAP_RS_SUCCESSFUL)
+							LOGE("QCAP_SET_VIDEO_BROADCAST_SERVER_COMPRESSION_BUFFER failed, qres=%d", qres);
+					}
+					break;
 				}
 
 				if(pDanteTx && pDanteTx->app_video_src_pad) {
@@ -1122,7 +1196,8 @@ struct App0 {
 			}
 		}
 
-		QRETURN OnAsrc(qcap2_audio_source_t* pAsrc, qcap2_audio_encoder_t* pAenc, zst_dante_tx_t* pDanteTx) {
+		QRETURN OnAsrc(qcap2_audio_source_t* pAsrc, qcap2_audio_encoder_t* pAenc,
+			zst_dante_tx_t* pDanteTx, qcap_dante_tx_t* pQcapDanteTx) {
 			QRESULT qres;
 
 			switch(1) { case 1:
@@ -1141,6 +1216,24 @@ struct App0 {
 						// LOGE("%s(%d): qcap2_audio_encoder_push() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 						break;
 					}
+				}
+
+				if (pQcapDanteTx && pQcapDanteTx->sender) {
+					std::shared_ptr<qcap2_av_frame_t> pAVFrame((qcap2_av_frame_t*)qcap2_rcbuffer_lock_data(pRCBuffer),
+						[pRCBuffer](qcap2_av_frame_t*) { qcap2_rcbuffer_unlock_data(pRCBuffer); });
+					uint8_t* pFrameBuffer = nullptr;
+					int nFrameBufferStride = 0;
+					double dSampleTime = 0.0;
+					qcap2_av_frame_get_buffer(pAVFrame.get(), &pFrameBuffer, &nFrameBufferStride);
+					qcap2_av_frame_get_sample_time(pAVFrame.get(), &dSampleTime);
+					if (pFrameBuffer && nFrameBufferStride > 0) {
+						qres = QCAP_SET_AUDIO_BROADCAST_SERVER_UNCOMPRESSION_BUFFER(
+							pQcapDanteTx->sender, 0, pFrameBuffer,
+							(ULONG)nFrameBufferStride, dSampleTime);
+						if (qres != QCAP_RS_SUCCESSFUL)
+							LOGE("QCAP_SET_AUDIO_BROADCAST_SERVER_UNCOMPRESSION_BUFFER failed, qres=%d", qres);
+					}
+					break;
 				}
 
 				if(pDanteTx && pDanteTx->app_audio_src_pad) {
@@ -1590,6 +1683,76 @@ struct App0 {
 			return NULL;
 		}
 
+		static QRETURN QCAP_EXPORT qcap_dante_message_callback(PVOID /*server*/, UINT video_channel,
+			DWORD flags, PVOID /*user_data*/) {
+			const char* state = (flags & QCAP_DANTE_FLAG_CONNECTED) ? "connected" :
+				(flags & QCAP_DANTE_FLAG_DISCONNECT) ? "disconnected" :
+				(flags & QCAP_DANTE_FLAG_NO_VIDEO_PACKET) ? "no-video-packet" : "updated";
+			LOGI("[QCAP DANTE] TX channel=%u %s (flags=0x%08x)",
+				video_channel, state, (unsigned int)flags);
+			return QCAP_RT_OK;
+		}
+
+		QRESULT StartQcapDanteServer(free_stack_t& _FreeStack_, ULONG nColorSpaceType,
+			ULONG nVideoWidth, ULONG nVideoHeight, double dVideoFrameRate, ULONG nVideoBitRate,
+			ULONG nAudioChannels, ULONG nAudioSampleFrequency, qcap_dante_tx_t** ppDanteTx) {
+			if (!ppDanteTx) return QCAP_RS_ERROR_INVALID_PARAMETER;
+			qcap_dante_tx_t* tx = new qcap_dante_tx_t();
+			_FreeStack_ += [tx]() {
+				LOGI("Stopping Dante TX pipeline (QCAP API)...");
+				if (tx->sender) {
+					if (tx->sender_started) {
+						QRESULT qres = QCAP_STOP_BROADCAST_SERVER(tx->sender);
+						if (qres != QCAP_RS_SUCCESSFUL) LOGW("QCAP_STOP_BROADCAST_SERVER failed, qres=%d", qres);
+					}
+					QRESULT qres = QCAP_DESTROY_BROADCAST_SERVER(tx->sender);
+					if (qres != QCAP_RS_SUCCESSFUL) LOGW("QCAP_DESTROY_BROADCAST_SERVER failed, qres=%d", qres);
+				}
+				if (tx->server) {
+					if (tx->server_started) {
+						QRESULT qres = QCAP_STOP_DANTE_SERVER(tx->server);
+						if (qres != QCAP_RS_SUCCESSFUL) LOGW("QCAP_STOP_DANTE_SERVER failed, qres=%d", qres);
+					}
+					QRESULT qres = QCAP_DESTROY_DANTE_SERVER(tx->server);
+					if (qres != QCAP_RS_SUCCESSFUL) LOGW("QCAP_DESTROY_DANTE_SERVER failed, qres=%d", qres);
+				}
+				delete tx;
+			};
+
+			QRESULT qres = QCAP_CREATE_DANTE_SERVER(&tx->server);
+			if (qres != QCAP_RS_SUCCESSFUL) {
+				LOGE("QCAP_CREATE_DANTE_SERVER failed, qres=%d (requires Dante DEP and DanteEP)", qres);
+				return qres;
+			}
+			qres = QCAP_SET_DANTE_SERVER_CUSTOM_PROPERTY(tx->server, 1, 0);
+			if (qres != QCAP_RS_SUCCESSFUL) return qres;
+			qres = QCAP_REGISTER_DANTE_SERVER_MESSAGE_CALLBACK(tx->server, qcap_dante_message_callback, tx);
+			if (qres != QCAP_RS_SUCCESSFUL) return qres;
+			qres = QCAP_START_DANTE_SERVER(tx->server);
+			if (qres != QCAP_RS_SUCCESSFUL) return qres;
+			tx->server_started = true;
+
+			qres = QCAP_CREATE_DANTE_SENDER(tx->server, 0, &tx->sender, 0, 0, NULL);
+			if (qres != QCAP_RS_SUCCESSFUL) return qres;
+			qres = QCAP_SET_VIDEO_BROADCAST_SERVER_PROPERTY(
+				tx->sender, 0, QCAP_ENCODER_TYPE_ALLEGRO, QCAP_ENCODER_FORMAT_H264,
+				nColorSpaceType, nVideoWidth, nVideoHeight, dVideoFrameRate,
+				QCAP_RECORD_MODE_CBR, 0, nVideoBitRate, 60, 0, 0, NULL, FALSE, FALSE,
+				QCAP_BROADCAST_FLAG_NETWORK);
+			if (qres != QCAP_RS_SUCCESSFUL) return qres;
+			qres = QCAP_SET_AUDIO_BROADCAST_SERVER_PROPERTY(
+				tx->sender, 0, QCAP_ENCODER_TYPE_SOFTWARE, QCAP_ENCODER_FORMAT_PCM,
+				nAudioChannels ? nAudioChannels : 2, 32,
+				nAudioSampleFrequency ? nAudioSampleFrequency : 48000);
+			if (qres != QCAP_RS_SUCCESSFUL) return qres;
+			qres = QCAP_START_BROADCAST_SERVER(tx->sender, NULL);
+			if (qres != QCAP_RS_SUCCESSFUL) return qres;
+			tx->sender_started = true;
+			LOGI("Dante TX pipeline started through QCAP API (video/audio channel 0).");
+			*ppDanteTx = tx;
+			return QCAP_RS_SUCCESSFUL;
+		}
+
 		QRESULT StartDanteServer(free_stack_t& _FreeStack_, ULONG nColorSpaceType, ULONG nVideoWidth, ULONG nVideoHeight,
 			BOOL bVideoIsInterleaved, double dVideoFrameRate, ULONG nEncoderFormat, ULONG nVideoBitRate,
 			ULONG nAudioChannels, ULONG nAudioBitsPerSample, ULONG nAudioSampleFrequency, ULONG nAudioEncoderFormat,
@@ -1787,7 +1950,7 @@ struct App0 {
 				uint64_t audio_frames = tx->tx_audio_frames.load();
 				uint64_t audio_bytes = tx->tx_audio_bytes.load();
 				uint64_t audio_samples = tx->tx_audio_samples.load();
-				printf("\n================ Dante TXX Final Summary ================\n");
+				printf("\n================ Dante TX Final Summary ================\n");
 				printf("  Duration:            %.2f s\n", duration);
 				printf("  Video Frames:        %llu (avg %.2f fps)\n",
 					(unsigned long long)video_frames, duration > 0 ? video_frames / duration : 0.0);
@@ -1816,16 +1979,23 @@ int main(int argc, char* argv[]) {
 	g_argv = argv;
 
 	for (int i = 1; i < argc; i++) {
-		if (strcmp(argv[i], "--direct") == 0 && i + 1 < argc) {
+		if (strcmp(argv[i], "--use-qcap") == 0) {
+			g_tx_use_qcap = true;
+		} else if (strcmp(argv[i], "--direct") == 0 && i + 1 < argc) {
+			g_tx_direct_option_used = true;
 			g_tx_direct_rx_ip = argv[++i];
 		} else if (strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
+			g_tx_direct_option_used = true;
 			g_tx_direct_port = (uint16_t)strtoul(argv[++i], nullptr, 10);
 		} else if (strcmp(argv[i], "--direct-mirror") == 0 && i + 1 < argc) {
+			g_tx_direct_option_used = true;
 			g_tx_direct_mirror_rx_ip = argv[++i];
 		} else if (strcmp(argv[i], "--mirror-port") == 0 && i + 1 < argc) {
+			g_tx_direct_option_used = true;
 			g_tx_direct_mirror_port = (uint16_t)strtoul(argv[++i], nullptr, 10);
 		} else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
-			printf("Usage: sc6f0-dante-tx [--direct <rx-ip>] [--port <port>] [--direct-mirror <rx-ip>] [--mirror-port <port>] [--dump-stream <file>]\n");
+			printf("Usage: sc6f0-dante-tx [--use-qcap] [--direct <rx-ip>] [--port <port>] [--direct-mirror <rx-ip>] [--mirror-port <port>] [--dump-stream <file>]\n");
+			printf("  --use-qcap         Send Dante video/audio through QCAP (channel 0); requires Dante DEP/DanteEP\n");
 			printf("  --direct <rx-ip>  Direct RTP mode: unicast H.264 to rx-ip:port,\n");
 			printf("                    bypassing the Dante daemon (audio disabled)\n");
 			printf("  --port <port>     RTP port (default: 16490)\n");
@@ -1842,6 +2012,15 @@ int main(int argc, char* argv[]) {
 			else
 				printf("Dumping encoded Annex-B H.264 to %s\n", argv[i]);
 		}
+	}
+
+	if (g_tx_use_qcap && (g_tx_direct_option_used || g_tx_dump)) {
+		fprintf(stderr, "sc6f0-dante-tx: --use-qcap is incompatible with --direct/--port, --direct-mirror/--mirror-port, and --dump-stream\n");
+		if (g_tx_dump) {
+			fclose(g_tx_dump);
+			g_tx_dump = NULL;
+		}
+		return 1;
 	}
 
 	signal(SIGINT, tx_sig_handler);

@@ -141,12 +141,15 @@ struct Allegro2DecodeFixture : public __testkit__::TestCase {
 	bool                      mFailed;
 	bool                      mDone;
 	int64_t                   mDrainDeadline;
+	int64_t                   mLastStatsTime;
+	int                       mLastStatsPopCount;
 
 	explicit Allegro2DecodeFixture()
 		: mInputPath(NULL)
 		, mpVdec(NULL), mpVdecEvent(NULL), mpTimer(NULL), mpPacketPool(NULL)
 		, mPushed(0), mPopCount(0), mAllPushed(false), mFlushSent(false)
-		, mFailed(false), mDone(false), mDrainDeadline(0)
+		, mFailed(false), mDone(false), mDrainDeadline(0), mLastStatsTime(0)
+		, mLastStatsPopCount(0)
 	{
 	}
 
@@ -205,6 +208,8 @@ struct Allegro2DecodeFixture : public __testkit__::TestCase {
 		mFailed = false;
 		mDone = false;
 		mDrainDeadline = 0;
+		mLastStatsTime = __zz_clock__::_clk();
+		mLastStatsPopCount = 0;
 
 		switch(1) { case 1:
 			// ---- decoder event ----
@@ -442,6 +447,15 @@ struct Allegro2DecodeFixture : public __testkit__::TestCase {
 				}
 				qcap2_rcbuffer_release(pFrame);
 				mPopCount++;
+				int64_t now = __zz_clock__::_clk();
+				if (now - mLastStatsTime >= 5000000) {
+					int decoded = mPopCount - mLastStatsPopCount;
+					double fps = decoded * 1000000.0 / (now - mLastStatsTime);
+					LOGI("[FIXTURE DECODER] decoded=%d (+%d, %.1f fps)",
+					     mPopCount, decoded, fps);
+					mLastStatsTime = now;
+					mLastStatsPopCount = mPopCount;
+				}
 			}
 		}
 

@@ -1,9 +1,0 @@
-qdisc mq 0: root 
- Sent 13621673 bytes 20087 pkt (dropped 0, overlimits 0 requeues 0) 
- backlog 0b 0p requeues 0
-qdisc pfifo_fast 0: parent :2 bands 3 priomap 1 2 2 2 1 2 0 0 1 1 1 1 1 1 1 1
- Sent 13603254 bytes 19972 pkt (dropped 0, overlimits 0 requeues 0) 
- backlog 0b 0p requeues 0
-qdisc pfifo_fast 0: parent :1 bands 3 priomap 1 2 2 2 1 2 0 0 1 1 1 1 1 1 1 1
- Sent 18419 bytes 115 pkt (dropped 0, overlimits 0 requeues 0) 
- backlog 0b 0p requeues 0
