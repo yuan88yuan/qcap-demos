@@ -119,6 +119,10 @@ struct App0 {
 		case 1:
 			mTestCase1.DoWork();
 			break;
+
+		case 2:
+			mTestCase2.DoWork();
+			break;
 		}
 	}
 
@@ -399,6 +403,209 @@ struct App0 {
 			return QCAP_RT_OK;
 		}
 	} mTestCase1;
+
+	struct TestCase2 : public TestCase {
+		typedef TestCase2 self_t;
+		typedef TestCase super_t;
+
+		int nNumVideoSources;
+		volatile int nSnapshotPending;
+
+		void DoWork() {
+			QRESULT qres;
+
+			LOGD("%s::%s", typeid(self_t).name(), __FUNCTION__);
+
+			switch(1) { case 1:
+				qres = StartEventHandlers();
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): StartEventHandlers() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+				ZzUtils::Scoped ZZ_GUARD_NAME(
+					[&]() {
+						OnExitEventHandlers();
+					}
+				);
+
+				QRESULT qres_evt = QCAP_RS_SUCCESSFUL;
+				qres = ExecInEventHandlers(std::bind(&self_t::OnStart, this,
+					std::ref(_FreeStack_evt_), std::ref(qres_evt)));
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): ExecInEventHandlers() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+				if(qres_evt != QCAP_RS_SUCCESSFUL) {
+					break;
+				}
+
+				nSnapshotPending = 0;
+
+				wait_for_test_finish([&](int ch) -> bool {
+					switch(ch) {
+					case 's':
+					case 'S':
+						nSnapshotPending = nNumVideoSources;
+						break;
+					}
+					return true;
+				}, 1000000LL, 10LL);
+			}
+
+			_FreeStack_main_.flush();
+		}
+
+		QRETURN OnStart(free_stack_t& _FreeStack_, QRESULT& qres) {
+			switch(1) { case 1:
+				qcap2_demuxer_t* pDemuxer = qcap2_demuxer_new();
+				_FreeStack_ += [pDemuxer]() {
+					qcap2_demuxer_delete(pDemuxer);
+				};
+
+				qcap2_demuxer_set_type(pDemuxer, QCAP2_DEMUXER_TYPE_COE);
+				qcap2_demuxer_set_coe_config_file(pDemuxer, "/opt/yuan/yuan_config.json");
+				qcap2_demuxer_set_coe_verbosity(pDemuxer, 1);
+				qcap2_demuxer_set_coe_frame_count(pDemuxer, 4);
+
+				qres = qcap2_demuxer_start(pDemuxer);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): qcap2_demuxer_start() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+				_FreeStack_ += [pDemuxer]() {
+					QRESULT qres;
+
+					qres = qcap2_demuxer_stop(pDemuxer);
+					if(qres != QCAP_RS_SUCCESSFUL) {
+						LOGE("%s(%d): qcap2_demuxer_stop() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					}
+				};
+
+				nNumVideoSources = qcap2_demuxer_get_video_source_count(pDemuxer);
+				LOGI("qcap2_demuxer_get_video_source_count() = %d", nNumVideoSources);
+				if(nNumVideoSources <= 0) {
+					LOGE("%s(%d): no video source found", __FUNCTION__, __LINE__);
+					qres = QCAP_RS_ERROR_GENERAL;
+					break;
+				}
+
+				for(int i = 0; i < nNumVideoSources; i++) {
+					qcap2_video_source_t* pVsrc = qcap2_demuxer_get_video_source(pDemuxer, i);
+					if(! pVsrc) {
+						LOGE("%s(%d): qcap2_demuxer_get_video_source(%d) failed", __FUNCTION__, __LINE__, i);
+						qres = QCAP_RS_ERROR_GENERAL;
+						break;
+					}
+
+					{
+						std::shared_ptr<qcap2_video_format_t> pVideoFormat(
+							qcap2_video_format_new(), qcap2_video_format_delete);
+
+						qcap2_video_source_get_video_format(pVsrc, pVideoFormat.get());
+
+						ULONG nColorSpaceType;
+						ULONG nVideoWidth;
+						ULONG nVideoHeight;
+						BOOL bVideoIsInterleaved;
+						double dVideoFrameRate;
+
+						qcap2_video_format_get_property(pVideoFormat.get(),
+							&nColorSpaceType, &nVideoWidth, &nVideoHeight,
+							&bVideoIsInterleaved, &dVideoFrameRate);
+
+						LOGI("[%d] color=%d, %dx%d, interleaved=%d, fps=%.2f",
+							i, nColorSpaceType, nVideoWidth, nVideoHeight,
+							bVideoIsInterleaved, dVideoFrameRate);
+					}
+
+					qcap2_event_t* pVsrcEvent;
+					qres = NewEvent(_FreeStack_, &pVsrcEvent);
+					if(qres != QCAP_RS_SUCCESSFUL) {
+						LOGE("%s(%d): NewEvent() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+						break;
+					}
+					qcap2_video_source_set_event(pVsrc, pVsrcEvent);
+
+					qres = AddEventHandler(_FreeStack_, pVsrcEvent,
+						std::bind(&self_t::OnVsrc, this, pVsrc, i));
+					if(qres != QCAP_RS_SUCCESSFUL) {
+						LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+						break;
+					}
+
+					qres = qcap2_video_source_start(pVsrc);
+					if(qres != QCAP_RS_SUCCESSFUL) {
+						LOGE("%s(%d): qcap2_video_source_start(%d) failed, qres=%d", __FUNCTION__, __LINE__, i, qres);
+						break;
+					}
+					_FreeStack_ += [pVsrc]() {
+						QRESULT qres;
+
+						qres = qcap2_video_source_stop(pVsrc);
+						if(qres != QCAP_RS_SUCCESSFUL) {
+							LOGE("%s(%d): qcap2_video_source_stop() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+						}
+					};
+				}
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					break;
+				}
+			}
+
+			return QCAP_RT_OK;
+		}
+
+		QRETURN OnVsrc(qcap2_video_source_t* pVsrc, int nIndex) {
+			QRESULT qres;
+
+			switch(1) { case 1:
+				qcap2_rcbuffer_t* pRCBuffer;
+				qres = qcap2_video_source_pop(pVsrc, &pRCBuffer);
+				if(qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("%s(%d): qcap2_video_source_pop() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+					break;
+				}
+				std::shared_ptr<qcap2_rcbuffer_t> pRCBuffer_(pRCBuffer,
+					qcap2_rcbuffer_release);
+				std::shared_ptr<qcap2_av_frame_t> pAVFrame(
+					(qcap2_av_frame_t*)qcap2_rcbuffer_lock_data(pRCBuffer),
+					[pRCBuffer](qcap2_av_frame_t*) {
+						qcap2_rcbuffer_unlock_data(pRCBuffer);
+					});
+
+				ULONG nColorSpaceType;
+				ULONG nVideoWidth;
+				ULONG nVideoHeight;
+				qcap2_av_frame_get_video_property(pAVFrame.get(),
+					&nColorSpaceType, &nVideoWidth, &nVideoHeight);
+
+				int64_t nPTS;
+				qcap2_av_frame_get_pts(pAVFrame.get(), &nPTS);
+				uint8_t* pBuffer;
+				int nStride;
+				qcap2_av_frame_get_buffer(pAVFrame.get(), &pBuffer, &nStride);
+
+				LOGD("[%d] nPTS=%lld, %dx%d, color=%d, nStride=%d",
+					nIndex, (long long)nPTS, nVideoWidth, nVideoHeight,
+					nColorSpaceType, nStride);
+
+				if(nSnapshotPending > 0) {
+					char name[64];
+					snprintf(name, sizeof(name), "snapshot-%d", nIndex);
+
+					qres = qcap2_save_raw_video_frame(pRCBuffer, name);
+					if(qres != QCAP_RS_SUCCESSFUL) {
+						LOGE("%s(%d): qcap2_save_raw_video_frame() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+						break;
+					}
+
+					nSnapshotPending -= 1;
+				}
+			}
+
+			return QCAP_RT_OK;
+		}
+	} mTestCase2;
 };
 
 int main(int argc, char* argv[]) {
