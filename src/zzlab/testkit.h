@@ -38,6 +38,7 @@ namespace __testkit__ {
 		int fd_stdin = 0; // stdin
 		int64_t now = _clk();
 		int64_t nTick = now * dur_den / dur_num;
+		bool bStdinOpen = true;
 
 		LOGW("Wait for test...");
 		while(true) {
@@ -45,8 +46,10 @@ namespace __testkit__ {
 			FD_ZERO(&readfds);
 
 			int fd_max = -1;
-			if(fd_stdin > fd_max) fd_max = fd_stdin;
-			FD_SET(fd_stdin, &readfds);
+			if(bStdinOpen) {
+				if(fd_stdin > fd_max) fd_max = fd_stdin;
+				FD_SET(fd_stdin, &readfds);
+			}
 
 			struct timeval tval;
 
@@ -55,8 +58,8 @@ namespace __testkit__ {
 				tval.tv_sec  = 0;
 				tval.tv_usec = 4000LL;
 			} else {
-				tval.tv_sec  = nInterval / dur_num;
-				tval.tv_usec = nInterval % dur_num;
+				tval.tv_sec  = nInterval / 1000000LL;
+				tval.tv_usec = nInterval % 1000000LL;
 			}
 
 			err = select(fd_max + 1, &readfds, NULL, NULL, &tval);
@@ -68,8 +71,16 @@ namespace __testkit__ {
 			now = _clk();
 			nTick++;
 
-			if (FD_ISSET(fd_stdin, &readfds)) {
+			if (bStdinOpen && FD_ISSET(fd_stdin, &readfds)) {
 				int ch = getchar();
+
+				// EOF (e.g. stdin closed/redirected in non-interactive
+				// runs) leaves the fd readable forever; stop watching
+				// stdin and keep ticking instead of spinning.
+				if(ch == EOF) {
+					bStdinOpen = false;
+					continue;
+				}
 
 				if(ch == 'q')
 					break;

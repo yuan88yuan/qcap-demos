@@ -148,6 +148,10 @@ else()
 endif()
 
 qcap_add_test(sc6n0-demuxer sc6n0-demuxer.cpp ZZLAB QCAP)
+qcap_add_test(test-alsa-400hz test-alsa-400hz.cpp ZZLAB QCAP ALSA)
+target_link_libraries(test-alsa-400hz PRIVATE m)
+qcap_add_test(test-qcap-400hz test-qcap-400hz.cpp ZZLAB QCAP)
+target_link_libraries(test-qcap-400hz PRIVATE m)
 
 add_custom_target(utils DEPENDS qdemo sc6f0-dante-box zdev-ticks-stat)
 add_custom_target(tests DEPENDS ${TEST_TARGETS})
