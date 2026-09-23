@@ -536,9 +536,22 @@ namespace __sc6f0_dante_rx__ {
 	struct qcap_dante_rx_t {
 		PVOID server = nullptr;
 		PVOID client = nullptr;
+		zst_dante_rx_t* media_rx = nullptr;
 		bool server_started = false;
 		bool client_started = false;
 	};
+
+	static zst_dante_rx_t* start_qcap_media_rx(bool display_enabled);
+	static void stop_qcap_media_rx(zst_dante_rx_t* rx);
+	static QRETURN qcap_dante_video_callback(PVOID client, UINT session,
+		double sample_time, BYTE* stream, ULONG stream_len, BOOL is_keyframe, PVOID user_data);
+	static QRETURN qcap_dante_audio_callback(PVOID client, UINT session,
+		double sample_time, BYTE* stream, ULONG stream_len, PVOID user_data);
+	static QRETURN qcap_dante_connected_callback(PVOID client, UINT session,
+		ULONG video_format, ULONG width, ULONG height, BOOL interleaved, double fps,
+		ULONG audio_format, ULONG audio_channels, ULONG audio_bits, ULONG audio_rate, PVOID user_data);
+	static QRETURN qcap_dante_fail_callback(PVOID client, UINT session,
+		QRESULT status, DWORD error_code, PVOID user_data);
 
 	static QRETURN qcap_dante_message_callback(PVOID /*server*/, UINT video_channel,
 	                                           DWORD flags, PVOID /*user_data*/) {
@@ -582,14 +595,21 @@ namespace __sc6f0_dante_rx__ {
 			if (qres != QCAP_RS_SUCCESSFUL)
 				LOGW("QCAP_DESTROY_DANTE_SERVER failed, qres=%d", qres);
 			rx->server = nullptr;
-			rx->server_started = false;
+			 rx->server_started = false;
 		}
+		stop_qcap_media_rx(rx->media_rx);
+		rx->media_rx = nullptr;
 		delete rx;
 		LOGI("Dante RX pipeline (QCAP API) stopped.");
 	}
 
-	static qcap_dante_rx_t* start_qcap_dante_rx() {
+	static qcap_dante_rx_t* start_qcap_dante_rx(bool display_enabled) {
 		qcap_dante_rx_t* rx = new qcap_dante_rx_t();
+		rx->media_rx = start_qcap_media_rx(display_enabled);
+		if (!rx->media_rx) {
+			delete rx;
+			return nullptr;
+		}
 		QRESULT qres = QCAP_CREATE_DANTE_SERVER(&rx->server);
 		if (qres != QCAP_RS_SUCCESSFUL) {
 			LOGE("QCAP_CREATE_DANTE_SERVER failed, qres=%d (requires the Dante DEP service and DanteEP shared memory)", qres);
@@ -619,10 +639,53 @@ namespace __sc6f0_dante_rx__ {
 		rx->server_started = true;
 
 		qres = QCAP_CREATE_DANTE_RECEIVER(
-			rx->server, 0, 0, 0, &rx->client, QCAP_DECODER_TYPE_ALLEGRO,
+			rx->server, 0, 0, 0, &rx->client, QCAP_DECODER_TYPE_SOFTWARE,
 			NULL, FALSE, FALSE);
 		if (qres != QCAP_RS_SUCCESSFUL) {
-			LOGE("QCAP_CREATE_DANTE_RECEIVER(video=0, audio=0, decoder=ALLEGRO) failed, qres=%d", qres);
+			LOGE("QCAP_CREATE_DANTE_RECEIVER(video=0, audio=0, decoder=SOFTWARE) failed, qres=%d", qres);
+			stop_qcap_dante_rx(rx);
+			return nullptr;
+		}
+		BOOL decode = FALSE;
+		qres = QCAP_SET_BROADCAST_CLIENT_CUSTOM_PROPERTY_EX(rx->client,
+			QCAP_BCPROP_VIDEO_DECODE, (BYTE*)&decode, sizeof(decode));
+		if (qres != QCAP_RS_SUCCESSFUL) {
+			LOGE("QCAP_BCPROP_VIDEO_DECODE=0 failed, qres=%d", qres);
+			stop_qcap_dante_rx(rx);
+			return nullptr;
+		}
+		qres = QCAP_SET_BROADCAST_CLIENT_CUSTOM_PROPERTY_EX(rx->client,
+			QCAP_BCPROP_AUDIO_DECODE, (BYTE*)&decode, sizeof(decode));
+		if (qres != QCAP_RS_SUCCESSFUL) {
+			LOGE("QCAP_BCPROP_AUDIO_DECODE=0 failed, qres=%d", qres);
+			stop_qcap_dante_rx(rx);
+			return nullptr;
+		}
+		qres = QCAP_REGISTER_BROADCAST_CLIENT_CONNECTED_CALLBACK(rx->client,
+			qcap_dante_connected_callback, rx);
+		if (qres != QCAP_RS_SUCCESSFUL) {
+			LOGE("QCAP_REGISTER_BROADCAST_CLIENT_CONNECTED_CALLBACK failed, qres=%d", qres);
+			stop_qcap_dante_rx(rx);
+			return nullptr;
+		}
+		qres = QCAP_REGISTER_BROADCAST_CLIENT_FAIL_CALLBACK(rx->client,
+			qcap_dante_fail_callback, rx);
+		if (qres != QCAP_RS_SUCCESSFUL) {
+			LOGE("QCAP_REGISTER_BROADCAST_CLIENT_FAIL_CALLBACK failed, qres=%d", qres);
+			stop_qcap_dante_rx(rx);
+			return nullptr;
+		}
+		qres = QCAP_REGISTER_VIDEO_BROADCAST_CLIENT_CALLBACK(rx->client,
+			qcap_dante_video_callback, rx);
+		if (qres != QCAP_RS_SUCCESSFUL) {
+			LOGE("QCAP_REGISTER_VIDEO_BROADCAST_CLIENT_CALLBACK failed, qres=%d", qres);
+			stop_qcap_dante_rx(rx);
+			return nullptr;
+		}
+		qres = QCAP_REGISTER_AUDIO_BROADCAST_CLIENT_CALLBACK(rx->client,
+			qcap_dante_audio_callback, rx);
+		if (qres != QCAP_RS_SUCCESSFUL) {
+			LOGE("QCAP_REGISTER_AUDIO_BROADCAST_CLIENT_CALLBACK failed, qres=%d", qres);
 			stop_qcap_dante_rx(rx);
 			return nullptr;
 		}
@@ -634,7 +697,7 @@ namespace __sc6f0_dante_rx__ {
 		}
 		rx->client_started = true;
 
-		LOGI("Dante RX pipeline started through QCAP API (video=0, audio=0, decoder=ALLEGRO).");
+		LOGI("Dante RX pipeline started through QCAP API (video/audio decode disabled; callbacks feed QCAP2/ALSA).");
 		return rx;
 	}
 
@@ -662,6 +725,7 @@ namespace __sc6f0_dante_rx__ {
 		uint32_t                      drm_connector_id = 0;
 		uint32_t                      drm_crtc_id = 0;
 		uint32_t                      drm_primary_plane_id = 0;
+		uint32_t                      drm_video_plane_id = 0;
 		uint32_t                      drm_primary_fb_id = 0;
 		uint32_t                      drm_primary_bo_handle = 0;
 		uint32_t                      drm_mode_blob_id = 0;
@@ -691,7 +755,10 @@ namespace __sc6f0_dante_rx__ {
 		std::atomic<uint64_t>        transport_dropped_packets{0};
 		std::atomic<uint64_t>        packet_pool_dropped_packets{0};
 		std::atomic<uint64_t>        decoder_push_failed_packets{0};
+		std::atomic<bool>            decoder_initializing{false};
+		std::atomic<bool>            decoder_wait_for_idr{false};
 		std::mutex                   decoder_lock;
+		std::thread                  vdec_init_thread;
 		std::mutex                   audio_lock;
 		std::string                  reconstructed_path;
 		FILE*                        reconstructed_file = nullptr;
@@ -701,10 +768,17 @@ namespace __sc6f0_dante_rx__ {
 		std::string channels{"0,1"};
 		uint32_t sample_rate{48000};
 		uint32_t stat_interval_sec{3};
+		/* RTP reorder tolerance (coordinator must be programmed before the
+		 * first flow is created; valid: window 1..4096, timeout 1..10000ms). */
+		uint32_t reorder_window{1};
+		uint32_t reorder_timeout_ms{1};
 
 		/* Direct RTP verification mode (bypasses the Dante daemon/session). */
 		bool direct_mode = false;
 		bool decode_enabled = true;
+		/* Decode-only isolation: run VCU decode + pop counting without
+		 * DRM modeset / vsink display on plane 36. */
+		bool display_enabled = true;
 		std::string direct_transmitter;
 		std::string direct_local{"0.0.0.0"};
 		uint16_t direct_port = 16490;
@@ -849,6 +923,8 @@ namespace __sc6f0_dante_rx__ {
 	/* ── qcap2 ALLEGRO2 hardware decoder ────────────────────────────── */
 
 	static QRETURN on_vdec_event_callback(PVOID pUserData);
+	static int start_drm_output(zst_dante_rx_t* rx);
+	static int start_vdec_sink(zst_dante_rx_t* rx);
 
 	static void StopVdecAsync(zst_dante_rx_t* rx) {
 		if (rx->vdec_event_handlers) {
@@ -948,8 +1024,8 @@ namespace __sc6f0_dante_rx__ {
 					rx->decoded_errors++;
 				break;
 			}
-			rx->decoded_frames++;
-			if (rx->vdec_sink && rx->vdec_sink_started) {
+		rx->decoded_frames++;
+		if (rx->display_enabled && rx->vdec_sink && rx->vdec_sink_started) {
 				qres = qcap2_video_sink_push(rx->vdec_sink, pFrame);
 				if (qres != QCAP_RS_SUCCESSFUL) {
 					rx->decoder_display_errors++;
@@ -1050,7 +1126,37 @@ namespace __sc6f0_dante_rx__ {
 		return 0;
 	}
 
+	/* DRM modeset can take tens of seconds. It must not run in the RTP
+	 * coordinator callback, which otherwise holds the reorder path and later
+	 * bursts stale AUs into the decoder. */
+	static void start_vdec_decoder_async(zst_dante_rx_t* rx) {
+		if (rx->vdec_init_thread.joinable())
+			rx->vdec_init_thread.join();
+		rx->decoder_initializing.store(true, std::memory_order_release);
+		rx->decoder_wait_for_idr.store(true, std::memory_order_release);
+		rx->vdec_init_thread = std::thread([rx]() {
+			bool ready = true;
+			/* Establish the known-good CEA 2160p60 timing before the XLNX2 plane
+			 * sink begins flips. This avoids the monitor's 533.25 MHz RB mode. */
+			if (rx->display_enabled &&
+				(start_drm_output(rx) != 0 || start_vdec_sink(rx) != 0))
+				ready = false;
+			if (ready) {
+				std::lock_guard<std::mutex> decoder_guard(rx->decoder_lock);
+				ready = SetupVdecAsync(rx) == 0 && init_vdec_decoder(rx) == 0;
+				if (!ready) StopVdecAsync(rx);
+			}
+			if (!ready) {
+				LOGE("ALLEGRO2 decoder initialization failed");
+				rx->decoder_wait_for_idr.store(false, std::memory_order_release);
+			}
+			rx->decoder_initializing.store(false, std::memory_order_release);
+		});
+	}
+
 	static void stop_vdec_decoder(zst_dante_rx_t* rx) {
+		if (rx->vdec_init_thread.joinable())
+			rx->vdec_init_thread.join();
 		/* Stop joins output callbacks before taking decoder_lock. */
 		if (rx->vdec_event_handlers) {
 			qcap2_event_handlers_stop(rx->vdec_event_handlers);
@@ -1101,6 +1207,7 @@ namespace __sc6f0_dante_rx__ {
 		rx->drm_connector_id = 0;
 		rx->drm_crtc_id = 0;
 		rx->drm_primary_plane_id = 0;
+		rx->drm_video_plane_id = 0;
 		rx->drm_primary_fb_id = 0;
 		rx->drm_primary_bo_handle = 0;
 		rx->drm_mode_blob_id = 0;
@@ -1110,7 +1217,6 @@ namespace __sc6f0_dante_rx__ {
 	static int start_drm_output(zst_dante_rx_t* rx) {
 		if (rx->drm_modeset_active)
 			return 0;
-		const uint32_t video_plane_id = 36;
 		const uint32_t width = rx->dec_width;
 		const uint32_t height = rx->dec_height;
 		const uint32_t fps = (uint32_t)(rx->dec_fps + 0.5);
@@ -1125,12 +1231,31 @@ namespace __sc6f0_dante_rx__ {
 		std::shared_ptr<drmModeRes> resources(drmModeGetResources(rx->drm_fd), drmModeFreeResources);
 		std::shared_ptr<drmModePlaneRes> planes(
 			drmModeGetPlaneResources(rx->drm_fd), drmModeFreePlaneResources);
-		std::shared_ptr<drmModePlane> video_plane(drmModeGetPlane(rx->drm_fd, video_plane_id), drmModeFreePlane);
-		if (!resources || !planes || !video_plane) {
-			LOGE("DRM plane %u or resources are unavailable", video_plane_id);
+		if (!resources || !planes) {
+			LOGE("DRM resources or planes are unavailable");
 			stop_drm_output(rx);
 			return -1;
 		}
+		std::shared_ptr<drmModePlane> video_plane;
+		for (uint32_t i = 0; i < planes->count_planes; ++i) {
+			std::shared_ptr<drmModePlane> plane(drmModeGetPlane(rx->drm_fd, planes->planes[i]), drmModeFreePlane);
+			if (!plane || !drm_property_id(rx->drm_fd, plane->plane_id,
+				DRM_MODE_OBJECT_PLANE, "SC6F0_OVERLAY_SOURCE")) continue;
+			for (uint32_t f = 0; f < plane->count_formats; ++f) {
+				if (plane->formats[f] == DRM_FORMAT_NV12) {
+					video_plane = plane;
+					rx->drm_video_plane_id = plane->plane_id;
+					break;
+				}
+			}
+			if (video_plane) break;
+		}
+		if (!video_plane) {
+			LOGE("no NV12 overlay plane with SC6F0_OVERLAY_SOURCE is available");
+			stop_drm_output(rx);
+			return -1;
+		}
+		const uint32_t video_plane_id = rx->drm_video_plane_id;
 
 		drmModeModeInfo mode = {};
 		bool have_mode = false;
@@ -1143,10 +1268,12 @@ namespace __sc6f0_dante_rx__ {
 			bool connector_has_mode = false;
 			for (int m = 0; m < connector->count_modes; ++m) {
 				if (connector->modes[m].hdisplay == width && connector->modes[m].vdisplay == height &&
-					connector->modes[m].vrefresh == fps) {
+					connector->modes[m].vrefresh == fps &&
+					(!connector_has_mode ||
+					 (width == 3840 && height == 2160 && fps == 60 &&
+					  connector->modes[m].clock == 594000))) {
 					connector_mode = connector->modes[m];
 					connector_has_mode = true;
-					break;
 				}
 			}
 			if (!connector_has_mode) continue;
@@ -1249,13 +1376,18 @@ namespace __sc6f0_dante_rx__ {
 		drmModeAtomicAddProperty(request.get(), rx->drm_primary_plane_id, src_y, 0);
 		drmModeAtomicAddProperty(request.get(), rx->drm_primary_plane_id, src_w, width << 16);
 		drmModeAtomicAddProperty(request.get(), rx->drm_primary_plane_id, src_h, height << 16);
+		uint32_t overlay_source = drm_property_id(rx->drm_fd, video_plane_id,
+			DRM_MODE_OBJECT_PLANE, "SC6F0_OVERLAY_SOURCE");
+		/* This path displays decoded DDR frames; DUMMY is the driver default. */
+		drmModeAtomicAddProperty(request.get(), video_plane_id, overlay_source, 2);
 		if (drmModeAtomicCommit(rx->drm_fd, request.get(), DRM_MODE_ATOMIC_ALLOW_MODESET, nullptr)) {
 			LOGE("DRM HDMI modeset failed, err=%d", errno);
 			stop_drm_output(rx);
 			return -1;
 		}
 		rx->drm_modeset_active = true;
-		LOGI("DRM HDMI active: connector %u, CRTC %u, primary plane %u, video plane %u",
+		LOGI("DRM HDMI active: %s %ux%u@%u, clock=%u kHz; connector %u, CRTC %u, primary plane %u, video plane %u",
+			mode.name, mode.hdisplay, mode.vdisplay, mode.vrefresh, mode.clock,
 			rx->drm_connector_id, rx->drm_crtc_id, rx->drm_primary_plane_id, video_plane_id);
 		return 0;
 	}
@@ -1263,7 +1395,7 @@ namespace __sc6f0_dante_rx__ {
 	static int start_vdec_sink(zst_dante_rx_t* rx) {
 		if (rx->vdec_sink_started)
 			return 0;
-		const uint32_t drm_plane_id = 36;
+		const uint32_t drm_plane_id = rx->drm_video_plane_id;
 		qcap2_video_sink_t* sink = qcap2_video_sink_new();
 		if (!sink) {
 			LOGE("qcap2_video_sink_new() failed");
@@ -1293,12 +1425,182 @@ namespace __sc6f0_dante_rx__ {
 		return 0;
 	}
 
+	/* QCAP owns Dante control/RTP/depayload in --use-qcap mode. Keep the
+	 * application-owned decoder and HDMI audio output so both receive only
+	 * callback-lifetime data that is copied into their normal buffers. */
+	static zst_dante_rx_t* start_qcap_media_rx(bool display_enabled) {
+		zst_dante_rx_t* rx = new zst_dante_rx_t();
+		rx->decode_enabled = true;
+		rx->display_enabled = display_enabled;
+		rx->video_stats = (rx_video_stats_t*)calloc(1, sizeof(*rx->video_stats));
+		rx->audio_stats = (rx_audio_stats_t*)calloc(1, sizeof(*rx->audio_stats));
+		if (!rx->video_stats || !rx->audio_stats) {
+			free(rx->video_stats);
+			free(rx->audio_stats);
+			delete rx;
+			return nullptr;
+		}
+		rx->video_stats->rx = rx;
+		rx->audio_stats->rx = rx;
+		if (start_hdmi_audio_sink(rx) != 0)
+			LOGW("HDMI audio unavailable; continuing with video only");
+		return rx;
+	}
+
+	static void stop_qcap_media_rx(zst_dante_rx_t* rx) {
+		if (!rx) return;
+		stop_vdec_decoder(rx);
+		if (rx->extra_data) free(rx->extra_data);
+		if (rx->vdec_sink) {
+			if (rx->vdec_sink_started) qcap2_video_sink_stop(rx->vdec_sink);
+			qcap2_video_sink_delete(rx->vdec_sink);
+		}
+		stop_drm_output(rx);
+		stop_hdmi_audio_sink(rx);
+		free(rx->video_stats);
+		free(rx->audio_stats);
+		delete rx;
+	}
+
+	/* QCAP Dante has already parsed stream format before invoking the connected
+	 * callback. Unlike the zstreamer path, do not wait for or parse SPS/PPS
+	 * here: configure the application-owned ALLEGRO2 decoder from that format. */
+	static int start_qcap_decoder_from_format(zst_dante_rx_t* rx,
+		uint32_t width, uint32_t height, double fps) {
+		if (!rx || width == 0 || height == 0) return -1;
+		std::lock_guard<std::mutex> decoder_guard(rx->decoder_lock);
+		if (rx->vdec_started) return 0;
+		rx->dec_width = width;
+		rx->dec_height = height;
+		rx->dec_fps = (fps >= 1.0 && fps <= 240.0) ? fps : 60.0;
+		if (rx->display_enabled && start_vdec_sink(rx) != 0)
+			return -1;
+		if (SetupVdecAsync(rx) != 0) return -1;
+		if (init_vdec_decoder(rx) != 0) {
+			StopVdecAsync(rx);
+			return -1;
+		}
+		LOGI("QCAP media format initialized ALLEGRO2 decoder: %ux%u @ %.1f fps",
+			rx->dec_width, rx->dec_height, rx->dec_fps);
+		return 0;
+	}
+
+	static QRETURN qcap_dante_connected_callback(PVOID /*client*/, UINT /*session*/,
+		ULONG video_format, ULONG width, ULONG height, BOOL /*interleaved*/, double fps,
+		ULONG audio_format, ULONG audio_channels, ULONG audio_bits, ULONG audio_rate, PVOID user_data) {
+		qcap_dante_rx_t* qcap_rx = (qcap_dante_rx_t*)user_data;
+		zst_dante_rx_t* rx = qcap_rx ? qcap_rx->media_rx : nullptr;
+		LOGI("QCAP media connected: video format=%u %ux%u@%.2f, audio format=%u %uch %ubit %uHz",
+			(unsigned)video_format, (unsigned)width, (unsigned)height, fps,
+			(unsigned)audio_format, (unsigned)audio_channels, (unsigned)audio_bits, (unsigned)audio_rate);
+		if (video_format != QCAP_ENCODER_FORMAT_H264) {
+			LOGE("QCAP media connected with unsupported video format=%u", (unsigned)video_format);
+			return QCAP_RT_OK;
+		}
+		if (start_qcap_decoder_from_format(rx, width, height, fps) != 0)
+			LOGE("QCAP media decoder initialization failed");
+		return QCAP_RT_OK;
+	}
+
+	static QRETURN qcap_dante_fail_callback(PVOID /*client*/, UINT session,
+		QRESULT status, DWORD error_code, PVOID /*user_data*/) {
+		LOGE("QCAP broadcast client failed: session=%u status=%d error=%u",
+			(unsigned)session, (int)status, (unsigned)error_code);
+		return QCAP_RT_OK;
+	}
+
+	static QRETURN qcap_dante_video_callback(PVOID /*client*/, UINT /*session*/,
+		double sample_time, BYTE* stream, ULONG stream_len, BOOL is_keyframe, PVOID user_data) {
+		qcap_dante_rx_t* qcap_rx = (qcap_dante_rx_t*)user_data;
+		zst_dante_rx_t* rx = qcap_rx ? qcap_rx->media_rx : nullptr;
+		if (!rx || !rx->video_stats) return QCAP_RT_OK;
+		qcap2_rcbuffer_t* rcbuf = qcap2_rcbuffer_cast(stream, stream_len);
+		qcap2_av_packet_t* packet = rcbuf
+			? (qcap2_av_packet_t*)qcap2_rcbuffer_lock_data(rcbuf) : nullptr;
+		uint8_t* data = nullptr;
+		int data_size = 0;
+		if (packet) qcap2_av_packet_get_buffer(packet, &data, &data_size);
+		if (!packet || !data || data_size <= 0) {
+			if (rcbuf && packet) qcap2_rcbuffer_unlock_data(rcbuf);
+			LOGW("QCAP video callback received an invalid rc-buffer");
+			return QCAP_RT_OK;
+		}
+		rx->video_stats->total_packets++;
+		rx->video_stats->total_bytes += (uint64_t)data_size;
+		uint64_t pts = sample_time > 0.0 ? (uint64_t)(sample_time * 1000000000.0) : 0;
+		if (rx->video_stats->first_pts == 0 && pts > 0) rx->video_stats->first_pts = pts;
+		rx->video_stats->last_pts = pts;
+		if (is_keyframe) rx->video_stats->keyframes++;
+
+		bool decoder_ready;
+		{
+			std::lock_guard<std::mutex> decoder_guard(rx->decoder_lock);
+			decoder_ready = rx->vdec_started;
+		}
+		if (decoder_ready) {
+			/* rx_video_feed_decoder copies into a qcap2 rc-buffer packet-pool before
+			 * submitting; never retain QCAP's callback-owned stream pointer. */
+			rx_video_feed_decoder(rx->video_stats, data, (size_t)data_size,
+				is_keyframe ? ZST_BUFFER_FLAG_KEYFRAME : 0, pts);
+		} else {
+			rx->decoder_dropped_packets++;
+		}
+		qcap2_rcbuffer_unlock_data(rcbuf);
+		return QCAP_RT_OK;
+	}
+
+	static QRETURN qcap_dante_audio_callback(PVOID /*client*/, UINT /*session*/,
+		double sample_time, BYTE* stream, ULONG stream_len, PVOID user_data) {
+		qcap_dante_rx_t* qcap_rx = (qcap_dante_rx_t*)user_data;
+		zst_dante_rx_t* rx = qcap_rx ? qcap_rx->media_rx : nullptr;
+		if (!rx || !rx->audio_stats) return QCAP_RT_OK;
+		qcap2_rcbuffer_t* rcbuf = qcap2_rcbuffer_cast(stream, stream_len);
+		qcap2_av_packet_t* packet = rcbuf
+			? (qcap2_av_packet_t*)qcap2_rcbuffer_lock_data(rcbuf) : nullptr;
+		uint8_t* data = nullptr;
+		int data_size = 0;
+		if (packet) qcap2_av_packet_get_buffer(packet, &data, &data_size);
+		if (!packet || !data || data_size <= 0) {
+			if (rcbuf && packet) qcap2_rcbuffer_unlock_data(rcbuf);
+			LOGW("QCAP audio callback received an invalid rc-buffer");
+			return QCAP_RT_OK;
+		}
+		/* QCAP Dante TX emits stereo PCM S32LE: DanteServer consumes int32_t
+		 * internally and its software audio encoder performs source widening. */
+		if ((data_size % (int)(2 * sizeof(int32_t))) != 0) {
+			LOGW("QCAP audio packet has invalid stereo S32LE size: %d", data_size);
+			qcap2_rcbuffer_unlock_data(rcbuf);
+			return QCAP_RT_OK;
+		}
+		uint64_t pts = sample_time > 0.0 ? (uint64_t)(sample_time * 1000000000.0) : 0;
+		rx->audio_stats->total_periods++;
+		rx->audio_stats->total_bytes += (uint64_t)data_size;
+		rx->audio_stats->total_samples += (uint64_t)data_size / (2 * sizeof(int32_t));
+		rx->audio_stats->sample_rate = 48000;
+		rx->audio_stats->channels = 2;
+		rx->audio_stats->format = ZST_AUDIO_FMT_S32LE;
+		if (rx->audio_stats->first_pts == 0 && pts > 0) rx->audio_stats->first_pts = pts;
+		rx->audio_stats->last_pts = pts;
+
+		zst_buffer_t buffer = {};
+		buffer.memory.data = data;
+		buffer.memory.size = (size_t)data_size;
+		buffer.pts = pts;
+		rx_audio_playback(rx, &buffer, nullptr);
+		qcap2_rcbuffer_unlock_data(rcbuf);
+		return QCAP_RT_OK;
+	}
+
 	static void rx_video_feed_decoder(rx_video_stats_t* stats,
 	                                   const uint8_t* data, size_t data_size,
 	                                   uint32_t flags, uint64_t pts) {
 		zst_dante_rx_t* rx = stats->rx;
 		if (!rx || !data || data_size < 4)
 			return;
+		if (rx->decoder_initializing.load(std::memory_order_acquire)) {
+			rx->decoder_dropped_packets++;
+			return;
+		}
 		if (flags & ZST_BUFFER_FLAG_DROP) {
 			if (rx->decode_enabled) {
 				std::lock_guard<std::mutex> decoder_guard(rx->decoder_lock);
@@ -1311,6 +1613,10 @@ namespace __sc6f0_dante_rx__ {
 		/* The scheduler has multiple workers. Serialize file writes and decoder
 		 * initialization/input even when upstream pushes overlap. */
 		std::lock_guard<std::mutex> decoder_guard(rx->decoder_lock);
+		if (rx->decoder_initializing.load(std::memory_order_acquire)) {
+			rx->decoder_dropped_packets++;
+			return;
+		}
 		if (rx->reconstructed_file) {
 			if (fwrite(data, 1, data_size, rx->reconstructed_file) != data_size ||
 			    fflush(rx->reconstructed_file) != 0) {
@@ -1344,6 +1650,14 @@ namespace __sc6f0_dante_rx__ {
 
 		/* Decoder input is submitted directly; failed submissions are dropped. */
 		if (rx->vdec_started) {
+			if (rx->decoder_wait_for_idr.load(std::memory_order_acquire)) {
+				if (!is_keyframe) {
+					rx->decoder_dropped_packets++;
+					return;
+				}
+				rx->decoder_wait_for_idr.store(false, std::memory_order_release);
+				LOGI("ALLEGRO2 decoder accepting input from IDR after asynchronous initialization");
+			}
 			submit_vdec_packet(rx, data, data_size, is_keyframe != 0, pts);
 			return;
 		}
@@ -1473,27 +1787,9 @@ namespace __sc6f0_dante_rx__ {
 		LOGI("ALLEGRO2 decoder init: SPS=%d bytes, PPS=%d bytes, %ux%u @ %.1f fps",
 		     sps_len, pps_len, rx->dec_width, rx->dec_height, rx->dec_fps);
 
-		if (start_drm_output(rx) != 0 || start_vdec_sink(rx) != 0) {
-			free(rx->extra_data); rx->extra_data = nullptr; rx->extra_data_size = 0;
-			return;
-		}
-
-		/* Create event/packet-pool resources before binding and starting decoder. */
-		if (SetupVdecAsync(rx) != 0) {
-			free(rx->extra_data); rx->extra_data = nullptr; rx->extra_data_size = 0;
-			return;
-		}
-		if (init_vdec_decoder(rx) != 0) {
-			StopVdecAsync(rx);
-			free(rx->extra_data); rx->extra_data = nullptr; rx->extra_data_size = 0;
-			return;
-		}
-
-		LOGI("ALLEGRO2 decoder: %ux%u @ %.1f fps, extra_data=%d bytes",
+		LOGI("ALLEGRO2 decoder initialization scheduled: %ux%u @ %.1f fps, extra_data=%d bytes",
 		     rx->dec_width, rx->dec_height, rx->dec_fps, rx->extra_data_size);
-
-		/* Submit the SPS/IDR AU that initialized this decoder. */
-		submit_vdec_packet(rx, data, data_size, is_keyframe != 0, pts);
+		start_vdec_decoder_async(rx);
 	}
 
 	static void* dante_rx_bus_worker(void* arg) {
@@ -1669,12 +1965,15 @@ namespace __sc6f0_dante_rx__ {
 	                                     uint32_t sample_rate,
 	                                     uint32_t stat_interval,
 	                                     const std::string& reconstructed_path,
-	                                     bool decode_enabled = true,
-	                                     bool rtp_stats_only = false,
-	                                     bool direct_mode = false,
-	                                     const std::string& direct_peer = "",
-	                                     const std::string& direct_local = "0.0.0.0",
-	                                     uint16_t direct_port = 16490)
+                                     bool decode_enabled = true,
+                                     bool rtp_stats_only = false,
+                                     bool direct_mode = false,
+                                     const std::string& direct_peer = "",
+                                     const std::string& direct_local = "0.0.0.0",
+                                     uint16_t direct_port = 16490,
+                                     bool display_enabled = true,
+                                     uint32_t reorder_window = 1,
+                                     uint32_t reorder_timeout_ms = 1)
 	{
 		zst_dante_rx_t* rx = new zst_dante_rx_t();
 		rx->dvr_socket = dvr_socket;
@@ -1682,8 +1981,11 @@ namespace __sc6f0_dante_rx__ {
 		rx->channels = channels;
 		rx->sample_rate = sample_rate;
 		rx->stat_interval_sec = stat_interval > 0 ? stat_interval : 3;
+		rx->reorder_window = reorder_window;
+		rx->reorder_timeout_ms = reorder_timeout_ms;
 		rx->reconstructed_path = reconstructed_path;
 		rx->decode_enabled = decode_enabled;
+		rx->display_enabled = display_enabled;
 		rx->direct_mode = direct_mode;
 		rx->direct_transmitter = direct_peer;
 		rx->direct_local = direct_local.empty() ? "0.0.0.0" : direct_local;
@@ -1730,10 +2032,11 @@ namespace __sc6f0_dante_rx__ {
 		}
 		if (rx->session)
 			zst_dante_video_coordinator_attach_session(rx->coordinator, rx->session);
-		/* This network does not reorder RTP. Advance immediately over a missing
-		 * sequence number instead of holding subsequent H.264 fragments. */
-		set_uint(rx->coordinator, ZST_DANTE_VIDEO_COORDINATOR_PROP_REORDER_WINDOW, 1);
-		set_uint(rx->coordinator, ZST_DANTE_VIDEO_COORDINATOR_PROP_REORDER_TIMEOUT_MS, 1);
+		/* Reorder tolerance trades a little latency for AU completeness.
+		 * Must be programmed before the first flow is created. */
+		set_uint(rx->coordinator, ZST_DANTE_VIDEO_COORDINATOR_PROP_REORDER_WINDOW, rx->reorder_window);
+		set_uint(rx->coordinator, ZST_DANTE_VIDEO_COORDINATOR_PROP_REORDER_TIMEOUT_MS, rx->reorder_timeout_ms);
+		LOGI("  Reorder: window=%u timeout=%ums", rx->reorder_window, rx->reorder_timeout_ms);
 		rx->rx_video_pad = zst_dante_video_coordinator_request_rx_output_pad(rx->coordinator, 0);
 		if (!rx->rx_video_pad) {
 			LOGE("zst_dante_video_coordinator_request_rx_output_pad() failed");
@@ -2110,6 +2413,12 @@ namespace __sc6f0_dante_rx__ {
 	static bool find_matching_mode(drmModeConnector* connector, uint32_t width, uint32_t height,
 	                               double framerate, bool interlaced, drmModeModeInfo* out_mode) {
 		if (!connector || !out_mode) return false;
+		/* Prefer CEA-861 2160p60 over a monitor's reduced-blanking 533.25 MHz mode.
+		 * The HDMI TX PHY on SC6F0 is validated for the 594 MHz CEA timing. */
+		const uint32_t preferred_clock =
+			(width == 3840 && height == 2160 && !interlaced) ? 594000 : 0;
+		drmModeModeInfo fallback = {};
+		bool have_fallback = false;
 		for (int i = 0; i < connector->count_modes; i++) {
 			drmModeModeInfo* candidate = &connector->modes[i];
 			bool mode_interlaced = (candidate->flags & DRM_MODE_FLAG_INTERLACE) != 0;
@@ -2121,9 +2430,19 @@ namespace __sc6f0_dante_rx__ {
 				candidate->vdisplay == (int)height &&
 				mode_interlaced == interlaced &&
 				refresh_matched) {
-				*out_mode = *candidate;
-				return true;
+				if (preferred_clock && candidate->clock == preferred_clock) {
+					*out_mode = *candidate;
+					return true;
+				}
+				if (!have_fallback) {
+					fallback = *candidate;
+					have_fallback = true;
+				}
 			}
+		}
+		if (have_fallback) {
+			*out_mode = fallback;
+			return true;
 		}
 		for (int i = 0; i < connector->count_modes; i++) {
 			drmModeModeInfo* candidate = &connector->modes[i];
@@ -2296,6 +2615,7 @@ namespace __sc6f0_dante_rx__ {
 
 		struct video_format current_video_format{};
 		bool fixed_mode_override{false};
+		bool force_dante_source{false};
 		uint32_t fixed_width{3840};
 		uint32_t fixed_height{2160};
 		uint32_t fixed_fps{60};
@@ -2475,6 +2795,19 @@ namespace __sc6f0_dante_rx__ {
 		if (p_alpha) drmModeAtomicAddProperty(req.get(), ctx->primary_plane_id, p_alpha, 0xffff);
 
 		if (ctx->overlay_plane_id != 0) {
+			uint32_t o_source = drm_property_id(ctx->drm_fd, ctx->overlay_plane_id,
+				DRM_MODE_OBJECT_PLANE, "SC6F0_OVERLAY_SOURCE");
+			if (!o_source) {
+				LOGE("[ULTRA DIRECT] shared overlay source property is unavailable");
+				destroy_dumb_fb(ctx->drm_fd, &new_primary_fb, &new_primary_bo);
+				destroy_dumb_fb(ctx->drm_fd, &new_overlay_fb, &new_overlay_bo);
+				drmModeDestroyPropertyBlob(ctx->drm_fd, new_mode_blob_id);
+				return -1;
+			}
+			/* The disabled route is DUMMY; only a locked Dante stream may
+			 * select SI0 through the shared VProcSS overlay path. */
+			drmModeAtomicAddProperty(req.get(), ctx->overlay_plane_id, o_source,
+				enable_overlay ? 1 : 0);
 			uint32_t o_crtc = drm_property_id(ctx->drm_fd, ctx->overlay_plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_ID");
 			uint32_t o_fb = drm_property_id(ctx->drm_fd, ctx->overlay_plane_id, DRM_MODE_OBJECT_PLANE, "FB_ID");
 			uint32_t o_cx = drm_property_id(ctx->drm_fd, ctx->overlay_plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_X");
@@ -2625,19 +2958,28 @@ namespace __sc6f0_dante_rx__ {
 
 		ctx->current_video_format = *format;
 		ctx->format_changes++;
+		if (ctx->force_dante_source && !format->locked) {
+			LOGI("[ULTRA DIRECT][DAU] stream unlocked; explicit DANTE source remains selected");
+			dau_reply_success(dau, reply);
+			return;
+		}
 
 		uint32_t target_w = ctx->fixed_mode_override ? ctx->fixed_width : format->width;
 		uint32_t target_h = ctx->fixed_mode_override ? ctx->fixed_height : format->height;
 		double target_fps = ctx->fixed_mode_override ? (double)ctx->fixed_fps : (double)format->framerate;
 		uint32_t overlay_format = (format->colorformat == VIDEO_COLORFORMAT_RGB) ? DRM_FORMAT_BGR888 : DRM_FORMAT_YUYV;
 
+		int result;
 		if (format->locked) {
-			apply_drm_modeset(ctx, target_w, target_h, target_fps, true, overlay_format);
+			result = apply_drm_modeset(ctx, target_w, target_h, target_fps, true, overlay_format);
 		} else {
 			LOGI("[ULTRA DIRECT][DAU] stream unlocked: disabling overlay plane");
-			apply_drm_modeset(ctx, target_w, target_h, target_fps, false);
+			result = apply_drm_modeset(ctx, target_w, target_h, target_fps, false);
 		}
-		dau_reply_success(dau, reply);
+		if (result == 0)
+			dau_reply_success(dau, reply);
+		else
+			dau_reply_error(dau, reply, "DRM overlay modeset failed");
 	}
 
 	static void dau_set_audio_info(struct dau_service *dau, struct DBusMessage *reply,
@@ -2685,6 +3027,7 @@ namespace __sc6f0_dante_rx__ {
 	};
 
 	static int run_ultra_direct(uint32_t stat_interval, bool fixed_mode_override,
+	                            bool force_dante_source,
 	                            uint32_t fixed_w, uint32_t fixed_h, uint32_t fixed_fps) {
 		if (stat_interval == 0)
 			stat_interval = 3;
@@ -2701,6 +3044,7 @@ namespace __sc6f0_dante_rx__ {
 
 		ultra_direct_context_t ctx;
 		ctx.fixed_mode_override = fixed_mode_override;
+		ctx.force_dante_source = force_dante_source;
 		ctx.fixed_width = fixed_w;
 		ctx.fixed_height = fixed_h;
 		ctx.fixed_fps = fixed_fps;
@@ -2748,6 +3092,13 @@ namespace __sc6f0_dante_rx__ {
 
 		ctx.primary_plane_id = find_plane_by_type(ctx.drm_fd, ctx.crtc_index, DRM_PLANE_TYPE_PRIMARY);
 		ctx.overlay_plane_id = find_overlay_plane_yuyv(ctx.drm_fd, ctx.crtc_index);
+		if (!ctx.primary_plane_id || !ctx.overlay_plane_id ||
+		    !drm_property_id(ctx.drm_fd, ctx.overlay_plane_id,
+			DRM_MODE_OBJECT_PLANE, "SC6F0_OVERLAY_SOURCE")) {
+			LOGE("[ULTRA DIRECT] shared Dante overlay plane is unavailable");
+			cleanup_ultra_direct_drm(&ctx);
+			return 1;
+		}
 		LOGI("[ULTRA DIRECT] DRM setup: connector=%u (connected=%d), CRTC=%u (idx=%d), primary plane=%u, overlay plane=%u",
 		     ctx.connector_id, (int)ctx.last_connector_connected, ctx.crtc_id, ctx.crtc_index,
 		     ctx.primary_plane_id, ctx.overlay_plane_id);
@@ -2755,8 +3106,16 @@ namespace __sc6f0_dante_rx__ {
 		uint32_t init_w = fixed_mode_override ? fixed_w : 3840;
 		uint32_t init_h = fixed_mode_override ? fixed_h : 2160;
 		double init_fps = fixed_mode_override ? (double)fixed_fps : 60.0;
-		if (apply_drm_modeset(&ctx, init_w, init_h, init_fps, false) != 0) {
+		/* Explicit source selection does not wait for a DAU format event.
+		 * The fixed mode and RGB input format prime the shared VProcSS and
+		 * route FPGA Dante video; a later locked event can refine the format. */
+		if (apply_drm_modeset(&ctx, init_w, init_h, init_fps,
+				force_dante_source, DRM_FORMAT_BGR888) != 0) {
 			LOGW("[ULTRA DIRECT] initial DRM modeset failed, will retry on format update or hotplug");
+			if (force_dante_source) {
+				cleanup_ultra_direct_drm(&ctx);
+				return 1;
+			}
 		}
 
 		ctx.uevent_fd = open_drm_uevent_socket();
@@ -2913,6 +3272,7 @@ int main(int argc, char* argv[]) {
 	std::string media_path = "linux-decode";
 	std::string custom_mode;
 	bool fixed_mode_override = false;
+	bool force_dante_source = false;
 	uint32_t fixed_w = 3840;
 	uint32_t fixed_h = 2160;
 	uint32_t fixed_fps = 60;
@@ -2922,6 +3282,9 @@ int main(int argc, char* argv[]) {
 	bool decode_requested = false;
 	bool recv_only = false;
 	bool rtp_stats_only = false;
+	bool display_enabled = true;
+	uint32_t reorder_window = 1;
+	uint32_t reorder_timeout_ms = 1;
 	std::string direct_peer;
 	std::string direct_local = "192.168.190.145";
 	uint16_t direct_port = 16490;
@@ -2940,6 +3303,7 @@ int main(int argc, char* argv[]) {
 			printf("                     DEP->ALSA formatter) or 'ultra-direct' (FPGA VSINK\n");
 			printf("                     video + AES3 audio straight to HDMI, no DDR path)\n");
 			printf("  --mode <WxH[@fps]> Override DRM display mode for ultra-direct (e.g. 3840x2160@60)\n");
+			printf("  --force-dante-source  Select FPGA DANTE overlay immediately in ultra-direct mode (requires --mode)\n");
 			printf("                     If omitted, mode dynamically tracks Dante TX format via DAU\n");
 			printf("  --tpg-pattern <id> VTPG background pattern ID for ultra-direct mode\n");
 			printf("                     (7=solid black [default], 9=color bars, 0=pass-through)\n");
@@ -2948,9 +3312,13 @@ int main(int argc, char* argv[]) {
 			printf("                     bypassing the Dante daemon entirely (no decode by default)\n");
 			printf("  --decode           Enable the ALLEGRO2 decoder in --direct mode\n");
 			printf("  --recv-only        Disable the decoder entirely (verify RTP->packet only)\n");
+		printf("  --no-display       Decode-only isolation: skip DRM modeset and vsink display\n");
+		printf("                     (VCU decode + pop counting still run)\n");
 			printf("  --rtp-stats-only   Measure Dante RTP transport only; disable decode, display, and audio\n");
-			printf("  --local-ip <ip>    Local bind address for --direct (default: 0.0.0.0)\n");
-			printf("  --port <port>      RTP port for --direct (default: 16490)\n");
+		printf("  --local-ip <ip>    Local bind address for --direct (default: 0.0.0.0)\n");
+		printf("  --port <port>      RTP port for --direct (default: 16490)\n");
+		printf("  --reorder-window <n>  RTP reorder window in packets (default: 1; lib default: 64; max: 4096)\n");
+		printf("  --reorder-timeout-ms <ms>  RTP reorder wait in ms (default: 1; lib default: 20; max: 10000)\n");
 			printf("  -h, --help         Show this help message\n");
 			return 0;
 		} else if (strcmp(argv[i], "--use-qcap") == 0) {
@@ -2969,6 +3337,8 @@ int main(int argc, char* argv[]) {
 			media_path = argv[++i];
 		} else if (strcmp(argv[i], "--tpg-pattern") == 0 && i + 1 < argc) {
 			g_tpg_pattern = (uint32_t)strtoul(argv[++i], nullptr, 10);
+		} else if (strcmp(argv[i], "--force-dante-source") == 0) {
+			force_dante_source = true;
 		} else if (strcmp(argv[i], "--mode") == 0 && i + 1 < argc) {
 			custom_mode = argv[++i];
 			uint32_t w = 0, h = 0, fps = 60;
@@ -2995,13 +3365,28 @@ int main(int argc, char* argv[]) {
 			decode_requested = true;
 		} else if (strcmp(argv[i], "--recv-only") == 0) {
 			recv_only = true;
+		} else if (strcmp(argv[i], "--no-display") == 0) {
+			display_enabled = false;
 		} else if (strcmp(argv[i], "--rtp-stats-only") == 0) {
 			rtp_stats_only = true;
 		} else if (strcmp(argv[i], "--local-ip") == 0 && i + 1 < argc) {
 			direct_local = argv[++i];
 		} else if (strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
 			direct_port = (uint16_t)strtoul(argv[++i], nullptr, 10);
+		} else if (strcmp(argv[i], "--reorder-window") == 0 && i + 1 < argc) {
+			reorder_window = (uint32_t)strtoul(argv[++i], nullptr, 10);
+		} else if (strcmp(argv[i], "--reorder-timeout-ms") == 0 && i + 1 < argc) {
+			reorder_timeout_ms = (uint32_t)strtoul(argv[++i], nullptr, 10);
 		}
+	}
+
+	if (reorder_window < 1 || reorder_window > 4096) {
+		LOGE("Invalid --reorder-window %u (expected 1..4096)", reorder_window);
+		return 1;
+	}
+	if (reorder_timeout_ms < 1 || reorder_timeout_ms > 10000) {
+		LOGE("Invalid --reorder-timeout-ms %u (expected 1..10000)", reorder_timeout_ms);
+		return 1;
 	}
 
 	decode_enabled = (recv_only || rtp_stats_only) ? false : (direct_mode ? decode_requested : true);
@@ -3016,6 +3401,10 @@ int main(int argc, char* argv[]) {
 	}
 	if (direct_mode && media_path == "ultra-direct") {
 		LOGE("--direct and --media-path ultra-direct are mutually exclusive");
+		return 1;
+	}
+	if (force_dante_source && (media_path != "ultra-direct" || !fixed_mode_override)) {
+		LOGE("--force-dante-source requires --media-path ultra-direct and --mode WxH@fps");
 		return 1;
 	}
 	if (media_path != "linux-decode" && media_path != "ultra-direct") {
@@ -3064,18 +3453,20 @@ int main(int argc, char* argv[]) {
 			printf(" Sample Rate:   %u Hz\n", sample_rate);
 		}
 		printf(" Decode/display/audio: %s\n", rtp_stats_only ? "disabled" :
-		       (decode_enabled ? "enabled" : "decoder disabled (--recv-only)"));
+		       (decode_enabled ? (display_enabled ? "enabled" : "enabled (decode-only, no display)") : "decoder disabled (--recv-only)"));
+		printf(" Reorder: window=%u timeout=%ums\n", reorder_window, reorder_timeout_ms);
 	}
 	printf(" Stat Interval: %u s\n", stat_interval);
 	printf(" Press 'q' + Enter (or Ctrl+C) to stop.\n");
 	printf("============================================================\n\n");
 
 	if (media_path == "ultra-direct") {
-		return run_ultra_direct(stat_interval, fixed_mode_override, fixed_w, fixed_h, fixed_fps);
+		return run_ultra_direct(stat_interval, fixed_mode_override,
+			force_dante_source, fixed_w, fixed_h, fixed_fps);
 	}
 
 	if (use_qcap) {
-		qcap_dante_rx_t* rx = start_qcap_dante_rx();
+		qcap_dante_rx_t* rx = start_qcap_dante_rx(display_enabled);
 		if (!rx) {
 			LOGE("Failed to start Dante RX through the QCAP API.");
 			return 1;
@@ -3090,7 +3481,8 @@ int main(int argc, char* argv[]) {
 	zst_dante_rx_t* rx = start_dante_rx(dvr_socket, dep_name, channels, sample_rate,
 	                                  stat_interval, reconstructed_path,
 	                                  decode_enabled, rtp_stats_only, direct_mode, direct_peer,
-	                                  direct_local, direct_port);
+	                                  direct_local, direct_port, display_enabled,
+	                                  reorder_window, reorder_timeout_ms);
 	if (!rx) {
 		LOGE("Failed to start Dante RX pipeline.");
 		return 1;

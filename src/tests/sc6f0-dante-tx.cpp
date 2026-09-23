@@ -123,6 +123,8 @@ struct App0 {
 	struct qcap_dante_tx_t {
 		PVOID server = nullptr;
 		PVOID sender = nullptr;
+		qcap2_audio_resampler_t* audio_resampler = nullptr;
+		qcap2_event_t* audio_resampler_event = nullptr;
 		bool server_started = false;
 		bool sender_started = false;
 		std::vector<uint8_t> h264_parameter_sets;
@@ -578,7 +580,7 @@ struct App0 {
 				ULONG nSrcColorSpaceType = QCAP_COLORSPACE_TYPE_UNDEFINED;
 				const ULONG nColorSpaceType = QCAP_COLORSPACE_TYPE_NV12;
 				const ULONG nVideoEncoderFormat = QCAP_ENCODER_FORMAT_H264;
-				const ULONG nVideoBitRate = 10 * 1000000;
+				const ULONG nVideoBitRate = 24 * 1000000;
 				ULONG nVideoWidth = 0;
 				ULONG nVideoHeight = 0;
 				BOOL bVideoIsInterleaved;
@@ -747,7 +749,7 @@ struct App0 {
 
 					if (g_tx_use_qcap) {
 						qres = StartQcapDanteServer(_FreeStack_, nColorSpaceType, nVideoWidth, nVideoHeight,
-							dVideoFrameRate, nVideoBitRate, nAudioChannels, nAudioSampleFrequency,
+							dVideoFrameRate, nVideoBitRate, nAudioChannels, nAudioBitsPerSample, nAudioSampleFrequency,
 							&pQcapDanteTx);
 						if(qres != QCAP_RS_SUCCESSFUL) {
 							LOGE("%s(%d): StartQcapDanteServer() failed, qres=%d", __FUNCTION__, __LINE__, qres);
@@ -778,6 +780,14 @@ struct App0 {
 							std::bind(&self_t::OnAsrc, this, pAsrc, pAenc, pDanteTx, pQcapDanteTx));
 						if(qres != QCAP_RS_SUCCESSFUL) {
 							LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
+							break;
+						}
+					}
+					if (pQcapDanteTx && pQcapDanteTx->audio_resampler_event) {
+						qres = AddEventHandler(_FreeStack_, pQcapDanteTx->audio_resampler_event,
+							std::bind(&self_t::OnQcapAudioResampler, this, pQcapDanteTx));
+						if (qres != QCAP_RS_SUCCESSFUL) {
+							LOGE("AddEventHandler(QCAP audio resampler) failed, qres=%d", qres);
 							break;
 						}
 					}
@@ -1004,55 +1014,13 @@ struct App0 {
 				}
 
 				if (pQcapDanteTx && pQcapDanteTx->sender) {
-					std::shared_ptr<qcap2_av_packet_t> pAVPacket((qcap2_av_packet_t*)qcap2_rcbuffer_lock_data(pRCBuffer),
-						[pRCBuffer](qcap2_av_packet_t*) { qcap2_rcbuffer_unlock_data(pRCBuffer); });
-					uint8_t* pStreamBuffer = nullptr;
-					int nStreamBufferLen = 0, nStreamIndex = 0;
-					BOOL bIsKeyFrame = FALSE;
-					double dSampleTime = 0.0;
-					qcap2_av_packet_get_buffer(pAVPacket.get(), &pStreamBuffer, &nStreamBufferLen);
-					qcap2_av_packet_get_property(pAVPacket.get(), &nStreamIndex, &bIsKeyFrame);
-					qcap2_av_packet_get_sample_time(pAVPacket.get(), &dSampleTime);
-					if (pStreamBuffer && nStreamBufferLen > 0) {
-						std::vector<uint8_t> parameter_sets;
-						bool has_idr = false, has_sps = false, has_pps = false;
-						for (size_t pos = 0; pos + 4 <= (size_t)nStreamBufferLen;) {
-							size_t prefix = pStreamBuffer[pos] == 0 && pStreamBuffer[pos + 1] == 0 &&
-								pStreamBuffer[pos + 2] == 1 ? 3 :
-								(pos + 4 <= (size_t)nStreamBufferLen && pStreamBuffer[pos] == 0 &&
-								 pStreamBuffer[pos + 1] == 0 && pStreamBuffer[pos + 2] == 0 &&
-								 pStreamBuffer[pos + 3] == 1 ? 4 : 0);
-							if (!prefix) { ++pos; continue; }
-							size_t nal = pos + prefix, end = nal + 1;
-							while (end + 3 < (size_t)nStreamBufferLen &&
-								!(pStreamBuffer[end] == 0 && pStreamBuffer[end + 1] == 0 &&
-								  (pStreamBuffer[end + 2] == 1 || (end + 3 < (size_t)nStreamBufferLen &&
-								   pStreamBuffer[end + 2] == 0 && pStreamBuffer[end + 3] == 1)))) ++end;
-							uint8_t type = pStreamBuffer[nal] & 0x1f;
-							if (type == 7 || type == 8) {
-								if (type == 7) has_sps = true; else has_pps = true;
-								parameter_sets.insert(parameter_sets.end(), {0, 0, 0, 1});
-								parameter_sets.insert(parameter_sets.end(), pStreamBuffer + nal, pStreamBuffer + end);
-							} else if (type == 5) has_idr = true;
-							pos = end;
-						}
-						if (has_sps && has_pps) pQcapDanteTx->h264_parameter_sets = parameter_sets;
-						std::vector<uint8_t> keyframe_with_config;
-						BYTE* pQcapBuffer = pStreamBuffer;
-						ULONG nQcapBufferLen = (ULONG)nStreamBufferLen;
-						if ((bIsKeyFrame || has_idr) && !(has_sps && has_pps) &&
-							!pQcapDanteTx->h264_parameter_sets.empty()) {
-							keyframe_with_config = pQcapDanteTx->h264_parameter_sets;
-							keyframe_with_config.insert(keyframe_with_config.end(), pStreamBuffer,
-								pStreamBuffer + nStreamBufferLen);
-							pQcapBuffer = keyframe_with_config.data();
-							nQcapBufferLen = (ULONG)keyframe_with_config.size();
-						}
-						qres = QCAP_SET_VIDEO_BROADCAST_SERVER_COMPRESSION_BUFFER(
-							pQcapDanteTx->sender, 0, pQcapBuffer, nQcapBufferLen, bIsKeyFrame, dSampleTime);
-						if (qres != QCAP_RS_SUCCESSFUL)
-							LOGE("QCAP_SET_VIDEO_BROADCAST_SERVER_COMPRESSION_BUFFER failed, qres=%d", qres);
-					}
+					BYTE* qcap_buffer = nullptr;
+					ULONG qcap_buffer_tag = 0;
+					qcap2_rcbuffer_to_buffer(pRCBuffer, &qcap_buffer, &qcap_buffer_tag);
+					qres = QCAP_SET_VIDEO_BROADCAST_SERVER_COMPRESSION_BUFFER(
+						pQcapDanteTx->sender, 0, qcap_buffer, qcap_buffer_tag, FALSE, 0.0);
+					if (qres != QCAP_RS_SUCCESSFUL)
+						LOGE("QCAP_SET_VIDEO_BROADCAST_SERVER_COMPRESSION_BUFFER failed, qres=%d", qres);
 					break;
 				}
 
@@ -1219,19 +1187,9 @@ struct App0 {
 				}
 
 				if (pQcapDanteTx && pQcapDanteTx->sender) {
-					std::shared_ptr<qcap2_av_frame_t> pAVFrame((qcap2_av_frame_t*)qcap2_rcbuffer_lock_data(pRCBuffer),
-						[pRCBuffer](qcap2_av_frame_t*) { qcap2_rcbuffer_unlock_data(pRCBuffer); });
-					uint8_t* pFrameBuffer = nullptr;
-					int nFrameBufferStride = 0;
-					double dSampleTime = 0.0;
-					qcap2_av_frame_get_buffer(pAVFrame.get(), &pFrameBuffer, &nFrameBufferStride);
-					qcap2_av_frame_get_sample_time(pAVFrame.get(), &dSampleTime);
-					if (pFrameBuffer && nFrameBufferStride > 0) {
-						qres = QCAP_SET_AUDIO_BROADCAST_SERVER_UNCOMPRESSION_BUFFER(
-							pQcapDanteTx->sender, 0, pFrameBuffer,
-							(ULONG)nFrameBufferStride, dSampleTime);
-						if (qres != QCAP_RS_SUCCESSFUL)
-							LOGE("QCAP_SET_AUDIO_BROADCAST_SERVER_UNCOMPRESSION_BUFFER failed, qres=%d", qres);
+					qres = qcap2_audio_resampler_push(pQcapDanteTx->audio_resampler, pRCBuffer);
+					if (qres != QCAP_RS_SUCCESSFUL) {
+						LOGE("qcap2_audio_resampler_push() failed, qres=%d", qres);
 					}
 					break;
 				}
@@ -1350,6 +1308,29 @@ struct App0 {
 			}
 
 			return qres;
+		}
+
+		QRETURN OnQcapAudioResampler(qcap_dante_tx_t* tx) {
+			while (true) {
+				qcap2_rcbuffer_t* output = nullptr;
+				QRESULT qres = qcap2_audio_resampler_pop(tx->audio_resampler, &output);
+				if (qres == QCAP_RS_ERROR_TIMEOUT) break;
+				if (qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("qcap2_audio_resampler_pop() failed, qres=%d", qres);
+					break;
+				}
+				std::shared_ptr<qcap2_rcbuffer_t> output_(output, qcap2_rcbuffer_release);
+				BYTE* qcap_buffer = nullptr;
+				ULONG qcap_buffer_tag = 0;
+				qcap2_rcbuffer_to_buffer(output, &qcap_buffer, &qcap_buffer_tag);
+				qres = QCAP_SET_AUDIO_BROADCAST_SERVER_UNCOMPRESSION_BUFFER(
+					tx->sender, 0, qcap_buffer, qcap_buffer_tag, 0.0);
+				if (qres != QCAP_RS_SUCCESSFUL) {
+					LOGE("QCAP_SET_AUDIO_BROADCAST_SERVER_UNCOMPRESSION_BUFFER failed, qres=%d", qres);
+					break;
+				}
+			}
+			return QCAP_RT_OK;
 		}
 
 		QRETURN OnAenc(qcap2_audio_encoder_t* pAenc, qcap2_audio_decoder_t* pAdec_rtsp) {
@@ -1695,11 +1676,16 @@ struct App0 {
 
 		QRESULT StartQcapDanteServer(free_stack_t& _FreeStack_, ULONG nColorSpaceType,
 			ULONG nVideoWidth, ULONG nVideoHeight, double dVideoFrameRate, ULONG nVideoBitRate,
-			ULONG nAudioChannels, ULONG nAudioSampleFrequency, qcap_dante_tx_t** ppDanteTx) {
+			ULONG nAudioChannels, ULONG nAudioBitsPerSample, ULONG nAudioSampleFrequency, qcap_dante_tx_t** ppDanteTx) {
 			if (!ppDanteTx) return QCAP_RS_ERROR_INVALID_PARAMETER;
 			qcap_dante_tx_t* tx = new qcap_dante_tx_t();
 			_FreeStack_ += [tx]() {
 				LOGI("Stopping Dante TX pipeline (QCAP API)...");
+				if (tx->audio_resampler) {
+					qcap2_audio_resampler_stop(tx->audio_resampler);
+					qcap2_audio_resampler_delete(tx->audio_resampler);
+					tx->audio_resampler = nullptr;
+				}
 				if (tx->sender) {
 					if (tx->sender_started) {
 						QRESULT qres = QCAP_STOP_BROADCAST_SERVER(tx->sender);
@@ -1735,15 +1721,32 @@ struct App0 {
 			qres = QCAP_CREATE_DANTE_SENDER(tx->server, 0, &tx->sender, 0, 0, NULL);
 			if (qres != QCAP_RS_SUCCESSFUL) return qres;
 			qres = QCAP_SET_VIDEO_BROADCAST_SERVER_PROPERTY(
-				tx->sender, 0, QCAP_ENCODER_TYPE_ALLEGRO, QCAP_ENCODER_FORMAT_H264,
+				tx->sender, 0, QCAP_ENCODER_TYPE_SOFTWARE, QCAP_ENCODER_FORMAT_H264,
 				nColorSpaceType, nVideoWidth, nVideoHeight, dVideoFrameRate,
 				QCAP_RECORD_MODE_CBR, 0, nVideoBitRate, 60, 0, 0, NULL, FALSE, FALSE,
 				QCAP_BROADCAST_FLAG_NETWORK);
 			if (qres != QCAP_RS_SUCCESSFUL) return qres;
 			qres = QCAP_SET_AUDIO_BROADCAST_SERVER_PROPERTY(
 				tx->sender, 0, QCAP_ENCODER_TYPE_SOFTWARE, QCAP_ENCODER_FORMAT_PCM,
+				/* QCAP DanteServer consumes stereo int32_t samples internally. The
+				 * software audio encoder widens the 16-bit HDMI source to PCM S32LE. */
 				nAudioChannels ? nAudioChannels : 2, 32,
 				nAudioSampleFrequency ? nAudioSampleFrequency : 48000);
+			if (qres != QCAP_RS_SUCCESSFUL) return qres;
+			tx->audio_resampler = qcap2_audio_resampler_new();
+			if (!tx->audio_resampler) return QCAP_RS_ERROR_GENERAL;
+			qres = NewEvent(_FreeStack_, &tx->audio_resampler_event);
+			if (qres != QCAP_RS_SUCCESSFUL) return qres;
+			qcap2_audio_resampler_set_audio_property(tx->audio_resampler,
+				nAudioChannels ? nAudioChannels : 2, QCAP_SAMPLE_FMT_S32,
+				nAudioSampleFrequency ? nAudioSampleFrequency : 48000, 480);
+			/* ALSA supplies 1280 samples per input frame. A 16-sample output
+			 * would create 80 buffers before the async handler can drain them. */
+			qcap2_audio_resampler_set_frame_count(tx->audio_resampler, 16);
+			qcap2_audio_resampler_set_frame_align(tx->audio_resampler, 16);
+			qcap2_audio_resampler_set_multithread(tx->audio_resampler, false);
+			qcap2_audio_resampler_set_event(tx->audio_resampler, tx->audio_resampler_event);
+			qres = qcap2_audio_resampler_start(tx->audio_resampler);
 			if (qres != QCAP_RS_SUCCESSFUL) return qres;
 			qres = QCAP_START_BROADCAST_SERVER(tx->sender, NULL);
 			if (qres != QCAP_RS_SUCCESSFUL) return qres;

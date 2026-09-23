@@ -13,6 +13,7 @@ include $(S)/tests/test-graphics.mk
 include $(S)/tests/sc6f0-dante-demo.mk
 include $(S)/tests/sc6f0-dante-tx.mk
 include $(S)/tests/sc6f0-dante-rx.mk
+include $(S)/tests/sc6f0-vmix-drm-test.mk
 include $(S)/tests/sc6f0-allegro2-encode-fixture.mk
 include $(S)/tests/sc6f0-allegro2-decode-fixture.mk
 include $(S)/tests/coe-demo.mk
