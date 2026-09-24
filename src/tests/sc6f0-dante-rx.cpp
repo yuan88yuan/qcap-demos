@@ -729,6 +729,7 @@ namespace __sc6f0_dante_rx__ {
 		uint32_t                      drm_primary_fb_id = 0;
 		uint32_t                      drm_primary_bo_handle = 0;
 		uint32_t                      drm_mode_blob_id = 0;
+		drmModeModeInfo               drm_output_mode = {};
 		bool                          drm_modeset_active = false;
 		qcap2_event_t*               vdec_event = nullptr;
 		qcap2_event_handlers_t*      vdec_event_handlers = nullptr;
@@ -758,6 +759,7 @@ namespace __sc6f0_dante_rx__ {
 		std::atomic<bool>            decoder_initializing{false};
 		std::atomic<bool>            decoder_wait_for_idr{false};
 		std::mutex                   decoder_lock;
+		std::mutex                   display_lock;
 		std::thread                  vdec_init_thread;
 		std::mutex                   audio_lock;
 		std::string                  reconstructed_path;
@@ -778,7 +780,9 @@ namespace __sc6f0_dante_rx__ {
 		bool decode_enabled = true;
 		/* Decode-only isolation: run VCU decode + pop counting without
 		 * DRM modeset / vsink display on plane 36. */
-		bool display_enabled = true;
+		std::atomic<bool> display_enabled{true};
+		bool auto_mode = false;
+		std::atomic<uint32_t> auto_flow_count{0};
 		std::string direct_transmitter;
 		std::string direct_local{"0.0.0.0"};
 		uint16_t direct_port = 16490;
@@ -925,6 +929,7 @@ namespace __sc6f0_dante_rx__ {
 	static QRETURN on_vdec_event_callback(PVOID pUserData);
 	static int start_drm_output(zst_dante_rx_t* rx);
 	static int start_vdec_sink(zst_dante_rx_t* rx);
+	static inline float mode_vrefresh(const drmModeModeInfo* mode);
 
 	static void StopVdecAsync(zst_dante_rx_t* rx) {
 		if (rx->vdec_event_handlers) {
@@ -1024,12 +1029,15 @@ namespace __sc6f0_dante_rx__ {
 					rx->decoded_errors++;
 				break;
 			}
-		rx->decoded_frames++;
-		if (rx->display_enabled && rx->vdec_sink && rx->vdec_sink_started) {
-				qres = qcap2_video_sink_push(rx->vdec_sink, pFrame);
-				if (qres != QCAP_RS_SUCCESSFUL) {
-					rx->decoder_display_errors++;
-					LOGE("qcap2_video_sink_push() failed, qres=%d", (int)qres);
+			rx->decoded_frames++;
+			{
+				std::lock_guard<std::mutex> display_guard(rx->display_lock);
+				if (rx->display_enabled && rx->vdec_sink && rx->vdec_sink_started) {
+					qres = qcap2_video_sink_push(rx->vdec_sink, pFrame);
+					if (qres != QCAP_RS_SUCCESSFUL) {
+						rx->decoder_display_errors++;
+						LOGE("qcap2_video_sink_push() failed, qres=%d", (int)qres);
+					}
 				}
 			}
 			qcap2_rcbuffer_release(pFrame);
@@ -1211,6 +1219,7 @@ namespace __sc6f0_dante_rx__ {
 		rx->drm_primary_fb_id = 0;
 		rx->drm_primary_bo_handle = 0;
 		rx->drm_mode_blob_id = 0;
+		rx->drm_output_mode = {};
 		rx->drm_modeset_active = false;
 	}
 
@@ -1259,21 +1268,40 @@ namespace __sc6f0_dante_rx__ {
 
 		drmModeModeInfo mode = {};
 		bool have_mode = false;
+		bool selected_exact = false;
 		int crtc_index = -1;
 		for (int i = 0; i < resources->count_connectors && crtc_index < 0; ++i) {
 			std::shared_ptr<drmModeConnector> connector(
 				drmModeGetConnector(rx->drm_fd, resources->connectors[i]), drmModeFreeConnector);
-			if (!connector || connector->connection != DRM_MODE_CONNECTED) continue;
+			if (!connector || connector->connector_type != DRM_MODE_CONNECTOR_HDMIA ||
+			    connector->connection != DRM_MODE_CONNECTED) continue;
 			drmModeModeInfo connector_mode = {};
 			bool connector_has_mode = false;
+			bool exact_mode = false;
 			for (int m = 0; m < connector->count_modes; ++m) {
-				if (connector->modes[m].hdisplay == width && connector->modes[m].vdisplay == height &&
-					connector->modes[m].vrefresh == fps &&
-					(!connector_has_mode ||
-					 (width == 3840 && height == 2160 && fps == 60 &&
-					  connector->modes[m].clock == 594000))) {
-					connector_mode = connector->modes[m];
+				const drmModeModeInfo& candidate = connector->modes[m];
+				/* The shared VProcSS is built for at most 3840x2160 and the
+				 * HDMI TX path is qualified up to 594 MHz / 60 Hz. */
+				if (!candidate.hdisplay || !candidate.vdisplay ||
+				    candidate.hdisplay > 3840 || candidate.vdisplay > 2160 ||
+				    candidate.clock > 594000 || mode_vrefresh(&candidate) <= 0 ||
+				    mode_vrefresh(&candidate) > 60.5 ||
+				    (candidate.flags & DRM_MODE_FLAG_INTERLACE)) continue;
+				bool candidate_exact = candidate.hdisplay == width &&
+					candidate.vdisplay == height &&
+					fabs(mode_vrefresh(&candidate) - rx->dec_fps) < 0.5;
+				uint64_t area = (uint64_t)candidate.hdisplay * candidate.vdisplay;
+				uint64_t selected_area = (uint64_t)connector_mode.hdisplay * connector_mode.vdisplay;
+				if (!connector_has_mode || (candidate_exact && !exact_mode) ||
+				    (candidate_exact == exact_mode &&
+				     (area > selected_area ||
+				      (area == selected_area &&
+				       (mode_vrefresh(&candidate) > mode_vrefresh(&connector_mode) + 0.005 ||
+				        (width == 3840 && height == 2160 && fps == 60 &&
+				         candidate.clock == 594000 && connector_mode.clock != 594000)))))) {
+					connector_mode = candidate;
 					connector_has_mode = true;
+					exact_mode = candidate_exact;
 				}
 			}
 			if (!connector_has_mode) continue;
@@ -1289,14 +1317,15 @@ namespace __sc6f0_dante_rx__ {
 					rx->drm_crtc_id = resources->crtcs[c];
 					mode = connector_mode;
 					have_mode = true;
+					selected_exact = exact_mode;
 					crtc_index = c;
 					break;
 				}
 			}
 		}
 		if (crtc_index < 0 || !have_mode) {
-			LOGE("no connected %ux%u@%u HDMI path supports DRM plane %u",
-			     width, height, fps, video_plane_id);
+			LOGE("no connected HDMI-A path with a VProcSS-compatible EDID mode supports DRM plane %u",
+			     video_plane_id);
 			stop_drm_output(rx);
 			return -1;
 		}
@@ -1323,8 +1352,8 @@ namespace __sc6f0_dante_rx__ {
 		}
 
 		struct drm_mode_create_dumb create = {};
-		create.width = width;
-		create.height = height;
+		create.width = mode.hdisplay;
+		create.height = mode.vdisplay;
 		create.bpp = 24;
 		if (drmIoctl(rx->drm_fd, DRM_IOCTL_MODE_CREATE_DUMB, &create) ||
 			drmModeCreatePropertyBlob(rx->drm_fd, &mode, sizeof(mode), &rx->drm_mode_blob_id)) {
@@ -1336,7 +1365,7 @@ namespace __sc6f0_dante_rx__ {
 		uint32_t handles[4] = { create.handle, 0, 0, 0 };
 		uint32_t pitches[4] = { create.pitch, 0, 0, 0 };
 		uint32_t offsets[4] = { 0, 0, 0, 0 };
-		if (drmModeAddFB2(rx->drm_fd, width, height, DRM_FORMAT_BGR888, handles, pitches, offsets,
+		if (drmModeAddFB2(rx->drm_fd, mode.hdisplay, mode.vdisplay, DRM_FORMAT_BGR888, handles, pitches, offsets,
 			&rx->drm_primary_fb_id, 0)) {
 			LOGE("drmModeAddFB2(primary) failed, err=%d", errno);
 			stop_drm_output(rx);
@@ -1370,12 +1399,12 @@ namespace __sc6f0_dante_rx__ {
 		drmModeAtomicAddProperty(request.get(), rx->drm_primary_plane_id, plane_fb, rx->drm_primary_fb_id);
 		drmModeAtomicAddProperty(request.get(), rx->drm_primary_plane_id, crtc_x, 0);
 		drmModeAtomicAddProperty(request.get(), rx->drm_primary_plane_id, crtc_y, 0);
-		drmModeAtomicAddProperty(request.get(), rx->drm_primary_plane_id, crtc_w, width);
-		drmModeAtomicAddProperty(request.get(), rx->drm_primary_plane_id, crtc_h, height);
+		drmModeAtomicAddProperty(request.get(), rx->drm_primary_plane_id, crtc_w, mode.hdisplay);
+		drmModeAtomicAddProperty(request.get(), rx->drm_primary_plane_id, crtc_h, mode.vdisplay);
 		drmModeAtomicAddProperty(request.get(), rx->drm_primary_plane_id, src_x, 0);
 		drmModeAtomicAddProperty(request.get(), rx->drm_primary_plane_id, src_y, 0);
-		drmModeAtomicAddProperty(request.get(), rx->drm_primary_plane_id, src_w, width << 16);
-		drmModeAtomicAddProperty(request.get(), rx->drm_primary_plane_id, src_h, height << 16);
+		drmModeAtomicAddProperty(request.get(), rx->drm_primary_plane_id, src_w, (uint32_t)mode.hdisplay << 16);
+		drmModeAtomicAddProperty(request.get(), rx->drm_primary_plane_id, src_h, (uint32_t)mode.vdisplay << 16);
 		uint32_t overlay_source = drm_property_id(rx->drm_fd, video_plane_id,
 			DRM_MODE_OBJECT_PLANE, "SC6F0_OVERLAY_SOURCE");
 		/* This path displays decoded DDR frames; DUMMY is the driver default. */
@@ -1386,9 +1415,14 @@ namespace __sc6f0_dante_rx__ {
 			return -1;
 		}
 		rx->drm_modeset_active = true;
-		LOGI("DRM HDMI active: %s %ux%u@%u, clock=%u kHz; connector %u, CRTC %u, primary plane %u, video plane %u",
-			mode.name, mode.hdisplay, mode.vdisplay, mode.vrefresh, mode.clock,
-			rx->drm_connector_id, rx->drm_crtc_id, rx->drm_primary_plane_id, video_plane_id);
+		rx->drm_output_mode = mode;
+		if (!selected_exact && mode_vrefresh(&mode) + 0.5 < rx->dec_fps)
+			LOGW("EDID output %.2f Hz is slower than AVH input %.2f fps; display frames may be dropped",
+			     mode_vrefresh(&mode), rx->dec_fps);
+		LOGI("DRM HDMI active: %s %ux%u@%.2f, clock=%u kHz; AVH input %ux%u@%.2f (%s); connector %u, CRTC %u, primary plane %u, video plane %u",
+		     mode.name, mode.hdisplay, mode.vdisplay, mode_vrefresh(&mode), mode.clock,
+		     width, height, rx->dec_fps, selected_exact ? "exact" : "VProcSS scaling",
+		     rx->drm_connector_id, rx->drm_crtc_id, rx->drm_primary_plane_id, video_plane_id);
 		return 0;
 	}
 
@@ -1405,10 +1439,29 @@ namespace __sc6f0_dante_rx__ {
 		qcap2_video_sink_set_backend_type(sink, QCAP2_VIDEO_SINK_BACKEND_TYPE_XLNX2);
 		qcap2_video_sink_set_native_handle(sink,
 			QCAP_HWND_DRM_PLANE_ID_MASK | drm_plane_id);
+		/* The sink's format selects the HDMI mode; its pushed framebuffer
+		 * supplies SRC_W/H. A separate DRM rect supplies CRTC_W/H to VProcSS. */
+		const uint32_t out_w = rx->drm_output_mode.hdisplay;
+		const uint32_t out_h = rx->drm_output_mode.vdisplay;
+		uint32_t rect_w = out_w, rect_h = out_h;
+		if ((uint64_t)rx->dec_width * out_h > (uint64_t)rx->dec_height * out_w)
+			rect_h = (uint64_t)out_w * rx->dec_height / rx->dec_width;
+		else
+			rect_w = (uint64_t)out_h * rx->dec_width / rx->dec_height;
+		/* Keep the NV12 plane's destination even-sized; the black primary
+		 * plane fills the remaining letterbox/pillarbox area. */
+		rect_w &= ~1u;
+		rect_h &= ~1u;
+		if (!rect_w || !rect_h) {
+			qcap2_video_sink_delete(sink);
+			return -1;
+		}
+		qcap2_video_sink_set_drm_rect(sink, (out_w - rect_w) / 2,
+			(out_h - rect_h) / 2, rect_w, rect_h);
 		std::shared_ptr<qcap2_video_format_t> format(
 			qcap2_video_format_new(), qcap2_video_format_delete);
 		qcap2_video_format_set_property(format.get(), QCAP_COLORSPACE_TYPE_NV12,
-			rx->dec_width, rx->dec_height, FALSE, rx->dec_fps);
+			out_w, out_h, FALSE, mode_vrefresh(&rx->drm_output_mode));
 		qcap2_video_sink_set_video_format(sink, format.get());
 
 		QRESULT qres = qcap2_video_sink_start(sink);
@@ -1812,10 +1865,14 @@ namespace __sc6f0_dante_rx__ {
 						f->transmitter_address ? f->transmitter_address : "?",
 						f->transport == ZST_DANTE_FLOW_MULTICAST ? "multicast" : "unicast");
 					zst_dante_video_coordinator_apply_flow(rx->coordinator, f);
+					if (rx->auto_mode)
+						rx->auto_flow_count = zst_dante_video_coordinator_get_flow_count(rx->coordinator);
 				} else if (ev->type == ZST_EVENT_DANTE_FLOW_DELETED) {
 					const zst_dante_flow_t* f = &ev->as.dante_flow.flow;
 					LOGI("[DANTE BUS] RX video flow DELETED: idx=%u", f->flow_index);
 					zst_dante_video_coordinator_remove_flow(rx->coordinator, f);
+					if (rx->auto_mode)
+						rx->auto_flow_count = zst_dante_video_coordinator_get_flow_count(rx->coordinator);
 				} else if (ev->type == ZST_EVENT_DANTE_CONNECTED) {
 					LOGI("[DANTE BUS] Dante session CONNECTED to DVR socket");
 				} else if (ev->type == ZST_EVENT_WARNING) {
@@ -1825,6 +1882,11 @@ namespace __sc6f0_dante_rx__ {
 				}
 				zst_event_destroy(ev);
 			}
+			/* Several device/decoder statistics query live pipeline locks. A
+			 * stalled sink can block those getters indefinitely, which would
+			 * prevent this worker from handling FLOW_DELETED. In auto mode the
+			 * bus must remain dedicated to routing events. */
+			if (rx->auto_mode) continue;
 
 			struct timespec ts;
 			clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -1973,7 +2035,8 @@ namespace __sc6f0_dante_rx__ {
                                      uint16_t direct_port = 16490,
                                      bool display_enabled = true,
                                      uint32_t reorder_window = 1,
-                                     uint32_t reorder_timeout_ms = 1)
+	                                     uint32_t reorder_timeout_ms = 1,
+	                                     bool auto_mode = false)
 	{
 		zst_dante_rx_t* rx = new zst_dante_rx_t();
 		rx->dvr_socket = dvr_socket;
@@ -1986,6 +2049,7 @@ namespace __sc6f0_dante_rx__ {
 		rx->reconstructed_path = reconstructed_path;
 		rx->decode_enabled = decode_enabled;
 		rx->display_enabled = display_enabled;
+		rx->auto_mode = auto_mode;
 		rx->direct_mode = direct_mode;
 		rx->direct_transmitter = direct_peer;
 		rx->direct_local = direct_local.empty() ? "0.0.0.0" : direct_local;
@@ -2091,7 +2155,7 @@ namespace __sc6f0_dante_rx__ {
 			rx->audio_stats->rx = rx;
 			zst_pad_link(zst_element_get_pad(rx->rx_dep_src, "src"),
 			             zst_element_get_pad(rx->rx_audio_sink, "sink"));
-			if (start_hdmi_audio_sink(rx) != 0) {
+			if (!auto_mode && start_hdmi_audio_sink(rx) != 0) {
 				LOGW("HDMI audio unavailable; continuing with video only");
 			}
 		}
@@ -2611,9 +2675,14 @@ namespace __sc6f0_dante_rx__ {
 		uint32_t mode_blob_id{0};
 		bool modeset_active{false};
 		bool overlay_active{false};
+		bool avh_active{false};
 		drmModeModeInfo current_mode{};
 
 		struct video_format current_video_format{};
+		struct video_format last_locked_video_format{};
+		/* A fresh DAU service may not receive set_video_format until the
+		 * stream changes. Match the RGB format used to prime the plane. */
+		uint32_t ultra_overlay_format{DRM_FORMAT_BGR888};
 		bool fixed_mode_override{false};
 		bool force_dante_source{false};
 		uint32_t fixed_width{3840};
@@ -2705,24 +2774,55 @@ namespace __sc6f0_dante_rx__ {
 	                             double fps, bool enable_overlay, uint32_t overlay_format = DRM_FORMAT_YUYV) {
 		if (!ctx || ctx->drm_fd < 0 || ctx->connector_id == 0 || ctx->crtc_id == 0)
 			return -1;
+		if (!width || !height || width > 3840 || height > 2160)
+			return -1;
 
 		std::shared_ptr<drmModeConnector> connector(
 			drmModeGetConnector(ctx->drm_fd, ctx->connector_id), drmModeFreeConnector);
-		if (!connector) return -1;
+		if (!connector || connector->connection != DRM_MODE_CONNECTED) return -1;
 
 		drmModeModeInfo mode = {};
-		if (!find_matching_mode(connector.get(), width, height, fps, false, &mode)) {
-			if (connector->count_modes > 0) {
-				mode = connector->modes[0];
-				LOGW("[ULTRA DIRECT] mode %ux%u@%.2f not found, using %s (%ux%u@%u)",
-				     width, height, fps, mode.name, mode.hdisplay, mode.vdisplay, mode.vrefresh);
-				width = mode.hdisplay;
-				height = mode.vdisplay;
-			} else {
-				LOGE("[ULTRA DIRECT] connector has no display modes");
+		bool exact = find_matching_mode(connector.get(), width, height, fps, false, &mode);
+		if (exact && (mode.clock > 594000 || mode_vrefresh(&mode) > 60.5))
+			exact = false;
+		if (!exact) {
+			bool found = false;
+			for (int i = 0; i < connector->count_modes; ++i) {
+				const drmModeModeInfo& candidate = connector->modes[i];
+				if (!candidate.hdisplay || !candidate.vdisplay ||
+				    candidate.hdisplay > 3840 || candidate.vdisplay > 2160 ||
+				    candidate.clock > 594000 || mode_vrefresh(&candidate) <= 0 ||
+				    mode_vrefresh(&candidate) > 60.5 ||
+				    (candidate.flags & DRM_MODE_FLAG_INTERLACE)) continue;
+				uint64_t area = (uint64_t)candidate.hdisplay * candidate.vdisplay;
+				uint64_t best_area = (uint64_t)mode.hdisplay * mode.vdisplay;
+				if (!found || area > best_area ||
+				    (area == best_area && mode_vrefresh(&candidate) > mode_vrefresh(&mode))) {
+					mode = candidate;
+					found = true;
+				}
+			}
+			if (!found) {
+				LOGE("[ULTRA DIRECT] no VProcSS-compatible EDID mode for %ux%u@%.2f",
+				     width, height, fps);
 				return -1;
 			}
+			LOGW("[ULTRA DIRECT] input %ux%u@%.2f not in EDID; scaling to %s (%ux%u@%.2f)",
+			     width, height, fps, mode.name, mode.hdisplay, mode.vdisplay,
+			     mode_vrefresh(&mode));
 		}
+		if (fps > mode_vrefresh(&mode) + 0.5)
+			LOGW("[ULTRA DIRECT] HDMI %.2f Hz is slower than Ultra input %.2f fps; frames may be dropped",
+			     mode_vrefresh(&mode), fps);
+		const uint32_t output_w = mode.hdisplay, output_h = mode.vdisplay;
+		uint32_t rect_w = output_w, rect_h = output_h;
+		if ((uint64_t)width * output_h > (uint64_t)height * output_w)
+			rect_h = (uint64_t)output_w * height / width;
+		else
+			rect_w = (uint64_t)output_h * width / height;
+		rect_w &= ~1u;
+		rect_h &= ~1u;
+		if (!rect_w || !rect_h) return -1;
 
 		uint32_t new_mode_blob_id = 0;
 		if (drmModeCreatePropertyBlob(ctx->drm_fd, &mode, sizeof(mode), &new_mode_blob_id) != 0) {
@@ -2732,7 +2832,7 @@ namespace __sc6f0_dante_rx__ {
 
 		uint32_t new_primary_fb = 0;
 		uint32_t new_primary_bo = 0;
-		if (create_dumb_fb(ctx->drm_fd, width, height, DRM_FORMAT_BGR888, 24,
+		if (create_dumb_fb(ctx->drm_fd, output_w, output_h, DRM_FORMAT_BGR888, 24,
 		                   &new_primary_fb, &new_primary_bo, nullptr) != 0) {
 			drmModeDestroyPropertyBlob(ctx->drm_fd, new_mode_blob_id);
 			return -1;
@@ -2786,12 +2886,12 @@ namespace __sc6f0_dante_rx__ {
 		drmModeAtomicAddProperty(req.get(), ctx->primary_plane_id, p_fb, new_primary_fb);
 		drmModeAtomicAddProperty(req.get(), ctx->primary_plane_id, p_cx, 0);
 		drmModeAtomicAddProperty(req.get(), ctx->primary_plane_id, p_cy, 0);
-		drmModeAtomicAddProperty(req.get(), ctx->primary_plane_id, p_cw, width);
-		drmModeAtomicAddProperty(req.get(), ctx->primary_plane_id, p_ch, height);
+		drmModeAtomicAddProperty(req.get(), ctx->primary_plane_id, p_cw, output_w);
+		drmModeAtomicAddProperty(req.get(), ctx->primary_plane_id, p_ch, output_h);
 		drmModeAtomicAddProperty(req.get(), ctx->primary_plane_id, p_sx, 0);
 		drmModeAtomicAddProperty(req.get(), ctx->primary_plane_id, p_sy, 0);
-		drmModeAtomicAddProperty(req.get(), ctx->primary_plane_id, p_sw, width << 16);
-		drmModeAtomicAddProperty(req.get(), ctx->primary_plane_id, p_sh, height << 16);
+		drmModeAtomicAddProperty(req.get(), ctx->primary_plane_id, p_sw, output_w << 16);
+		drmModeAtomicAddProperty(req.get(), ctx->primary_plane_id, p_sh, output_h << 16);
 		if (p_alpha) drmModeAtomicAddProperty(req.get(), ctx->primary_plane_id, p_alpha, 0xffff);
 
 		if (ctx->overlay_plane_id != 0) {
@@ -2823,10 +2923,10 @@ namespace __sc6f0_dante_rx__ {
 			if (enable_overlay && new_overlay_fb != 0) {
 				drmModeAtomicAddProperty(req.get(), ctx->overlay_plane_id, o_crtc, ctx->crtc_id);
 				drmModeAtomicAddProperty(req.get(), ctx->overlay_plane_id, o_fb, new_overlay_fb);
-				drmModeAtomicAddProperty(req.get(), ctx->overlay_plane_id, o_cx, 0);
-				drmModeAtomicAddProperty(req.get(), ctx->overlay_plane_id, o_cy, 0);
-				drmModeAtomicAddProperty(req.get(), ctx->overlay_plane_id, o_cw, width);
-				drmModeAtomicAddProperty(req.get(), ctx->overlay_plane_id, o_ch, height);
+				drmModeAtomicAddProperty(req.get(), ctx->overlay_plane_id, o_cx, (output_w - rect_w) / 2);
+				drmModeAtomicAddProperty(req.get(), ctx->overlay_plane_id, o_cy, (output_h - rect_h) / 2);
+				drmModeAtomicAddProperty(req.get(), ctx->overlay_plane_id, o_cw, rect_w);
+				drmModeAtomicAddProperty(req.get(), ctx->overlay_plane_id, o_ch, rect_h);
 				drmModeAtomicAddProperty(req.get(), ctx->overlay_plane_id, o_sx, 0);
 				drmModeAtomicAddProperty(req.get(), ctx->overlay_plane_id, o_sy, 0);
 				drmModeAtomicAddProperty(req.get(), ctx->overlay_plane_id, o_sw, width << 16);
@@ -2862,13 +2962,14 @@ namespace __sc6f0_dante_rx__ {
 		ctx->current_mode = mode;
 
 		// Ensure VTPG is generating frames to keep v_mix master layer active
-		configure_vtpg(width, height, g_tpg_pattern);
+		configure_vtpg(output_w, output_h, g_tpg_pattern);
 		if (enable_overlay) {
 			set_vmix_layer1_opaque();
 		}
 
-		LOGI("[ULTRA DIRECT] DRM modeset active: %ux%u@%uHz (%s) | primary plane %u, overlay plane %u (active=%d)",
-		     mode.hdisplay, mode.vdisplay, mode.vrefresh, mode.name,
+		LOGI("[ULTRA DIRECT] DRM modeset active: HDMI %ux%u@%.2fHz (%s) | source %ux%u@%.2f | primary plane %u, overlay plane %u (active=%d)",
+		     mode.hdisplay, mode.vdisplay, mode_vrefresh(&mode), mode.name,
+		     width, height, fps,
 		     ctx->primary_plane_id, ctx->overlay_plane_id, (int)enable_overlay);
 		return 0;
 	}
@@ -2958,6 +3059,17 @@ namespace __sc6f0_dante_rx__ {
 
 		ctx->current_video_format = *format;
 		ctx->format_changes++;
+		if (format->locked && format->width && format->height && format->framerate) {
+			ctx->last_locked_video_format = *format;
+			ctx->ultra_overlay_format = format->colorformat == VIDEO_COLORFORMAT_RGB ?
+				DRM_FORMAT_BGR888 : DRM_FORMAT_YUYV;
+		}
+		if (ctx->avh_active) {
+			/* AVH owns the shared VProcSS and HDMI timing for now. The last
+			 * Ultra format is retained for the next return to DANTE. */
+			dau_reply_success(dau, reply);
+			return;
+		}
 		if (ctx->force_dante_source && !format->locked) {
 			LOGI("[ULTRA DIRECT][DAU] stream unlocked; explicit DANTE source remains selected");
 			dau_reply_success(dau, reply);
@@ -2967,7 +3079,7 @@ namespace __sc6f0_dante_rx__ {
 		uint32_t target_w = ctx->fixed_mode_override ? ctx->fixed_width : format->width;
 		uint32_t target_h = ctx->fixed_mode_override ? ctx->fixed_height : format->height;
 		double target_fps = ctx->fixed_mode_override ? (double)ctx->fixed_fps : (double)format->framerate;
-		uint32_t overlay_format = (format->colorformat == VIDEO_COLORFORMAT_RGB) ? DRM_FORMAT_BGR888 : DRM_FORMAT_YUYV;
+		uint32_t overlay_format = ctx->ultra_overlay_format;
 
 		int result;
 		if (format->locked) {
@@ -2978,8 +3090,28 @@ namespace __sc6f0_dante_rx__ {
 		}
 		if (result == 0)
 			dau_reply_success(dau, reply);
-		else
+		else {
+			/* Do not continue claiming the previous HDMI picture as this
+			 * newly reported Ultra format. Keep the mixer alive on DUMMY. */
+			if (format->locked && ctx->current_mode.hdisplay)
+				apply_drm_modeset(ctx, ctx->current_mode.hdisplay,
+					ctx->current_mode.vdisplay, mode_vrefresh(&ctx->current_mode), false);
 			dau_reply_error(dau, reply, "DRM overlay modeset failed");
+		}
+	}
+
+	static int restore_ultra_output(ultra_direct_context_t* ctx) {
+		const struct video_format& format = ctx->last_locked_video_format;
+		uint32_t width = ctx->fixed_mode_override ? ctx->fixed_width :
+			(format.locked ? format.width : ctx->fixed_width);
+		uint32_t height = ctx->fixed_mode_override ? ctx->fixed_height :
+			(format.locked ? format.height : ctx->fixed_height);
+		uint32_t fps = ctx->fixed_mode_override ? ctx->fixed_fps :
+			(format.locked ? format.framerate : ctx->fixed_fps);
+		LOGI("[AUTO] restoring Ultra input %ux%u@%u (%s)%s", width, height, fps,
+		     ctx->ultra_overlay_format == DRM_FORMAT_BGR888 ? "RGB" : "YUYV",
+		     format.locked ? "" : " (DAU format not yet received; startup fallback)");
+		return apply_drm_modeset(ctx, width, height, fps, true, ctx->ultra_overlay_format);
 	}
 
 	static void dau_set_audio_info(struct dau_service *dau, struct DBusMessage *reply,
@@ -3028,7 +3160,14 @@ namespace __sc6f0_dante_rx__ {
 
 	static int run_ultra_direct(uint32_t stat_interval, bool fixed_mode_override,
 	                            bool force_dante_source,
-	                            uint32_t fixed_w, uint32_t fixed_h, uint32_t fixed_fps) {
+	                            uint32_t fixed_w, uint32_t fixed_h, uint32_t fixed_fps,
+	                            bool auto_mode = false,
+	                            const std::string& dvr_socket = "/var/run/dante/dvr",
+	                            const std::string& dep_name = "DanteEP",
+	                            const std::string& channels = "0,1",
+	                            uint32_t sample_rate = 48000,
+	                            uint32_t reorder_window = 1,
+	                            uint32_t reorder_timeout_ms = 1) {
 		if (stat_interval == 0)
 			stat_interval = 3;
 		LOGI("[ULTRA DIRECT] Dante Ultra FPGA media path: VSINK video (v_mix layer 1) and AES3 audio (SI1) -> HDMI");
@@ -3106,6 +3245,40 @@ namespace __sc6f0_dante_rx__ {
 		uint32_t init_w = fixed_mode_override ? fixed_w : 3840;
 		uint32_t init_h = fixed_mode_override ? fixed_h : 2160;
 		double init_fps = fixed_mode_override ? (double)fixed_fps : 60.0;
+		if (auto_mode && !fixed_mode_override) {
+			/* Until DAU reports Ultra's output format, start with a mode
+			 * advertised by this monitor, never an assumed 4K input that
+			 * would require a second scaler on the Ultra route. */
+			const drmModeModeInfo* best = nullptr;
+			for (int i = 0; connector && i < connector->count_modes; ++i) {
+				const drmModeModeInfo* candidate = &connector->modes[i];
+				if (!candidate->hdisplay || !candidate->vdisplay ||
+				    candidate->hdisplay > 3840 || candidate->vdisplay > 2160 ||
+				    candidate->clock > 594000 || mode_vrefresh(candidate) <= 0 ||
+				    mode_vrefresh(candidate) > 60.5 ||
+				    (candidate->flags & DRM_MODE_FLAG_INTERLACE)) continue;
+				uint64_t area = (uint64_t)candidate->hdisplay * candidate->vdisplay;
+				uint64_t best_area = best ? (uint64_t)best->hdisplay * best->vdisplay : 0;
+				if (!best || area > best_area ||
+				    (area == best_area &&
+				     (mode_vrefresh(candidate) > mode_vrefresh(best) + 0.005 ||
+				      (candidate->clock == 594000 && best->clock != 594000))))
+					best = candidate;
+			}
+			if (!best) {
+				LOGE("[AUTO] monitor has no supported EDID mode for Ultra startup");
+				cleanup_ultra_direct_drm(&ctx);
+				return 1;
+			}
+			init_w = best->hdisplay;
+			init_h = best->vdisplay;
+			init_fps = mode_vrefresh(best);
+			ctx.fixed_width = init_w;
+			ctx.fixed_height = init_h;
+			ctx.fixed_fps = (uint32_t)(init_fps + 0.5);
+			LOGI("[AUTO] Ultra startup EDID mode %ux%u@%.2f until DAU reports its output",
+			     init_w, init_h, init_fps);
+		}
 		/* Explicit source selection does not wait for a DAU format event.
 		 * The fixed mode and RGB input format prime the shared VProcSS and
 		 * route FPGA Dante video; a later locked event can refine the format. */
@@ -3137,6 +3310,26 @@ namespace __sc6f0_dante_rx__ {
 		if (ctx.last_connector_connected) {
 			dau_signal_cable_change(ctx.dau);
 		}
+		/* Keep the DVR client present even while Ultra is selected. It is the
+		 * sole AVH client, so Controller routing survives source changes and
+		 * FLOW_CREATED/DELETED are observed without restarting the session. */
+		zst_dante_rx_t* avh = nullptr;
+		if (auto_mode) {
+			avh = start_dante_rx(dvr_socket, dep_name, channels, sample_rate,
+				stat_interval, "", true, false, false, "", "0.0.0.0", 16490,
+				false, reorder_window, reorder_timeout_ms, true);
+			if (!avh) {
+				LOGE("[AUTO] could not start AVH flow monitor/decoder");
+				dau_service_unregister(ctx.dau);
+				if (ctx.uevent_fd >= 0) close(ctx.uevent_fd);
+				cleanup_ultra_direct_drm(&ctx);
+				return 1;
+			}
+			LOGI("[AUTO] default source DANTE; waiting for AVH flow and first decoded frame");
+		}
+		uint64_t avh_decoded_at_flow = 0;
+		bool avh_pending = false;
+		bool avh_retry_blocked = false;
 
 		int stdin_flags = fcntl(STDIN_FILENO, F_GETFL, 0);
 		if (stdin_flags >= 0)
@@ -3146,6 +3339,71 @@ namespace __sc6f0_dante_rx__ {
 		struct pollfd pfds[3];
 
 		while (!g_stop_requested) {
+			if (avh) {
+				bool flow = avh->auto_flow_count.load(std::memory_order_acquire) != 0;
+				if (flow && !avh_pending && !ctx.avh_active && !avh_retry_blocked) {
+					avh_pending = true;
+					avh_decoded_at_flow = avh->decoded_frames.load();
+					LOGI("[AUTO] AVH flow present; waiting for first decoded frame");
+				}
+				if (!flow) {
+					avh_pending = false;
+					avh_retry_blocked = false;
+				}
+				if (flow && avh_pending && !ctx.avh_active &&
+				    avh->decoded_frames.load() > avh_decoded_at_flow &&
+				    !avh->decoder_initializing.load()) {
+					uint32_t w = ctx.current_mode.hdisplay ? ctx.current_mode.hdisplay : fixed_w;
+					uint32_t h = ctx.current_mode.vdisplay ? ctx.current_mode.vdisplay : fixed_h;
+					LOGI("[AUTO] AVH frame ready; DANTE -> DUMMY -> VCU");
+					if (apply_drm_modeset(&ctx, w, h, fixed_fps, false) == 0 &&
+					    start_drm_output(avh) == 0) {
+						std::lock_guard<std::mutex> guard(avh->display_lock);
+						if (avh->auto_flow_count.load() != 0 && start_vdec_sink(avh) == 0) {
+							avh->display_enabled = true;
+							ctx.avh_active = true;
+							LOGI("[AUTO] selected VCU (AVH), input=%ux%u, output=%ux%u",
+							     avh->dec_width, avh->dec_height,
+							     avh->drm_output_mode.hdisplay, avh->drm_output_mode.vdisplay);
+						}
+					}
+					if (ctx.avh_active && start_hdmi_audio_sink(avh) != 0)
+						LOGW("[AUTO] AVH audio unavailable; displaying video");
+					if (!ctx.avh_active) {
+						stop_drm_output(avh);
+						select_hdmi_audio_route(1);
+						if (restore_ultra_output(&ctx) != 0)
+							LOGE("[AUTO] failed to restore Ultra after AVH initialization error");
+						/* Avoid repeated DRM reinitialization on a bad EDID. */
+						avh_retry_blocked = true;
+						avh_pending = false;
+					}
+				}
+				if (!flow && ctx.avh_active) {
+					LOGI("[AUTO] AVH flow removed; VCU -> DUMMY -> DANTE");
+					avh->display_enabled = false;
+					/* Stop displaying decoded frames before releasing the sink;
+					 * route the mixer to the continuous dummy path first. */
+					{
+						std::lock_guard<std::mutex> guard(avh->display_lock);
+						apply_drm_modeset(&ctx, fixed_w, fixed_h, fixed_fps, false);
+						if (avh->vdec_sink) {
+							if (avh->vdec_sink_started) qcap2_video_sink_stop(avh->vdec_sink);
+							qcap2_video_sink_delete(avh->vdec_sink);
+							avh->vdec_sink = nullptr;
+							avh->vdec_sink_started = false;
+						}
+					}
+					stop_hdmi_audio_sink(avh);
+					stop_drm_output(avh);
+					select_hdmi_audio_route(1);
+					ctx.avh_active = false;
+					if (restore_ultra_output(&ctx) != 0)
+						LOGE("[AUTO] failed to restore Ultra output; waiting for format/hotplug update");
+					else
+						LOGI("[AUTO] selected DANTE (Ultra)");
+				}
+			}
 			int nfds = 0;
 			int idx_dau = -1, idx_uevent = -1, idx_stdin = -1;
 
@@ -3201,7 +3459,7 @@ namespace __sc6f0_dante_rx__ {
 						     connected ? "connected" : "disconnected");
 						if (ctx.dau)
 							dau_signal_cable_change(ctx.dau);
-						if (!connected && ctx.overlay_active) {
+						if (!connected && ctx.overlay_active && !ctx.avh_active) {
 							apply_drm_modeset(&ctx, ctx.current_mode.hdisplay, ctx.current_mode.vdisplay,
 							                  mode_vrefresh(&ctx.current_mode), false);
 						}
@@ -3238,6 +3496,11 @@ namespace __sc6f0_dante_rx__ {
 
 		if (stdin_flags >= 0)
 			fcntl(STDIN_FILENO, F_SETFL, stdin_flags);
+		if (avh) {
+			avh->display_enabled = false;
+			apply_drm_modeset(&ctx, fixed_w, fixed_h, fixed_fps, false);
+			stop_dante_rx(avh);
+		}
 
 		LOGI("[ULTRA DIRECT] Shutting down, unregistering DAU service...");
 		if (ctx.dau) {
@@ -3301,7 +3564,8 @@ int main(int argc, char* argv[]) {
 			printf("  --interval <sec>   Periodic statistics interval (default: 3)\n");
 			printf("  --media-path <mode>  Media path: 'linux-decode' (default; DVR->VCU->DRM +\n");
 			printf("                     DEP->ALSA formatter) or 'ultra-direct' (FPGA VSINK\n");
-			printf("                     video + AES3 audio straight to HDMI, no DDR path)\n");
+			printf("                     video + AES3 audio straight to HDMI, no DDR path),\n");
+			printf("                     or 'auto' (Ultra default, AVH flow selects VCU)\n");
 			printf("  --mode <WxH[@fps]> Override DRM display mode for ultra-direct (e.g. 3840x2160@60)\n");
 			printf("  --force-dante-source  Select FPGA DANTE overlay immediately in ultra-direct mode (requires --mode)\n");
 			printf("                     If omitted, mode dynamically tracks Dante TX format via DAU\n");
@@ -3399,16 +3663,22 @@ int main(int argc, char* argv[]) {
 		     "--direct, --dump-reconstructed, --recv-only, --rtp-stats-only, or ultra-direct media mode");
 		return 1;
 	}
-	if (direct_mode && media_path == "ultra-direct") {
-		LOGE("--direct and --media-path ultra-direct are mutually exclusive");
+	if (direct_mode && (media_path == "ultra-direct" || media_path == "auto")) {
+		LOGE("--direct cannot be combined with Ultra/auto media paths");
 		return 1;
 	}
-	if (force_dante_source && (media_path != "ultra-direct" || !fixed_mode_override)) {
-		LOGE("--force-dante-source requires --media-path ultra-direct and --mode WxH@fps");
+	if (media_path == "auto" && (recv_only || rtp_stats_only || !display_enabled ||
+	                            !reconstructed_path.empty())) {
+		LOGE("--media-path auto requires AVH decode/display; --recv-only, --rtp-stats-only, --no-display and --dump-reconstructed are unsupported");
 		return 1;
 	}
-	if (media_path != "linux-decode" && media_path != "ultra-direct") {
-		LOGE("unknown --media-path '%s' (expected 'linux-decode' or 'ultra-direct')",
+	if (force_dante_source && media_path != "auto" &&
+	    (media_path != "ultra-direct" || !fixed_mode_override)) {
+		LOGE("--force-dante-source requires --media-path ultra-direct and --mode WxH@fps (or --media-path auto)");
+		return 1;
+	}
+	if (media_path != "linux-decode" && media_path != "ultra-direct" && media_path != "auto") {
+		LOGE("unknown --media-path '%s' (expected 'linux-decode', 'ultra-direct' or 'auto')",
 		     media_path.c_str());
 		return 1;
 	}
@@ -3430,8 +3700,9 @@ int main(int argc, char* argv[]) {
 		printf(" RTP Port:      %u\n", direct_port);
 		printf(" Audio:         disabled\n");
 		printf(" Decode:        %s\n", decode_enabled ? "enabled" : "disabled (verify RTP->packet only)");
-	} else if (media_path == "ultra-direct") {
-		printf(" SC6F0 RX DANTE ULTRA DIRECT (FPGA passthrough, DRM KMS + DAU service)\n");
+	} else if (media_path == "ultra-direct" || media_path == "auto") {
+		printf(" SC6F0 RX %s (DRM KMS + DAU service)\n",
+		       media_path == "auto" ? "AUTO: Ultra -> AVH on flow" : "DANTE ULTRA DIRECT");
 		printf(" Video: VSINK -> v_mix layer1 -> HDMI | Audio: AES3 -> SI1 -> HDMI\n");
 		if (fixed_mode_override) {
 			printf(" Mode:          %ux%u@%u (Fixed override)\n", fixed_w, fixed_h, fixed_fps);
@@ -3443,7 +3714,10 @@ int main(int argc, char* argv[]) {
 		       g_tpg_pattern == 9 ? "color bars" :
 		       g_tpg_pattern == 0 ? "pass-through" : "custom");
 		printf(" DAU Service:   sink0 registered (D-Bus)\n");
-		printf(" This mode bypasses DVR socket, DEP, VCU, and ALSA PCM.\n");
+		if (media_path == "auto")
+			printf(" AVH flow:      DVR %s; start on Ultra even without Ultra subscription\n", dvr_socket.c_str());
+		else
+			printf(" This mode bypasses DVR socket, DEP, VCU, and ALSA PCM.\n");
 	} else {
 		printf(" SC6F0 Dante RX (%s)\n", rtp_stats_only ? "RTP transport stats only" : "zstreamer pipeline");
 		printf(" DVR Socket:    %s\n", dvr_socket.c_str());
@@ -3460,9 +3734,12 @@ int main(int argc, char* argv[]) {
 	printf(" Press 'q' + Enter (or Ctrl+C) to stop.\n");
 	printf("============================================================\n\n");
 
-	if (media_path == "ultra-direct") {
+	if (media_path == "ultra-direct" || media_path == "auto") {
+		bool auto_mode = media_path == "auto";
 		return run_ultra_direct(stat_interval, fixed_mode_override,
-			force_dante_source, fixed_w, fixed_h, fixed_fps);
+			force_dante_source || auto_mode, fixed_w, fixed_h, fixed_fps,
+			auto_mode, dvr_socket, dep_name, channels, sample_rate,
+			reorder_window, reorder_timeout_ms);
 	}
 
 	if (use_qcap) {
