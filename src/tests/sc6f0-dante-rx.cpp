@@ -25,6 +25,7 @@ extern "C" {
 
 #include <atomic>
 #include <chrono>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -931,9 +932,27 @@ namespace __sc6f0_dante_rx__ {
 	static int start_vdec_sink(zst_dante_rx_t* rx);
 	static inline float mode_vrefresh(const drmModeModeInfo* mode);
 
+	static void log_vdec_lifecycle(zst_dante_rx_t* rx, const char* operation) {
+		struct timespec ts = {};
+		clock_gettime(CLOCK_MONOTONIC, &ts);
+		fprintf(stderr,
+			"[DEC-LIFE %lld.%03ld tid=%zu] %s decoder=%p started=%d handlers=%p event=%p pool=%p sink=%p sink_started=%d\n",
+			(long long)ts.tv_sec, ts.tv_nsec / 1000000,
+			std::hash<std::thread::id>{}(std::this_thread::get_id()), operation,
+			rx ? (void*)rx->vdec : nullptr, rx ? rx->vdec_started : 0,
+			rx ? (void*)rx->vdec_event_handlers : nullptr,
+			rx ? (void*)rx->vdec_event : nullptr,
+			rx ? (void*)rx->vdec_packet_pool : nullptr,
+			rx ? (void*)rx->vdec_sink : nullptr, rx ? rx->vdec_sink_started : 0);
+		fflush(stderr);
+	}
+
 	static void StopVdecAsync(zst_dante_rx_t* rx) {
+		log_vdec_lifecycle(rx, "async-stop-begin");
 		if (rx->vdec_event_handlers) {
+			log_vdec_lifecycle(rx, "event-handlers-stop-begin");
 			qcap2_event_handlers_stop(rx->vdec_event_handlers);
+			log_vdec_lifecycle(rx, "event-handlers-stop-done");
 			qcap2_event_handlers_delete(rx->vdec_event_handlers);
 			rx->vdec_event_handlers = nullptr;
 		}
@@ -948,12 +967,14 @@ namespace __sc6f0_dante_rx__ {
 			rx->vdec_event = nullptr;
 		}
 		rx->vdec_init_done = false;
+		log_vdec_lifecycle(rx, "async-stop-done");
 	}
 
 	/* Create decoder event, output handler, and packet pool before decoder start. */
 	static int SetupVdecAsync(zst_dante_rx_t* rx) {
 		QRESULT qres;
 		uintptr_t event_handle;
+		log_vdec_lifecycle(rx, "async-setup-begin");
 
 		rx->vdec_event = qcap2_event_new();
 		if (!rx->vdec_event) {
@@ -1008,6 +1029,7 @@ namespace __sc6f0_dante_rx__ {
 		}
 
 		rx->vdec_init_done = true;
+		log_vdec_lifecycle(rx, "async-setup-done");
 		return 0;
 	}
 
@@ -1120,6 +1142,7 @@ namespace __sc6f0_dante_rx__ {
 		qcap2_video_decoder_set_event(rx->vdec, rx->vdec_event);
 
 		/* 5. Start decoder */
+		log_vdec_lifecycle(rx, "decoder-start-begin");
 		QRESULT qres = qcap2_video_decoder_start(rx->vdec);
 		if (qres != QCAP_RS_SUCCESSFUL) {
 			LOGE("qcap2_video_decoder_start() failed, qres=%d", (int)qres);
@@ -1129,6 +1152,7 @@ namespace __sc6f0_dante_rx__ {
 		}
 
 		rx->vdec_started = true;
+		log_vdec_lifecycle(rx, "decoder-start-done");
 		LOGI("qcap2 ALLEGRO2 decoder configured: %ux%u @ %.2f fps",
 			rx->dec_width, rx->dec_height, rx->dec_fps);
 		return 0;
@@ -1167,18 +1191,28 @@ namespace __sc6f0_dante_rx__ {
 			rx->vdec_init_thread.join();
 		/* Stop joins output callbacks before taking decoder_lock. */
 		if (rx->vdec_event_handlers) {
+			log_vdec_lifecycle(rx, "event-handlers-stop-begin");
 			qcap2_event_handlers_stop(rx->vdec_event_handlers);
+			log_vdec_lifecycle(rx, "event-handlers-stop-done");
 			qcap2_event_handlers_delete(rx->vdec_event_handlers);
 			rx->vdec_event_handlers = nullptr;
 		}
 		std::lock_guard<std::mutex> decoder_guard(rx->decoder_lock);
+		log_vdec_lifecycle(rx, "decoder-teardown-begin");
 		if (rx->vdec) {
-			if (rx->vdec_started) qcap2_video_decoder_stop(rx->vdec);
+			if (rx->vdec_started) {
+				log_vdec_lifecycle(rx, "decoder-stop-begin");
+				qcap2_video_decoder_stop(rx->vdec);
+				log_vdec_lifecycle(rx, "decoder-stop-done");
+			}
+			log_vdec_lifecycle(rx, "decoder-delete-begin");
 			qcap2_video_decoder_delete(rx->vdec);
+			log_vdec_lifecycle(rx, "decoder-delete-done");
 			rx->vdec = nullptr;
 			rx->vdec_started = false;
 		}
 		StopVdecAsync(rx);
+		log_vdec_lifecycle(rx, "decoder-teardown-done");
 	}
 
 	static void stop_drm_output(zst_dante_rx_t* rx) {
@@ -1658,8 +1692,11 @@ namespace __sc6f0_dante_rx__ {
 			if (rx->decode_enabled) {
 				std::lock_guard<std::mutex> decoder_guard(rx->decoder_lock);
 				rx->decoder_dropped_packets++;
-				if (rx->vdec_started)
+				if (rx->vdec_started) {
+					log_vdec_lifecycle(rx, "discontinuity-notify-begin");
 					qcap2_video_decoder_notify_discontinuity(rx->vdec);
+					log_vdec_lifecycle(rx, "discontinuity-notify-done");
+				}
 			}
 			return;
 		}
@@ -1901,6 +1938,13 @@ namespace __sc6f0_dante_rx__ {
 				double dt_sec = (double)(now_ms - last_stat_time) / 1000.0;
 				last_stat_time = now_ms;
 
+				/* Unbuffered heartbeat: if the worker wedges inside one of
+				 * the live-pipeline getters below, the last tag pinpoints it.
+				 * stderr is unbuffered, so these lines land even when stdout
+				 * block buffering holds back the regular statistics. */
+				fprintf(stderr, "[RX-HB %llu] stats-begin\n",
+				        (unsigned long long)now_ms);
+
 				uint64_t cur_vpkts = rx->video_stats ? rx->video_stats->total_packets.load() : 0;
 				uint64_t cur_vbytes = rx->video_stats ? rx->video_stats->total_bytes.load() : 0;
 				uint64_t cur_keyframes = rx->video_stats ? rx->video_stats->keyframes.load() : 0;
@@ -1933,7 +1977,11 @@ namespace __sc6f0_dante_rx__ {
 
 				uint32_t underflows = rx->rx_dep_src ? get_uint_prop(rx->rx_dep_src, "underflow-count") : 0;
 				uint32_t overruns = rx->rx_dep_src ? get_uint_prop(rx->rx_dep_src, "overrun-count") : 0;
+				fprintf(stderr, "[RX-HB %llu] dep-getter-done\n",
+				        (unsigned long long)now_ms);
 				uint32_t active_flows = zst_dante_video_coordinator_get_flow_count(rx->coordinator);
+				fprintf(stderr, "[RX-HB %llu] flows-getter-done\n",
+				        (unsigned long long)now_ms);
 
 				uint64_t rtp_in = get_uint_prop(rx->coordinator, "rx-in-packets");
 				uint64_t rtp_lost = get_uint_prop(rx->coordinator, "rx-lost-packets");
@@ -1948,6 +1996,10 @@ namespace __sc6f0_dante_rx__ {
 				uint64_t parse_fail = get_uint_prop(rx->coordinator, "rx-parse-fail");
 				uint64_t dep_in = get_uint_prop(rx->coordinator, "rx-dep-in-packets");
 				uint64_t dep_dropped = get_uint_prop(rx->coordinator, "rx-dep-dropped");
+				fprintf(stderr, "[RX-HB %llu] rtp-getter-done\n",
+				        (unsigned long long)now_ms);
+				fprintf(stderr, "[RX-HB %llu] coord-getter-done\n",
+				        (unsigned long long)now_ms);
 				uint64_t udp_in = 0;
 				uint64_t udp_qoverflow = 0;
 				uint64_t udp_qdepth = 0;
@@ -1966,6 +2018,8 @@ namespace __sc6f0_dante_rx__ {
 				uint64_t pool_dropped = rx->packet_pool_dropped_packets.load();
 				uint64_t push_failed = rx->decoder_push_failed_packets.load();
 				uint64_t recovery_skipped = 0;
+				fprintf(stderr, "[RX-HB %llu] decoder-getter-enter\n",
+				        (unsigned long long)now_ms);
 				{
 					std::lock_guard<std::mutex> decoder_guard(rx->decoder_lock);
 					if (rx->vdec)
@@ -1976,6 +2030,8 @@ namespace __sc6f0_dante_rx__ {
 				last_decoded = decoded;
 				double dec_drop_rate = dec_input > 0
 					? 100.0 * (double)dec_dropped / (double)dec_input : 0.0;
+				fprintf(stderr, "[RX-HB %llu] stats-print dec=%llu\n",
+				        (unsigned long long)now_ms, (unsigned long long)decoded);
 				LOGI("[DANTE RX DECODER] input=%lu pushed=%lu dropped=%lu (%.2f%%: transport=%lu, pool=%lu, push=%lu, recovery=%lu) decoded=%lu (%.1f fps)",
 					(unsigned long)dec_input, (unsigned long)dec_pushed,
 					(unsigned long)dec_dropped, dec_drop_rate, (unsigned long)transport_dropped,
@@ -3388,10 +3444,16 @@ namespace __sc6f0_dante_rx__ {
 						std::lock_guard<std::mutex> guard(avh->display_lock);
 						apply_drm_modeset(&ctx, fixed_w, fixed_h, fixed_fps, false);
 						if (avh->vdec_sink) {
-							if (avh->vdec_sink_started) qcap2_video_sink_stop(avh->vdec_sink);
+							log_vdec_lifecycle(avh, "sink-teardown-begin");
+							if (avh->vdec_sink_started) {
+								log_vdec_lifecycle(avh, "sink-stop-begin");
+								qcap2_video_sink_stop(avh->vdec_sink);
+								log_vdec_lifecycle(avh, "sink-stop-done");
+							}
 							qcap2_video_sink_delete(avh->vdec_sink);
 							avh->vdec_sink = nullptr;
 							avh->vdec_sink_started = false;
+							log_vdec_lifecycle(avh, "sink-teardown-done");
 						}
 					}
 					stop_hdmi_audio_sink(avh);
