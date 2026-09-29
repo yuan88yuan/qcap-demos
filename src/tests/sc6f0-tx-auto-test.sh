@@ -40,4 +40,7 @@ export LD_LIBRARY_PATH="$qcap_lib:$zstreamer_lib:/opt/qcap/lib"
 echo "TX release: $(grep '^SC6F0_PETALINUX_RELEASE=' /etc/sc6f0-release-id)"
 echo "TX AVH + Ultra test: $binary"
 echo "Press Ctrl+C to stop; Dante Controller selects the RX subscription."
-exec ip netns exec dante_avh "$binary"
+# Match the production 4 MiB TX send buffer (qcap-app-run.sh): the 4K60 H.264
+# IDR bursts overflow the default 212992-byte SO_SNDBUF and EAGAIN drops land
+# on keyframes. Controlled through --tx-sndbuf, not the environment.
+exec ip netns exec dante_avh "$binary" --tx-sndbuf 4194304

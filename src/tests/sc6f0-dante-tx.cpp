@@ -61,6 +61,7 @@ static std::string g_tx_direct_mirror_rx_ip;
 static uint16_t g_tx_direct_mirror_port = 16491;
 static bool g_tx_use_qcap = false;
 static bool g_tx_direct_option_used = false;
+static uint32_t g_tx_send_buffer_size = 0;
 
 ZZ_MODULE_DECL(__zz_log__);
 
@@ -1800,6 +1801,8 @@ struct App0 {
 			tx->coordinator = zst_dante_video_coordinator_create();
 			if (tx->session)
 				zst_dante_video_coordinator_attach_session(tx->coordinator, tx->session);
+			set_uint(tx->coordinator, ZST_DANTE_VIDEO_COORDINATOR_PROP_TX_SEND_BUFFER_SIZE,
+			         g_tx_send_buffer_size);
 			tx->tx_video_pad = zst_dante_video_coordinator_request_tx_input_pad(tx->coordinator, 0);
 
 			tx->app_video_src_pad = zst_pad_create("app_video_src", ZST_PAD_SRC);
@@ -1816,6 +1819,8 @@ struct App0 {
 				set_uint(tx->mirror_rtp_payloader, "mtu", 1200);
 				set_str(tx->mirror_udp_sink, "destination-address", g_tx_direct_mirror_rx_ip.c_str());
 				set_uint(tx->mirror_udp_sink, "port", g_tx_direct_mirror_port);
+				set_uint(tx->mirror_udp_sink, ZST_DANTE_UDP_SINK_PROP_SEND_BUFFER_SIZE,
+				         g_tx_send_buffer_size);
 				tx->app_video_mirror_src_pad = zst_pad_create("app_video_mirror_src", ZST_PAD_SRC);
 				zst_pad_link(tx->app_video_mirror_src_pad,
 					zst_element_get_pad(tx->mirror_rtp_payloader, "sink"));
@@ -1996,14 +2001,24 @@ int main(int argc, char* argv[]) {
 		} else if (strcmp(argv[i], "--mirror-port") == 0 && i + 1 < argc) {
 			g_tx_direct_option_used = true;
 			g_tx_direct_mirror_port = (uint16_t)strtoul(argv[++i], nullptr, 10);
+		} else if (strcmp(argv[i], "--tx-sndbuf") == 0 && i + 1 < argc) {
+			g_tx_direct_option_used = true;
+			unsigned long sndbuf = strtoul(argv[++i], nullptr, 10);
+			if (sndbuf > ZST_DANTE_VIDEO_COORDINATOR_MAX_TX_SEND_BUFFER_SIZE) {
+				fprintf(stderr, "sc6f0-dante-tx: --tx-sndbuf out of range (0..%u)\n",
+				        ZST_DANTE_VIDEO_COORDINATOR_MAX_TX_SEND_BUFFER_SIZE);
+				return 1;
+			}
+			g_tx_send_buffer_size = (uint32_t)sndbuf;
 		} else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
-			printf("Usage: sc6f0-dante-tx [--use-qcap] [--direct <rx-ip>] [--port <port>] [--direct-mirror <rx-ip>] [--mirror-port <port>] [--dump-stream <file>]\n");
+			printf("Usage: sc6f0-dante-tx [--use-qcap] [--direct <rx-ip>] [--port <port>] [--direct-mirror <rx-ip>] [--mirror-port <port>] [--tx-sndbuf <bytes>] [--dump-stream <file>]\n");
 			printf("  --use-qcap         Send Dante video/audio through QCAP (channel 0); requires Dante DEP/DanteEP\n");
 			printf("  --direct <rx-ip>  Direct RTP mode: unicast H.264 to rx-ip:port,\n");
 			printf("                    bypassing the Dante daemon (audio disabled)\n");
 			printf("  --port <port>     RTP port (default: 16490)\n");
 			printf("  --direct-mirror <rx-ip>  Add direct RTP alongside the Dante AVH flow\n");
 			printf("  --mirror-port <port>     Direct mirror RTP port (default: 16491)\n");
+			printf("  --tx-sndbuf <bytes>    TX socket SO_SNDBUF request for Dante/direct/mirror RTP (default: 0 = system default)\n");
 			printf("  --dump-stream <f> Save the raw encoded Annex-B H.264 AU stream to <file>\n");
 			return 0;
 		} else if (strcmp(argv[i], "--dump-stream") == 0 && i + 1 < argc) {
