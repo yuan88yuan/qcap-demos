@@ -2751,6 +2751,8 @@ namespace __sc6f0_dante_rx__ {
 
 		struct dau_service* dau{nullptr};
 		int dau_fd{-1};
+		bool have_last_audio_info{false};
+		struct audio_info last_audio_info{};
 
 		uint64_t format_changes{0};
 		uint64_t hotplug_events{0};
@@ -3172,10 +3174,27 @@ namespace __sc6f0_dante_rx__ {
 
 	static void dau_set_audio_info(struct dau_service *dau, struct DBusMessage *reply,
 	                               const struct audio_info *info, void *ctxt) {
-		(void)ctxt;
-		if (info) {
-			LOGI("[ULTRA DIRECT][DAU] set_audio_info: %u ch, %u Hz, %u bits, enc=%d",
-			     info->channel_count, info->sample_rate, info->sample_bits, (int)info->encoding);
+		ultra_direct_context_t* ctx = (ultra_direct_context_t*)ctxt;
+		if (ctx && info) {
+			const struct audio_info* previous = &ctx->last_audio_info;
+			bool changed = !ctx->have_last_audio_info ||
+				info->channel_count != previous->channel_count ||
+				info->speaker_map != previous->speaker_map ||
+				info->level_shift_value != previous->level_shift_value ||
+				info->downmix_inhibit != previous->downmix_inhibit ||
+				info->lfe_playback_level != previous->lfe_playback_level ||
+				info->sample_rate != previous->sample_rate ||
+				info->encoding != previous->encoding ||
+				info->sample_bits != previous->sample_bits;
+			if (changed) {
+				ctx->last_audio_info = *info;
+				ctx->have_last_audio_info = true;
+				LOGI("[ULTRA DIRECT][DAU] set_audio_info changed: channels=%u speaker_map=%u level_shift=%u downmix_inhibit=%d lfe_level=%u rate=%u bits=%u encoding=%u",
+				     info->channel_count, (unsigned int)info->speaker_map,
+				     info->level_shift_value, (int)info->downmix_inhibit,
+				     info->lfe_playback_level, info->sample_rate,
+				     info->sample_bits, (unsigned int)info->encoding);
+			}
 		}
 		dau_reply_success(dau, reply);
 	}
