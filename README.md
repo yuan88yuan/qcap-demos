@@ -45,6 +45,12 @@ During the transition, the legacy Make build remains available:
 
 After a successful compilation, generated files (including executables) are placed in `_objs/<your-target-platform>/`.
 
+For the SC6F0 Dante RX/TX applications, use the fresh-clone dependency checklist
+and build sequence in [SC6F0 Dante build guide](wiki/SC6F0_DANTE_BUILD.md). In
+particular, the Audinate DAU Service header and static library live under the
+ignored `3rdparty/` directory and must be provisioned from the licensed source
+package; they are not included in a Git clone.
+
 ### 2. Execution
 
 The executables are located in the corresponding platform's `_objs` subdirectory.

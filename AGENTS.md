@@ -23,6 +23,10 @@
   ```bash
   ./scripts/docker-run.sh <image-tag> ./build.sh <platform> [target]
   ```
+- For clean-clone SC6F0 Dante RX/TX prerequisites, DAU Service provisioning,
+  sibling SDK build order, and exact CMake targets, follow
+  `wiki/SC6F0_DANTE_BUILD.md`. The DAU Service payload is licensed and locally
+  installed under ignored `3rdparty/`; it is not part of this Git repository.
 
 ## Project Structure
 - `src/utils/`: Main sample applications, including `qdemo`.

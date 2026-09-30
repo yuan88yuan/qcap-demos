@@ -3411,6 +3411,12 @@ namespace __sc6f0_dante_rx__ {
 			fcntl(STDIN_FILENO, F_SETFL, stdin_flags | O_NONBLOCK);
 
 		uint64_t last_report_ms = 0;
+		bool have_last_status = false;
+		int last_status_route = 0;
+		uint32_t last_status_width = 0, last_status_height = 0, last_status_refresh = 0;
+		std::string last_status_mode_name;
+		bool last_status_overlay_active = false;
+		uint64_t last_status_format_changes = 0, last_status_hotplug_events = 0;
 		struct pollfd pfds[3];
 
 		while (!g_stop_requested) {
@@ -3565,13 +3571,34 @@ namespace __sc6f0_dante_rx__ {
 			if (now_ms - last_report_ms >= (uint64_t)stat_interval * 1000) {
 				last_report_ms = now_ms;
 				int route = read_hdmi_audio_route();
-				LOGI("[ULTRA DIRECT] status: audio route=%d (%s) | display: %ux%u@%uHz (%s) | overlay=%s | fmt changes=%llu | hotplug=%llu",
-				     route, hdmi_audio_route_name(route),
-				     ctx.current_mode.hdisplay, ctx.current_mode.vdisplay, ctx.current_mode.vrefresh,
-				     ctx.current_mode.name,
-				     ctx.overlay_active ? "active (Dante RX stream visible)" : "inactive (background)",
-				     (unsigned long long)ctx.format_changes,
-				     (unsigned long long)ctx.hotplug_events);
+				std::string mode_name(ctx.current_mode.name);
+				bool changed = !have_last_status ||
+					route != last_status_route ||
+					ctx.current_mode.hdisplay != last_status_width ||
+					ctx.current_mode.vdisplay != last_status_height ||
+					ctx.current_mode.vrefresh != last_status_refresh ||
+					mode_name != last_status_mode_name ||
+					ctx.overlay_active != last_status_overlay_active ||
+					ctx.format_changes != last_status_format_changes ||
+					ctx.hotplug_events != last_status_hotplug_events;
+				if (changed) {
+					have_last_status = true;
+					last_status_route = route;
+					last_status_width = ctx.current_mode.hdisplay;
+					last_status_height = ctx.current_mode.vdisplay;
+					last_status_refresh = ctx.current_mode.vrefresh;
+					last_status_mode_name = mode_name;
+					last_status_overlay_active = ctx.overlay_active;
+					last_status_format_changes = ctx.format_changes;
+					last_status_hotplug_events = ctx.hotplug_events;
+					LOGI("[ULTRA DIRECT] status: audio route=%d (%s) | display: %ux%u@%uHz (%s) | overlay=%s | fmt changes=%llu | hotplug=%llu",
+					     route, hdmi_audio_route_name(route),
+					     ctx.current_mode.hdisplay, ctx.current_mode.vdisplay, ctx.current_mode.vrefresh,
+					     mode_name.c_str(),
+					     ctx.overlay_active ? "active (Dante RX stream visible)" : "inactive (background)",
+					     (unsigned long long)ctx.format_changes,
+					     (unsigned long long)ctx.hotplug_events);
+				}
 			}
 		}
 
