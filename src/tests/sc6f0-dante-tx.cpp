@@ -45,6 +45,7 @@ extern "C" {
 #include "zstreamer/elements/zst_audio_resampler.h"
 #include "zstreamer/elements/zst_rtp_payloader.h"
 #include "zstreamer/elements/zst_dante_udp_sink.h"
+#include "zst_rtsp_server.h"
 }
 
 ZZ_INIT_LOG("sc6f0-dante-tx");
@@ -146,6 +147,9 @@ struct App0 {
 		zst_pad_t* app_video_src_pad = nullptr;
 		zst_pad_t* app_video_mirror_src_pad = nullptr;
 		zst_pad_t* app_audio_src_pad = nullptr;
+		zst_element_t* rtsp_server = nullptr;
+		zst_pad_t* rtsp_video_pad = nullptr;
+		zst_pad_t* rtsp_audio_pad = nullptr;
 		pthread_t bus_th = 0;
 		pthread_t sched_th = 0;
 		std::atomic<bool> running{false};
@@ -177,7 +181,6 @@ struct App0 {
 		free_stack_t _FreeStack_vsrc_;
 
 		int nSnapshot;
-		std::atomic<uint64_t> frames_since_idr{0};
 
 		std::atomic_flag current_video_format_spinlock = ATOMIC_FLAG_INIT;
 		struct video_format current_video_format;
@@ -704,14 +707,12 @@ struct App0 {
 						}
 #endif
 
-#if 0
 						qres = StartAenc(_FreeStack_, nAudioChannels, nAudioBitsPerSample,
 							nAudioSampleFrequency, nAudioEncoderFormat, &pAenc, &pAencEvent);
 						if(qres != QCAP_RS_SUCCESSFUL) {
 							LOGE("%s(%d): StartAenc() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 							break;
 						}
-#endif
 					}
 
 					spinlock_lock(current_audio_info_spinlock);
@@ -730,24 +731,11 @@ struct App0 {
 					mHavePublishedAudioState = true;
 				}
 
-				// next level muxers
-				qcap2_video_decoder_t* pVdec_rtsp = NULL;
-				qcap2_audio_decoder_t* pAdec_rtsp = NULL;
+				// Initialize the zstreamer output pipeline.
+
 				zst_dante_tx_t* pDanteTx = NULL;
 				qcap_dante_tx_t* pQcapDanteTx = NULL;
 				if(nSrcColorSpaceType != QCAP_COLORSPACE_TYPE_UNDEFINED && nVideoWidth > 0 && nVideoHeight > 0) {
-#if 0
-					qcap2_muxer_t* pRTSPMuxer;
-					qres = StartRTSPMuxer(_FreeStack_, nColorSpaceType, nVideoWidth, nVideoHeight,
-						bVideoIsInterleaved, dVideoFrameRate, nVideoEncoderFormat, nVideoBitRate,
-						nAudioChannels, nAudioBitsPerSample, nAudioSampleFrequency, nAudioEncoderFormat,
-						&pRTSPMuxer, &pVdec_rtsp, &pAdec_rtsp);
-					if(qres != QCAP_RS_SUCCESSFUL) {
-						LOGE("%s(%d): StartRTSPMuxer() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-						break;
-					}
-#endif
-
 					if (g_tx_use_qcap) {
 						qres = StartQcapDanteServer(_FreeStack_, nColorSpaceType, nVideoWidth, nVideoHeight,
 							dVideoFrameRate, nVideoBitRate, nAudioChannels, nAudioBitsPerSample, nAudioSampleFrequency,
@@ -796,7 +784,7 @@ struct App0 {
 
 					if(pVencEvent) {
 						qres = AddEventHandler(_FreeStack_, pVencEvent,
-							std::bind(&self_t::OnVenc, this, pVenc, pVdec_rtsp, pDanteTx, pQcapDanteTx));
+							std::bind(&self_t::OnVenc, this, pVenc, pDanteTx, pQcapDanteTx));
 						if(qres != QCAP_RS_SUCCESSFUL) {
 							LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 							break;
@@ -805,7 +793,7 @@ struct App0 {
 
 					if(pAencEvent) {
 						qres = AddEventHandler(_FreeStack_, pAencEvent,
-							std::bind(&self_t::OnAenc, this, pAenc, pAdec_rtsp));
+							std::bind(&self_t::OnAenc, this, pAenc, pDanteTx));
 						if(qres != QCAP_RS_SUCCESSFUL) {
 							LOGE("%s(%d): AddEventHandler() failed, qres=%d", __FUNCTION__, __LINE__, qres);
 							break;
@@ -878,11 +866,6 @@ struct App0 {
 					qcap2_rcbuffer_release);
 
 				if(pVenc) {
-					if (++frames_since_idr >= 60) {
-						frames_since_idr = 0;
-						qcap2_video_encoder_request_idr(pVenc);
-						LOGI("requested encoder IDR after 60 input frames");
-					}
 					qres = qcap2_video_encoder_push(pVenc, pRCBuffer);
 					if(qres != QCAP_RS_SUCCESSFUL) {
 						LOGE("%s(%d): qcap2_video_encoder_push() failed, qres=%d", __FUNCTION__, __LINE__, qres);
@@ -992,8 +975,8 @@ struct App0 {
 			return qres;
 		}
 
-		QRETURN OnVenc(qcap2_video_encoder_t* pVenc, qcap2_video_decoder_t* pVdec_rtsp,
-			zst_dante_tx_t* pDanteTx, qcap_dante_tx_t* pQcapDanteTx) {
+		QRETURN OnVenc(qcap2_video_encoder_t* pVenc, zst_dante_tx_t* pDanteTx,
+			qcap_dante_tx_t* pQcapDanteTx) {
 			QRESULT qres;
 
 			switch(1) { case 1:
@@ -1005,14 +988,6 @@ struct App0 {
 				}
 				std::shared_ptr<qcap2_rcbuffer_t> pRCBuffer_(pRCBuffer,
 					qcap2_rcbuffer_release);
-
-				if(pVdec_rtsp) {
-					qres = qcap2_video_decoder_push(pVdec_rtsp, pRCBuffer);
-					if(qres != QCAP_RS_SUCCESSFUL) {
-						LOGE("%s(%d): qcap2_video_decoder_push() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-						break;
-					}
-				}
 
 				if (pQcapDanteTx && pQcapDanteTx->sender) {
 					BYTE* qcap_buffer = nullptr;
@@ -1085,9 +1060,6 @@ struct App0 {
 							nStreamBufferLen = (int)keyframe_with_config.size();
 							LOGI("prepended cached SPS/PPS to H.264 keyframe");
 						}
-						if (has_idr)
-							LOGI("encoded H.264 IDR received (keyframe=%d, SPS/PPS=%s)",
-								(int)bIsKeyFrame, has_sps && has_pps ? "inline" : "cached");
 						if (g_tx_dump) {
 							if (fwrite(pStreamBuffer, 1, (size_t)nStreamBufferLen, g_tx_dump) != (size_t)nStreamBufferLen ||
 							    fflush(g_tx_dump) != 0) {
@@ -1111,12 +1083,14 @@ struct App0 {
 									zbuf->flags |= ZST_BUFFER_FLAG_KEYFRAME;
 								}
 								zst_pad_push(pDanteTx->app_video_src_pad, zbuf);
+								if (pDanteTx->rtsp_video_pad)
+									zst_pad_push(pDanteTx->rtsp_video_pad, zbuf);
 								if (pDanteTx->app_video_mirror_src_pad)
 									zst_pad_push(pDanteTx->app_video_mirror_src_pad, zbuf);
 								pDanteTx->tx_video_frames++;
 								pDanteTx->tx_video_bytes += (size_t)nStreamBufferLen;
 							}
-							zst_buffer_unref(zbuf);
+								zst_buffer_unref(zbuf);
 						}
 					}
 				}
@@ -1334,7 +1308,7 @@ struct App0 {
 			return QCAP_RT_OK;
 		}
 
-		QRETURN OnAenc(qcap2_audio_encoder_t* pAenc, qcap2_audio_decoder_t* pAdec_rtsp) {
+		QRETURN OnAenc(qcap2_audio_encoder_t* pAenc, zst_dante_tx_t* pDanteTx) {
 			QRESULT qres;
 
 			switch(1) { case 1:
@@ -1347,156 +1321,48 @@ struct App0 {
 				std::shared_ptr<qcap2_rcbuffer_t> pRCBuffer_(pRCBuffer,
 					qcap2_rcbuffer_release);
 
-				if(pAdec_rtsp) {
-					qres = qcap2_audio_decoder_push(pAdec_rtsp, pRCBuffer);
-					if(qres != QCAP_RS_SUCCESSFUL) {
-						LOGE("%s(%d): qcap2_audio_decoder_push() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-						break;
+				if (pDanteTx && pDanteTx->rtsp_audio_pad) {
+					qcap2_av_packet_t* packet = (qcap2_av_packet_t*)qcap2_rcbuffer_lock_data(pRCBuffer);
+					uint8_t* data = nullptr;
+					int size = 0;
+					double sample_time = 0.0;
+					if (packet) {
+						qcap2_av_packet_get_buffer(packet, &data, &size);
+						qcap2_av_packet_get_sample_time(packet, &sample_time);
+						qcap2_rcbuffer_unlock_data(pRCBuffer);
+					}
+					/* Strip ADTS; RFC 3640 carries raw AAC access units. */
+					if (data && size > 7 && data[0] == 0xff && (data[1] & 0xf6) == 0xf0) {
+						int adts_header_size = (data[1] & 1) ? 7 : 9;
+						if (size > adts_header_size) {
+							data += adts_header_size;
+							size -= adts_header_size;
+						} else {
+							size = 0;
+						}
+					}
+					if (data && size > 0) {
+						zst_buffer_t* zbuf = zst_buffer_create(ZST_BUFFER_AUDIO_PACKET);
+						if (zbuf) {
+							void* copy = malloc((size_t)size);
+							if (copy) {
+								memcpy(copy, data, (size_t)size);
+								zbuf->memory.type = ZST_MEMORY_CPU;
+								zbuf->memory.data = copy;
+								zbuf->memory.size = (size_t)size;
+								zbuf->memory.priv = copy;
+								zbuf->memory.release = free;
+								zbuf->pts = (zst_time_t)(sample_time * 1000000000.0);
+								zbuf->dts = zbuf->pts;
+								zst_pad_push(pDanteTx->rtsp_audio_pad, zbuf);
+							}
+							zst_buffer_unref(zbuf);
+						}
 					}
 				}
 			}
 
 			return QCAP_RT_OK;
-		}
-
-		QRESULT StartRTSPMuxer(free_stack_t& _FreeStack_, ULONG nColorSpaceType, ULONG nVideoWidth, ULONG nVideoHeight,
-			BOOL bVideoIsInterleaved, double dVideoFrameRate, ULONG nEncoderFormat, ULONG nVideoBitRate,
-			ULONG nAudioChannels, ULONG nAudioBitsPerSample, ULONG nAudioSampleFrequency, ULONG nAudioEncoderFormat,
-			qcap2_muxer_t** ppMuxer, qcap2_video_decoder_t** ppVdec, qcap2_audio_decoder_t** ppAdec) {
-			QRESULT qres = QCAP_RS_SUCCESSFUL;
-
-			switch(1) { case 1:
-				qcap2_muxer_t* pMuxer = qcap2_muxer_new();
-				_FreeStack_ += [pMuxer]() {
-					qcap2_muxer_delete(pMuxer);
-				};
-
-				qcap2_muxer_set_type(pMuxer, QCAP2_MUXER_TYPE_RTSP);
-				qcap2_muxer_set_endpoint(pMuxer, "0.0.0.0", 554);
-				qcap2_muxer_set_max_threads(pMuxer, 4);
-				qcap2_muxer_set_realm(pMuxer, "YUAN");
-				qcap2_muxer_add_user(pMuxer, "root", "root");
-				qcap2_muxer_add_user(pMuxer, "guest", "guest");
-
-				{
-					std::shared_ptr<qcap2_program_info_t> pProgInfo(
-						qcap2_program_info_new(), qcap2_program_info_delete);
-
-					qcap2_program_info_set_metadata(pProgInfo.get(), "cname", "YUAN");
-					qcap2_program_info_set_metadata(pProgInfo.get(), "resource_name", "session0");
-					qcap2_program_info_set_video_decoder_count(pProgInfo.get(), 1);
-					qcap2_program_info_set_video_decoder_index(pProgInfo.get(), 0, 0);
-					qcap2_program_info_set_audio_decoder_count(pProgInfo.get(), 1);
-					qcap2_program_info_set_audio_decoder_index(pProgInfo.get(), 0, 0);
-					qcap2_muxer_add_program_info(pMuxer, pProgInfo.get());
-				}
-
-				qres = qcap2_muxer_start(pMuxer);
-				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): qcap2_muxer_start() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-					break;
-				}
-				_FreeStack_ += [pMuxer]() {
-					QRESULT qres;
-
-					qres = qcap2_muxer_stop(pMuxer);
-					if(qres != QCAP_RS_SUCCESSFUL) {
-						LOGE("%s(%d): qcap2_muxer_stop() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-					}
-				};
-
-				qcap2_video_decoder_t* pVdec = qcap2_muxer_get_video_decoder(pMuxer, 0);
-				{
-					std::shared_ptr<qcap2_video_encoder_property_t> pVencProp(
-						qcap2_video_encoder_property_new(), qcap2_video_encoder_property_delete);
-
-					UINT nGpuNum = 0;
-					ULONG nEncoderType = QCAP_ENCODER_TYPE_SOFTWARE;
-					// ULONG nEncoderFormat = QCAP_ENCODER_FORMAT_H264;
-					// ULONG nColorSpaceType = XX;
-					ULONG nWidth = nVideoWidth;
-					ULONG nHeight = nVideoHeight;
-					double dFrameRate = dVideoFrameRate;
-					ULONG nRecordProfile = QCAP_RECORD_PROFILE_HIGH;
-					ULONG nRecordLevel = QCAP_RECORD_LEVEL_51;
-					ULONG nRecordEntropy = QCAP_RECORD_ENTROPY_CABAC;
-					ULONG nRecordComplexity = QCAP_RECORD_COMPLEXITY_0;
-					ULONG nRecordMode = QCAP_RECORD_MODE_CBR;
-					ULONG nQuality = 8000;
-					ULONG nBitRate = nVideoBitRate;
-					ULONG nGOP = dVideoFrameRate > 1.0 ? (ULONG)dVideoFrameRate : (ULONG)1;
-					ULONG nBFrames = 0;
-					BOOL bIsInterleaved = FALSE;
-					ULONG nSlices = 0;
-					ULONG nLayers = 0;
-					ULONG nSceneCut = 0;
-					BOOL bMultiThread = FALSE;
-					BOOL bMBBRC = FALSE;
-					BOOL bExtBRC = FALSE;
-					ULONG nMinQP = 0;
-					ULONG nMaxQP = 0;
-					ULONG nVBVMaxRate = 0;
-					ULONG nVBVBufSize = 0;
-					ULONG nAspectRatioX = 0;
-					ULONG nAspectRatioY = 0;
-
-					qcap2_video_encoder_property_set_property1(pVencProp.get(), nGpuNum, nEncoderType, nEncoderFormat, nColorSpaceType, nWidth, nHeight, dFrameRate, nRecordProfile, nRecordLevel, nRecordEntropy, nRecordComplexity, nRecordMode, nQuality, nBitRate, nGOP, nBFrames, bIsInterleaved, nSlices, nLayers, nSceneCut, bMultiThread, bMBBRC, bExtBRC, nMinQP, nMaxQP, nVBVMaxRate , nVBVBufSize, nAspectRatioX, nAspectRatioY);
-					qcap2_video_decoder_set_video_property(pVdec, pVencProp.get());
-				}
-				// qcap2_video_decoder_set_payload_type(pVdec, 98);
-
-				qcap2_audio_decoder_t* pAdec = qcap2_muxer_get_audio_decoder(pMuxer, 0);
-				{
-					std::shared_ptr<qcap2_audio_encoder_property_t> pAencProp(qcap2_audio_encoder_property_new(),
-						qcap2_audio_encoder_property_delete);
-
-					qcap2_audio_encoder_property_set_property(pAencProp.get(),
-						QCAP_ENCODER_TYPE_SOFTWARE, nAudioEncoderFormat,
-						nAudioChannels, nAudioBitsPerSample, nAudioSampleFrequency);
-					qcap2_audio_decoder_set_audio_property(pAdec, pAencProp.get());
-				}
-				// qcap2_audio_decoder_set_payload_type(pAdec, 96);
-
-				qres = qcap2_muxer_play(pMuxer);
-				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): qcap2_muxer_play() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-					break;
-				}
-
-				qres = qcap2_video_decoder_start(pVdec);
-				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): qcap2_video_decoder_start() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-					break;
-				}
-				_FreeStack_ += [pVdec]() {
-					QRESULT qres;
-
-					qres = qcap2_video_decoder_stop(pVdec);
-					if(qres != QCAP_RS_SUCCESSFUL) {
-						LOGE("%s(%d): qcap2_video_decoder_stop() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-					}
-				};
-
-				qres = qcap2_audio_decoder_start(pAdec);
-				if(qres != QCAP_RS_SUCCESSFUL) {
-					LOGE("%s(%d): qcap2_audio_decoder_start() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-					break;
-				}
-				_FreeStack_ += [pAdec]() {
-					QRESULT qres;
-
-					qres = qcap2_audio_decoder_stop(pAdec);
-					if(qres != QCAP_RS_SUCCESSFUL) {
-						LOGE("%s(%d): qcap2_audio_decoder_stop() failed, qres=%d", __FUNCTION__, __LINE__, qres);
-					}
-				};
-
-				*ppMuxer = pMuxer;
-				*ppVdec = pVdec;
-				*ppAdec = pAdec;
-			}
-
-			return qres;
 		}
 
 		static void set_str(zst_element_t* el, const char* p, const char* v) {
@@ -1807,6 +1673,25 @@ struct App0 {
 
 			tx->app_video_src_pad = zst_pad_create("app_video_src", ZST_PAD_SRC);
 			zst_pad_link(tx->app_video_src_pad, tx->tx_video_pad);
+			tx->rtsp_server = zst_rtsp_server_create();
+			if (!tx->rtsp_server ||
+				zst_rtsp_server_add_session(tx->rtsp_server, "session0") != ZST_OK) {
+				LOGE("zstreamer RTSP server/session creation failed");
+				return (QRESULT)-1;
+			}
+			set_uint(tx->rtsp_server, "listen-port", 8554);
+			set_uint(tx->rtsp_server, "send-buffer-size", g_tx_send_buffer_size);
+			zst_rtsp_server_session_set_audio_format(tx->rtsp_server, "session0",
+				nAudioSampleFrequency ? (int)nAudioSampleFrequency : 48000,
+				nAudioChannels ? (int)nAudioChannels : 2);
+			LOGI("zstreamer RTSP AV output: rtsp://0.0.0.0:8554/session0 (send-buffer-size=%u)",
+				(unsigned)g_tx_send_buffer_size);
+			tx->rtsp_video_pad = zst_pad_create("app_rtsp_video", ZST_PAD_SRC);
+			tx->rtsp_audio_pad = zst_pad_create("app_rtsp_audio", ZST_PAD_SRC);
+			zst_pad_link(tx->rtsp_video_pad,
+				zst_element_get_pad(tx->rtsp_server, "session0_video"));
+			zst_pad_link(tx->rtsp_audio_pad,
+				zst_element_get_pad(tx->rtsp_server, "session0_audio"));
 			if (!direct_mode && !g_tx_direct_mirror_rx_ip.empty()) {
 				tx->mirror_rtp_payloader = zst_rtp_payloader_create();
 				tx->mirror_udp_sink = zst_dante_udp_sink_create();
@@ -1814,6 +1699,7 @@ struct App0 {
 					LOGE("direct mirror RTP elements creation failed");
 					return (QRESULT)-1;
 				}
+
 				set_str(tx->mirror_rtp_payloader, "codec", "h264");
 				set_uint(tx->mirror_rtp_payloader, "payload-type", 96);
 				set_uint(tx->mirror_rtp_payloader, "mtu", 1200);
@@ -1855,6 +1741,7 @@ struct App0 {
 
 			/* Add elements to pipeline */
 			zst_pipeline_add(tx->pipe, tx->coordinator);
+			zst_pipeline_add(tx->pipe, tx->rtsp_server);
 			if (tx->mirror_rtp_payloader) {
 				zst_pipeline_add(tx->pipe, tx->mirror_rtp_payloader);
 				zst_pipeline_add(tx->pipe, tx->mirror_udp_sink);
@@ -1927,6 +1814,16 @@ struct App0 {
 					zst_pad_unlink(tx->app_audio_src_pad);
 					zst_pad_destroy(tx->app_audio_src_pad);
 					tx->app_audio_src_pad = nullptr;
+				}
+				if (tx->rtsp_video_pad) {
+					zst_pad_unlink(tx->rtsp_video_pad);
+					zst_pad_destroy(tx->rtsp_video_pad);
+					tx->rtsp_video_pad = nullptr;
+				}
+				if (tx->rtsp_audio_pad) {
+					zst_pad_unlink(tx->rtsp_audio_pad);
+					zst_pad_destroy(tx->rtsp_audio_pad);
+					tx->rtsp_audio_pad = nullptr;
 				}
 				if (tx->session) {
 					zst_element_set_state(tx->session, ZST_STATE_NULL);
@@ -2012,6 +1909,7 @@ int main(int argc, char* argv[]) {
 			g_tx_send_buffer_size = (uint32_t)sndbuf;
 		} else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
 			printf("Usage: sc6f0-dante-tx [--use-qcap] [--direct <rx-ip>] [--port <port>] [--direct-mirror <rx-ip>] [--mirror-port <port>] [--tx-sndbuf <bytes>] [--dump-stream <file>]\n");
+			printf("  zstreamer RTSP AV: rtsp://<tx-ip>:8554/session0 (H.264 + AAC)\n");
 			printf("  --use-qcap         Send Dante video/audio through QCAP (channel 0); requires Dante DEP/DanteEP\n");
 			printf("  --direct <rx-ip>  Direct RTP mode: unicast H.264 to rx-ip:port,\n");
 			printf("                    bypassing the Dante daemon (audio disabled)\n");
