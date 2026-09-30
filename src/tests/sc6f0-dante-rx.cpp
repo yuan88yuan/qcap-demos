@@ -5,6 +5,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <signal.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -27,10 +28,13 @@ extern "C" {
 #include <chrono>
 #include <functional>
 #include <mutex>
+#include <new>
 #include <string>
 #include <thread>
 #include <vector>
 #include <alsa/asoundlib.h>
+#include <libavutil/pixfmt.h>
+#include <libavutil/samplefmt.h>
 
 #include "ZzLog.h"
 #include "ZzModules.h"
@@ -51,6 +55,11 @@ extern "C" {
 #include "zstreamer/elements/zst_dante_session.h"
 #include "zstreamer/elements/zst_dante_video_coordinator.h"
 #include "zstreamer/elements/zst_dante_dep_audio.h"
+#include "zstreamer/elements/zst_h26x_parser.h"
+#include "zstreamer/elements/zst_rtsp_source.h"
+#include "zstreamer/elements/zst_h264_decoder.h"
+#include "zstreamer/elements/zst_aac_parser.h"
+#include "zstreamer/elements/zst_aac_decoder.h"
 
 // qcap2 headers (ALLEGRO2 hardware decode)
 #include <qcap2.h>
@@ -112,234 +121,6 @@ namespace __sc6f0_dante_rx__ {
 		return 0;
 	}
 
-	/* ── H.264 bitstream utilities ────────────────────────────────────── */
-
-	/* Minimal bitstream reader with RBSP emulation prevention (0x000003 → 0x0000) */
-	struct h264_bs_t {
-		const uint8_t* rbsp;
-		size_t size;
-		size_t bits;
-	};
-
-	static int bs_read_bit(h264_bs_t& bs) {
-		if (bs.bits >= bs.size * 8) return 0;
-		size_t byte_idx = bs.bits / 8;
-		int bit_offset = 7 - (bs.bits % 8);
-		bs.bits++;
-		return (bs.rbsp[byte_idx] >> bit_offset) & 1;
-	}
-
-	static int bs_read_bits(h264_bs_t& bs, int n) {
-		int val = 0;
-		for (int i = 0; i < n; i++)
-			val = (val << 1) | bs_read_bit(bs);
-		return val;
-	}
-
-	static int bs_read_ue(h264_bs_t& bs) {
-		int leading_zeros = 0;
-		while (bs_read_bit(bs) == 0 && leading_zeros < 32)
-			leading_zeros++;
-		if (leading_zeros == 0) return 0;
-		return (1 << leading_zeros) - 1 + bs_read_bits(bs, leading_zeros);
-	}
-
-	static int bs_read_se(h264_bs_t& bs) {
-		int val = bs_read_ue(bs);
-		return (val & 1) ? (val + 1) / 2 : -(val / 2);
-	}
-
-	/* Parse SPS NAL unit (after NAL header byte) for width, height, fps.
-	 * data must point to the first byte AFTER the NAL type byte (i.e. after 0x67).
-	 * Returns 0 on success. */
-	static int h264_parse_sps(const uint8_t* data, size_t size,
-	                          uint32_t* out_w, uint32_t* out_h, double* out_fps)
-	{
-		if (!data || size < 4) return -1;
-		h264_bs_t bs = { data, size, 0 };
-
-		int profile_idc = bs_read_bits(bs, 8);
-		bs_read_bits(bs, 8); /* constraint_set0..5 + reserved_zero_2bits */
-		bs_read_bits(bs, 8); /* level_idc */
-		bs_read_ue(bs);      /* seq_parameter_set_id */
-
-		int chroma_format_idc = 1; /* default: 4:2:0 */
-
-		/* High profile and above have extra fields */
-		if (profile_idc == 100 || profile_idc == 110 || profile_idc == 122 ||
-		    profile_idc == 244 || profile_idc ==  44 || profile_idc ==  83 ||
-		    profile_idc ==  86 || profile_idc == 118 || profile_idc == 128 ||
-		    profile_idc == 138 || profile_idc == 139 || profile_idc == 134) {
-			chroma_format_idc = bs_read_ue(bs);
-			if (chroma_format_idc == 3)
-				bs_read_bit(bs); /* separate_colour_plane_flag */
-			bs_read_ue(bs); /* bit_depth_luma_minus8 */
-			bs_read_ue(bs); /* bit_depth_chroma_minus8 */
-			bs_read_bit(bs); /* qpprime_y_zero_transform_bypass_flag */
-			int seq_scaling_matrix_present = bs_read_bit(bs);
-			if (seq_scaling_matrix_present) {
-				int cnt = (chroma_format_idc != 3) ? 8 : 12;
-				for (int i = 0; i < cnt; i++) {
-					if (bs_read_bit(bs)) { /* seq_scaling_list_present_flag[i] */
-/* skip scaling list — not needed for resolution */
-						int last = 8, next = 8;
-						for (int j = 0; j < (i < 6 ? 16 : 64); j++) {
-							next = last + bs_read_se(bs) + 256;
-							last = next;
-						}
-					}
-				}
-			}
-		}
-
-		bs_read_ue(bs); /* log2_max_frame_num_minus4 */
-		int pic_order_cnt_type = bs_read_ue(bs);
-		if (pic_order_cnt_type == 0) {
-			bs_read_ue(bs); /* log2_max_pic_order_cnt_lsb_minus4 */
-		} else if (pic_order_cnt_type == 1) {
-			bs_read_bit(bs); /* delta_pic_order_always_zero_flag */
-			bs_read_se(bs);  /* offset_for_non_ref_pic */
-			bs_read_se(bs);  /* offset_for_top_to_bottom_field */
-			int num_ref_frames = bs_read_ue(bs);
-			for (int i = 0; i < num_ref_frames; i++)
-				bs_read_se(bs); /* offset_for_ref_frame */
-		}
-
-		int max_num_ref_frames = bs_read_ue(bs);
-		(void)max_num_ref_frames;
-		bs_read_bit(bs); /* gaps_in_frame_num_value_allowed_flag */
-
-		int pic_width_in_mbs_minus1 = bs_read_ue(bs);
-		int pic_height_in_map_units_minus1 = bs_read_ue(bs);
-		int frame_mbs_only_flag = bs_read_bit(bs);
-		if (!frame_mbs_only_flag)
-			bs_read_bit(bs); /* mb_adaptive_frame_field_flag */
-
-		int direct_8x8_inference_flag = bs_read_bit(bs);
-		(void)direct_8x8_inference_flag;
-
-		int frame_cropping_flag = bs_read_bit(bs);
-		int crop_left = 0, crop_right = 0, crop_top = 0, crop_bottom = 0;
-		if (frame_cropping_flag) {
-			crop_left   = bs_read_ue(bs);
-			crop_right  = bs_read_ue(bs);
-			crop_top    = bs_read_ue(bs);
-			crop_bottom = bs_read_ue(bs);
-		}
-
-		/* Compute resolution */
-		uint32_t w = (uint32_t)(pic_width_in_mbs_minus1 + 1) * 16;
-		uint32_t h = (uint32_t)(2 - frame_mbs_only_flag) * (pic_height_in_map_units_minus1 + 1) * 16;
-
-		/* Crop (YUV420: crop units are 2 pixels) */
-		int crop_unit_x = 1, crop_unit_y = 2 - frame_mbs_only_flag;
-		if (chroma_format_idc == 1) { crop_unit_x = 2; crop_unit_y = 2 * (2 - frame_mbs_only_flag); }
-		else if (chroma_format_idc == 2) { crop_unit_x = 2; crop_unit_y = 2 - frame_mbs_only_flag; }
-		if (frame_cropping_flag) {
-			w -= (crop_left + crop_right) * crop_unit_x;
-			h -= (crop_top + crop_bottom) * crop_unit_y;
-		}
-
-		/* VUI timing info (optional) */
-		double fps = 0.0;
-		int vui_parameters_present = bs_read_bit(bs);
-		if (vui_parameters_present) {
-			int aspect_ratio_info_present = bs_read_bit(bs);
-			if (aspect_ratio_info_present) {
-				int aspect_ratio_idc = bs_read_bits(bs, 8);
-				if (aspect_ratio_idc == 255) { /* Extended_SAR */
-					bs_read_bits(bs, 16); /* sar_width */
-					bs_read_bits(bs, 16); /* sar_height */
-				}
-			}
-			int overscan_info_present = bs_read_bit(bs);
-			if (overscan_info_present) bs_read_bits(bs, 1);
-			int video_signal_type_present = bs_read_bit(bs);
-			if (video_signal_type_present) {
-				bs_read_bits(bs, 3); /* video_format */
-				bs_read_bit(bs);     /* video_full_range_flag */
-				int colour_desc_present = bs_read_bit(bs);
-				if (colour_desc_present) bs_read_bits(bs, 8 + 8 + 8);
-			}
-			int chroma_loc_info_present = bs_read_bit(bs);
-			if (chroma_loc_info_present) {
-				bs_read_ue(bs); /* chroma_sample_loc_type_top_field */
-				bs_read_ue(bs); /* chroma_sample_loc_type_bottom_field */
-			}
-			int timing_info_present = bs_read_bit(bs);
-			if (timing_info_present) {
-				uint32_t num_units_in_tick = bs_read_bits(bs, 32);
-				uint32_t time_scale = bs_read_bits(bs, 32);
-				if (num_units_in_tick > 0)
-					fps = (double)time_scale / (2.0 * (double)num_units_in_tick);
-			}
-		}
-
-		if (out_w) *out_w = w;
-		if (out_h) *out_h = h;
-		if (out_fps) *out_fps = fps;
-		return 0;
-	}
-
-	/* Scan Annex-B bitstream for SPS (type 7) and PPS (type 8) NAL units.
-	 * Copies raw NAL bytes (including start code) into output buffers.
-	 * Returns 0 if at least SPS was found. */
-	static int h264_extract_sps_pps(const uint8_t* data, size_t size,
-	                                uint8_t* sps_out, int* sps_size,
-	                                uint8_t* pps_out, int* pps_size)
-	{
-		if (!data || size < 4) return -1;
-		int found_sps = 0;
-		const int sps_capacity = sps_size ? *sps_size : 0;
-		const int pps_capacity = pps_size ? *pps_size : 0;
-
-		if (sps_size) *sps_size = 0;
-		if (pps_size) *pps_size = 0;
-
-		size_t i = 0;
-		while (i + 3 < size) {
-			/* Find start code: 0x000001 or 0x00000001 */
-			size_t sc_len = 0;
-			if (data[i] == 0 && data[i + 1] == 0) {
-				if (i + 2 < size && data[i + 2] == 1)
-					sc_len = 3;
-				else if (i + 3 < size && data[i + 2] == 0 && data[i + 3] == 1)
-					sc_len = 4;
-			}
-			if (sc_len == 0) { i++; continue; }
-
-			size_t nal_start = i;
-			size_t data_start = i + sc_len;
-			if (data_start >= size) break;
-
-			uint8_t nal_type = data[data_start] & 0x1F;
-
-			/* Find end of this NAL (next start code or end of buffer) */
-			size_t nal_end = size;
-			for (size_t j = data_start + 1; j + 2 < size; j++) {
-				if (data[j] == 0 && data[j + 1] == 0 &&
-				    (data[j + 2] == 1 || (j + 3 < size && data[j + 2] == 0 && data[j + 3] == 1))) {
-					nal_end = j;
-					break;
-				}
-			}
-
-			int nal_len = (int)(nal_end - nal_start);
-			if (nal_len > 0) {
-				if (nal_type == 7 && sps_out && sps_size && nal_len <= sps_capacity) {
-					memcpy(sps_out, data + nal_start, (size_t)nal_len);
-					*sps_size = nal_len;
-					found_sps = 1;
-				} else if (nal_type == 8 && pps_out && pps_size && nal_len <= pps_capacity) {
-					memcpy(pps_out, data + nal_start, (size_t)nal_len);
-					*pps_size = nal_len;
-				}
-			}
-
-			i = nal_end;
-		}
-		return found_sps ? 0 : -1;
-	}
 	/* ── Video statistics & custom sink ──────────────────────────────── */
 	struct zst_dante_rx_t; /* forward declaration */
 	struct rx_video_stats_t {
@@ -711,6 +492,8 @@ namespace __sc6f0_dante_rx__ {
 		zst_element_t* coordinator = nullptr;
 		zst_element_t* rx_dep_src = nullptr;
 		zst_element_t* rx_video_sink = nullptr;
+		zst_element_t* h264_parser = nullptr;
+		zst_element_t* h264_caps_sink = nullptr;
 		zst_element_t* rx_audio_sink = nullptr;
 
 		zst_pad_t* rx_video_pad = nullptr;
@@ -760,6 +543,7 @@ namespace __sc6f0_dante_rx__ {
 		std::atomic<bool>            decoder_initializing{false};
 		std::atomic<bool>            decoder_wait_for_idr{false};
 		std::mutex                   decoder_lock;
+		std::mutex                   h264_parser_lock;
 		std::mutex                   display_lock;
 		std::thread                  vdec_init_thread;
 		std::mutex                   audio_lock;
@@ -793,6 +577,147 @@ namespace __sc6f0_dante_rx__ {
 		std::atomic<bool> running{false};
 		uint64_t start_time_ms{0};
 	};
+
+	struct rx_h264_caps_sink_priv_t {
+		zst_dante_rx_t* rx;
+	};
+
+	static zst_result_t rx_h264_caps_sink_event(zst_element_t* el, zst_pad_t*,
+	                                            zst_pad_event_t* event) {
+		if (!el || !el->priv || !event || event->type != ZST_PAD_EVENT_CAPS ||
+		    !event->as.caps.caps || !event->as.caps.caps->structs)
+			return ZST_OK;
+		auto* priv = (rx_h264_caps_sink_priv_t*)el->priv;
+		zst_dante_rx_t* rx = priv->rx;
+		const zst_caps_t* caps = event->as.caps.caps;
+		if (!rx || strcmp(caps->structs->media_type, "video/x-h264") != 0)
+			return ZST_OK;
+
+		const void* avcc = nullptr;
+		size_t avcc_size = 0;
+		uint32_t width = 0, height = 0;
+		double fps = 0.0;
+		if (zst_caps_get_buffer(caps, ZST_H26X_PARSER_CAPS_AVCC,
+		                        &avcc, &avcc_size) != ZST_OK || !avcc ||
+		    avcc_size < 11 || avcc_size > INT_MAX ||
+		    zst_caps_get_uint(caps, "width", &width) != ZST_OK ||
+		    zst_caps_get_uint(caps, "height", &height) != ZST_OK || !width || !height)
+			return ZST_OK;
+		if (zst_caps_get_double(caps, ZST_H26X_PARSER_CAPS_FRAMERATE, &fps) != ZST_OK ||
+		    fps < 1.0 || fps > 240.0)
+			fps = 60.0;
+		uint8_t* copy = (uint8_t*)malloc(avcc_size);
+		if (!copy) return ZST_ERROR;
+		memcpy(copy, avcc, avcc_size);
+
+		std::lock_guard<std::mutex> lock(rx->decoder_lock);
+		if (rx->vdec_started || rx->decoder_initializing.load(std::memory_order_acquire)) {
+			const bool unchanged = rx->extra_data && rx->extra_data_size == (int)avcc_size &&
+			                       memcmp(rx->extra_data, avcc, avcc_size) == 0;
+			free(copy);
+			if (!unchanged)
+				LOGW("H.264 parameter sets changed after ALLEGRO2 initialization; keeping active avcC");
+			return ZST_OK;
+		}
+
+		free(rx->extra_data);
+		rx->extra_data = copy;
+		rx->extra_data_size = (int)avcc_size;
+		rx->dec_width = width;
+		rx->dec_height = height;
+		rx->dec_fps = fps;
+		LOGI("h26xparse supplied ALLEGRO2 format: %ux%u @ %.2f fps, avcC=%zu bytes",
+		     width, height, fps, avcc_size);
+		return ZST_OK;
+	}
+
+	static zst_result_t rx_h264_caps_sink_push(zst_pad_t*, zst_buffer_t*) {
+		/* This side branch only observes parser caps. Decoder input remains the
+		 * original Annex-B AU on the independent Dante RX path. */
+		return ZST_OK;
+	}
+
+	static zst_element_ops_t g_rx_h264_caps_sink_ops = {
+		.name = "dante_rx_h264_caps_sink",
+		.event = rx_h264_caps_sink_event
+	};
+
+	static int rx_h264_parser_create(zst_dante_rx_t* rx) {
+		if (!rx) return -1;
+		zst_pad_t* sink_pad = nullptr;
+		rx->h264_parser = zst_h26x_parser_create();
+		rx_h264_caps_sink_priv_t* priv =
+			(rx_h264_caps_sink_priv_t*)calloc(1, sizeof(rx_h264_caps_sink_priv_t));
+		if (!rx->h264_parser || !priv) {
+			free(priv);
+			goto fail;
+		}
+		priv->rx = rx;
+		rx->h264_caps_sink = zst_element_create(&g_rx_h264_caps_sink_ops, priv);
+		if (!rx->h264_caps_sink) {
+			free(priv);
+			goto fail;
+		}
+
+		sink_pad = zst_pad_create("sink", ZST_PAD_SINK);
+		if (!sink_pad) goto fail;
+		sink_pad->push = rx_h264_caps_sink_push;
+		if (zst_element_add_pad(rx->h264_caps_sink, sink_pad) != ZST_OK) {
+			zst_pad_destroy(sink_pad);
+			goto fail;
+		}
+		if (zst_element_set_property_string(rx->h264_parser, "codec", "h264") != ZST_OK ||
+		    zst_element_set_property_string(rx->h264_parser, "input-stream-format", "byte-stream") != ZST_OK ||
+		    zst_pad_link(zst_element_get_pad(rx->h264_parser, "src"),
+		                 zst_element_get_pad(rx->h264_caps_sink, "sink")) != ZST_OK ||
+		    zst_element_set_state(rx->h264_parser, ZST_STATE_READY) != ZST_OK ||
+		    zst_element_set_state(rx->h264_caps_sink, ZST_STATE_READY) != ZST_OK ||
+		    zst_element_set_state(rx->h264_parser, ZST_STATE_PLAYING) != ZST_OK ||
+		    zst_element_set_state(rx->h264_caps_sink, ZST_STATE_PLAYING) != ZST_OK) {
+			goto fail;
+		}
+		return 0;
+
+	fail:
+		LOGE("Failed to create/configure h26xparse avcC observer");
+		if (rx->h264_parser) zst_element_destroy(rx->h264_parser);
+		if (rx->h264_caps_sink) zst_element_destroy(rx->h264_caps_sink);
+		rx->h264_parser = nullptr;
+		rx->h264_caps_sink = nullptr;
+		return -1;
+	}
+
+	static void rx_h264_parser_destroy(zst_dante_rx_t* rx) {
+		if (!rx) return;
+		if (rx->h264_parser) zst_element_set_state(rx->h264_parser, ZST_STATE_NULL);
+		if (rx->h264_caps_sink) zst_element_set_state(rx->h264_caps_sink, ZST_STATE_NULL);
+		if (rx->h264_parser) zst_element_destroy(rx->h264_parser);
+		if (rx->h264_caps_sink) zst_element_destroy(rx->h264_caps_sink);
+		rx->h264_parser = nullptr;
+		rx->h264_caps_sink = nullptr;
+	}
+
+	static zst_result_t rx_h264_parser_push(zst_dante_rx_t* rx,
+	                                       const uint8_t* data, size_t size, uint64_t pts) {
+		if (!rx || !rx->h264_parser || !data || !size) return ZST_ERROR;
+		zst_pad_t* sink = zst_element_get_pad(rx->h264_parser, "sink");
+		if (!sink || !sink->push) return ZST_ERROR;
+		zst_buffer_t* input = zst_buffer_create(ZST_BUFFER_VIDEO_PACKET);
+		if (!input) return ZST_ERROR;
+		uint8_t* copy = (uint8_t*)malloc(size);
+		if (!copy) { zst_buffer_unref(input); return ZST_ERROR; }
+		memcpy(copy, data, size);
+		input->memory.type = ZST_MEMORY_CPU;
+		input->memory.data = copy;
+		input->memory.size = size;
+		input->memory.priv = copy;
+		input->memory.release = free;
+		input->pts = input->dts = pts;
+		std::lock_guard<std::mutex> lock(rx->h264_parser_lock);
+		zst_result_t result = sink->push(sink, input);
+		zst_buffer_unref(input);
+		return result;
+	}
 
 	static int select_hdmi_audio_route(unsigned int route) {
 		snd_ctl_t* control = nullptr;
@@ -932,27 +857,10 @@ namespace __sc6f0_dante_rx__ {
 	static int start_vdec_sink(zst_dante_rx_t* rx);
 	static inline float mode_vrefresh(const drmModeModeInfo* mode);
 
-	static void log_vdec_lifecycle(zst_dante_rx_t* rx, const char* operation) {
-		struct timespec ts = {};
-		clock_gettime(CLOCK_MONOTONIC, &ts);
-		fprintf(stderr,
-			"[DEC-LIFE %lld.%03ld tid=%zu] %s decoder=%p started=%d handlers=%p event=%p pool=%p sink=%p sink_started=%d\n",
-			(long long)ts.tv_sec, ts.tv_nsec / 1000000,
-			std::hash<std::thread::id>{}(std::this_thread::get_id()), operation,
-			rx ? (void*)rx->vdec : nullptr, rx ? rx->vdec_started : 0,
-			rx ? (void*)rx->vdec_event_handlers : nullptr,
-			rx ? (void*)rx->vdec_event : nullptr,
-			rx ? (void*)rx->vdec_packet_pool : nullptr,
-			rx ? (void*)rx->vdec_sink : nullptr, rx ? rx->vdec_sink_started : 0);
-		fflush(stderr);
-	}
 
 	static void StopVdecAsync(zst_dante_rx_t* rx) {
-		log_vdec_lifecycle(rx, "async-stop-begin");
 		if (rx->vdec_event_handlers) {
-			log_vdec_lifecycle(rx, "event-handlers-stop-begin");
 			qcap2_event_handlers_stop(rx->vdec_event_handlers);
-			log_vdec_lifecycle(rx, "event-handlers-stop-done");
 			qcap2_event_handlers_delete(rx->vdec_event_handlers);
 			rx->vdec_event_handlers = nullptr;
 		}
@@ -967,14 +875,12 @@ namespace __sc6f0_dante_rx__ {
 			rx->vdec_event = nullptr;
 		}
 		rx->vdec_init_done = false;
-		log_vdec_lifecycle(rx, "async-stop-done");
 	}
 
 	/* Create decoder event, output handler, and packet pool before decoder start. */
 	static int SetupVdecAsync(zst_dante_rx_t* rx) {
 		QRESULT qres;
 		uintptr_t event_handle;
-		log_vdec_lifecycle(rx, "async-setup-begin");
 
 		rx->vdec_event = qcap2_event_new();
 		if (!rx->vdec_event) {
@@ -1029,7 +935,6 @@ namespace __sc6f0_dante_rx__ {
 		}
 
 		rx->vdec_init_done = true;
-		log_vdec_lifecycle(rx, "async-setup-done");
 		return 0;
 	}
 
@@ -1142,7 +1047,6 @@ namespace __sc6f0_dante_rx__ {
 		qcap2_video_decoder_set_event(rx->vdec, rx->vdec_event);
 
 		/* 5. Start decoder */
-		log_vdec_lifecycle(rx, "decoder-start-begin");
 		QRESULT qres = qcap2_video_decoder_start(rx->vdec);
 		if (qres != QCAP_RS_SUCCESSFUL) {
 			LOGE("qcap2_video_decoder_start() failed, qres=%d", (int)qres);
@@ -1152,7 +1056,6 @@ namespace __sc6f0_dante_rx__ {
 		}
 
 		rx->vdec_started = true;
-		log_vdec_lifecycle(rx, "decoder-start-done");
 		LOGI("qcap2 ALLEGRO2 decoder configured: %ux%u @ %.2f fps",
 			rx->dec_width, rx->dec_height, rx->dec_fps);
 		return 0;
@@ -1191,28 +1094,20 @@ namespace __sc6f0_dante_rx__ {
 			rx->vdec_init_thread.join();
 		/* Stop joins output callbacks before taking decoder_lock. */
 		if (rx->vdec_event_handlers) {
-			log_vdec_lifecycle(rx, "event-handlers-stop-begin");
 			qcap2_event_handlers_stop(rx->vdec_event_handlers);
-			log_vdec_lifecycle(rx, "event-handlers-stop-done");
 			qcap2_event_handlers_delete(rx->vdec_event_handlers);
 			rx->vdec_event_handlers = nullptr;
 		}
 		std::lock_guard<std::mutex> decoder_guard(rx->decoder_lock);
-		log_vdec_lifecycle(rx, "decoder-teardown-begin");
 		if (rx->vdec) {
 			if (rx->vdec_started) {
-				log_vdec_lifecycle(rx, "decoder-stop-begin");
 				qcap2_video_decoder_stop(rx->vdec);
-				log_vdec_lifecycle(rx, "decoder-stop-done");
 			}
-			log_vdec_lifecycle(rx, "decoder-delete-begin");
 			qcap2_video_decoder_delete(rx->vdec);
-			log_vdec_lifecycle(rx, "decoder-delete-done");
 			rx->vdec = nullptr;
 			rx->vdec_started = false;
 		}
 		StopVdecAsync(rx);
-		log_vdec_lifecycle(rx, "decoder-teardown-done");
 	}
 
 	static void stop_drm_output(zst_dante_rx_t* rx) {
@@ -1529,6 +1424,10 @@ namespace __sc6f0_dante_rx__ {
 		}
 		rx->video_stats->rx = rx;
 		rx->audio_stats->rx = rx;
+		if (rx_h264_parser_create(rx) != 0) {
+			free(rx->video_stats); free(rx->audio_stats); delete rx;
+			return nullptr;
+		}
 		if (start_hdmi_audio_sink(rx) != 0)
 			LOGW("HDMI audio unavailable; continuing with video only");
 		return rx;
@@ -1537,6 +1436,7 @@ namespace __sc6f0_dante_rx__ {
 	static void stop_qcap_media_rx(zst_dante_rx_t* rx) {
 		if (!rx) return;
 		stop_vdec_decoder(rx);
+		rx_h264_parser_destroy(rx);
 		if (rx->extra_data) free(rx->extra_data);
 		if (rx->vdec_sink) {
 			if (rx->vdec_sink_started) qcap2_video_sink_stop(rx->vdec_sink);
@@ -1549,26 +1449,18 @@ namespace __sc6f0_dante_rx__ {
 		delete rx;
 	}
 
-	/* QCAP Dante has already parsed stream format before invoking the connected
-	 * callback. Unlike the zstreamer path, do not wait for or parse SPS/PPS
-	 * here: configure the application-owned ALLEGRO2 decoder from that format. */
+	/* Use QCAP's media notification as a fallback only. h26xparse supplies the
+	 * active in-band SPS/PPS avcC before the decoder is initialized. */
 	static int start_qcap_decoder_from_format(zst_dante_rx_t* rx,
 		uint32_t width, uint32_t height, double fps) {
 		if (!rx || width == 0 || height == 0) return -1;
 		std::lock_guard<std::mutex> decoder_guard(rx->decoder_lock);
 		if (rx->vdec_started) return 0;
-		rx->dec_width = width;
-		rx->dec_height = height;
-		rx->dec_fps = (fps >= 1.0 && fps <= 240.0) ? fps : 60.0;
-		if (rx->display_enabled && start_vdec_sink(rx) != 0)
-			return -1;
-		if (SetupVdecAsync(rx) != 0) return -1;
-		if (init_vdec_decoder(rx) != 0) {
-			StopVdecAsync(rx);
-			return -1;
-		}
-		LOGI("QCAP media format initialized ALLEGRO2 decoder: %ux%u @ %.1f fps",
-			rx->dec_width, rx->dec_height, rx->dec_fps);
+		if (!rx->dec_width) rx->dec_width = width;
+		if (!rx->dec_height) rx->dec_height = height;
+		if (fps >= 1.0 && fps <= 240.0) rx->dec_fps = fps;
+		LOGI("QCAP format fallback %ux%u @ %.1f fps; awaiting in-band SPS/PPS caps",
+		     width, height, rx->dec_fps);
 		return 0;
 	}
 
@@ -1619,19 +1511,10 @@ namespace __sc6f0_dante_rx__ {
 		rx->video_stats->last_pts = pts;
 		if (is_keyframe) rx->video_stats->keyframes++;
 
-		bool decoder_ready;
-		{
-			std::lock_guard<std::mutex> decoder_guard(rx->decoder_lock);
-			decoder_ready = rx->vdec_started;
-		}
-		if (decoder_ready) {
-			/* rx_video_feed_decoder copies into a qcap2 rc-buffer packet-pool before
-			 * submitting; never retain QCAP's callback-owned stream pointer. */
-			rx_video_feed_decoder(rx->video_stats, data, (size_t)data_size,
-				is_keyframe ? ZST_BUFFER_FLAG_KEYFRAME : 0, pts);
-		} else {
-			rx->decoder_dropped_packets++;
-		}
+		/* rx_video_feed_decoder copies into a packet-pool before submit. It also
+		 * feeds the separate parser observer while this callback data is valid. */
+		rx_video_feed_decoder(rx->video_stats, data, (size_t)data_size,
+			is_keyframe ? ZST_BUFFER_FLAG_KEYFRAME : 0, pts);
 		qcap2_rcbuffer_unlock_data(rcbuf);
 		return QCAP_RT_OK;
 	}
@@ -1693,15 +1576,21 @@ namespace __sc6f0_dante_rx__ {
 				std::lock_guard<std::mutex> decoder_guard(rx->decoder_lock);
 				rx->decoder_dropped_packets++;
 				if (rx->vdec_started) {
-					log_vdec_lifecycle(rx, "discontinuity-notify-begin");
 					qcap2_video_decoder_notify_discontinuity(rx->vdec);
-					log_vdec_lifecycle(rx, "discontinuity-notify-done");
 				}
 			}
 			return;
 		}
 		/* The scheduler has multiple workers. Serialize file writes and decoder
 		 * initialization/input even when upstream pushes overlap. */
+		if (rx->decode_enabled) {
+			zst_result_t parse_result = rx_h264_parser_push(rx, data, data_size, pts);
+			if (parse_result != ZST_OK) {
+				static std::atomic<uint64_t> parser_errors{0};
+				if (parser_errors.fetch_add(1, std::memory_order_relaxed) < 8)
+					LOGW("h26xparse config observer rejected input AU (%zu bytes)", data_size);
+			}
+		}
 		std::lock_guard<std::mutex> decoder_guard(rx->decoder_lock);
 		if (rx->decoder_initializing.load(std::memory_order_acquire)) {
 			rx->decoder_dropped_packets++;
@@ -1718,21 +1607,19 @@ namespace __sc6f0_dante_rx__ {
 		}
 		if (!rx->decode_enabled)
 			return;
-		rx->decoder_input_packets++;
+		++rx->decoder_input_packets;
 
 		/* The upstream zst_rtp_depayloader never sets ZST_BUFFER_FLAG_KEYFRAME
 		 * on its output buffers, so the buffer flag cannot gate decoder
 		 * startup.  Detect the actual NAL content instead. */
 		int has_idr = 0;
-		int has_sps = 0;
 		for (size_t i = 0; i + 3 < data_size; i++) {
 			if (data[i] == 0 && data[i + 1] == 0 &&
 			    (data[i + 2] == 1 || (i + 4 <= data_size && data[i + 2] == 0 && data[i + 3] == 1))) {
 				size_t off = (data[i + 2] == 1) ? i + 3 : i + 4;
 				if (off < data_size) {
 					uint8_t nal_type = data[off] & 0x1F;
-					if (nal_type == 7) has_sps = 1;
-					else if (nal_type == 5) has_idr = 1;
+					if (nal_type == 5) has_idr = 1;
 				}
 			}
 		}
@@ -1752,132 +1639,19 @@ namespace __sc6f0_dante_rx__ {
 			return;
 		}
 
-		/* Not started yet.  SPS/PPS may only appear once at the very start of
-		 * the stream (sent as a separate SPS+PPS AU, or inline with the first
-		 * IDR), so wait for the first buffer that actually carries an SPS —
-		 * never gate on ZST_BUFFER_FLAG_KEYFRAME. */
-		if (!has_sps) {
+		/* h26xparse publishes avcC once an in-band slice selects its SPS/PPS.
+		 * Wait for both that caps update and an IDR, without rewriting this AU. */
+		if (!rx->extra_data || rx->extra_data_size <= 0 || !rx->dec_width ||
+		    !rx->dec_height || !is_keyframe) {
 			uint64_t waited = stats->no_sps_count.fetch_add(1, std::memory_order_relaxed) + 1;
-			if (waited % 300 == 0) {
-				LOGW("ALLEGRO2 decoder not started: %lu buffers without SPS/PPS received"
-				     " (%lu video pkts, %lu bytes) — is the TX emitting keyframes?",
-				     (unsigned long)waited,
-				     (unsigned long)stats->total_packets.load(),
-				     (unsigned long)stats->total_bytes.load());
-			}
+			if (waited % 300 == 0)
+				LOGW("ALLEGRO2 decoder waiting for h26xparse SPS/PPS caps and IDR (%lu video AUs)",
+				     (unsigned long)stats->total_packets.load());
 			return;
 		}
 		stats->no_sps_count.store(0, std::memory_order_relaxed);
 
-		/* Copy out SPS+PPS from this buffer */
-		int sps_len = 256 * 1024;
-		int pps_len = 256 * 1024;
-		uint8_t* sps_buf = (uint8_t*)malloc((size_t)sps_len);
-		uint8_t* pps_buf = (uint8_t*)malloc((size_t)pps_len);
-		if (!sps_buf || !pps_buf) {
-			free(sps_buf);
-			free(pps_buf);
-			return;
-		}
-
-		if (h264_extract_sps_pps(data, data_size, sps_buf, &sps_len, pps_buf, &pps_len) != 0) {
-			LOGE("ALLEGRO2 decoder init: SPS was detected but SPS/PPS extraction failed");
-			free(sps_buf);
-			free(pps_buf);
-			return;
-		}
-
-		/* Locate SPS NAL body (past start code + NAL header byte) */
-		size_t sps_nal_off = 0;
-		for (size_t i = 0; i + 3 < (size_t)sps_len; i++) {
-			if (sps_buf[i] == 0 && sps_buf[i+1] == 0 &&
-			    (sps_buf[i+2] == 1 || sps_buf[i+2] == 0)) {
-				size_t sc_len = (sps_buf[i+2] == 1) ? 3 : 4;
-				uint8_t nal_type = sps_buf[i + sc_len] & 0x1F;
-				if (nal_type == 7) {
-					sps_nal_off = i + sc_len + 1;
-					break;
-				}
-			}
-		}
-
-		if (sps_nal_off == 0) {
-			LOGE("ALLEGRO2 decoder init: extracted SPS has no valid Annex-B SPS NAL");
-			free(sps_buf);
-			free(pps_buf);
-			return;
-		}
-
-		double fps = 0.0;
-		if (h264_parse_sps(sps_buf + sps_nal_off, (size_t)sps_len - sps_nal_off,
-		                    &rx->dec_width, &rx->dec_height, &fps) != 0) {
-			LOGE("ALLEGRO2 decoder init: SPS parse failed");
-			free(sps_buf);
-			free(pps_buf);
-			return;
-		}
-		rx->dec_fps = (fps >= 1.0 && fps <= 240.0) ? fps : 60.0;
-		if (rx->dec_width == 0 || rx->dec_height == 0) {
-			LOGE("ALLEGRO2 decoder init: SPS produced invalid dimensions %ux%u",
-			     rx->dec_width, rx->dec_height);
-			free(sps_buf);
-			free(pps_buf);
-			return;
-		}
-
-		/* ALLEGRO2 expects an AVCDecoderConfigurationRecord (avcC), not
-		 * Annex-B start-code-delimited parameter sets. */
-		size_t sps_nal_start = sps_nal_off - 1;
-		size_t pps_nal_start = 0;
-		for (size_t i = 0; i + 3 < (size_t)pps_len; i++) {
-			if (pps_buf[i] == 0 && pps_buf[i + 1] == 0 &&
-			    (pps_buf[i + 2] == 1 ||
-			     (i + 4 <= (size_t)pps_len && pps_buf[i + 2] == 0 && pps_buf[i + 3] == 1))) {
-				pps_nal_start = i + (pps_buf[i + 2] == 1 ? 3 : 4);
-				break;
-			}
-		}
-		if (sps_nal_start >= (size_t)sps_len || pps_nal_start >= (size_t)pps_len ||
-		    (size_t)sps_len - sps_nal_start < 4 || (size_t)pps_len - pps_nal_start < 1 ||
-		    (size_t)sps_len - sps_nal_start > UINT16_MAX ||
-		    (size_t)pps_len - pps_nal_start > UINT16_MAX) {
-			LOGE("ALLEGRO2 decoder init: invalid SPS/PPS NAL boundaries");
-			free(sps_buf);
-			free(pps_buf);
-			return;
-		}
-		size_t sps_nal_len = (size_t)sps_len - sps_nal_start;
-		size_t pps_nal_len = (size_t)pps_len - pps_nal_start;
-		size_t extra_sz = 11 + sps_nal_len + pps_nal_len;
-		rx->extra_data = (uint8_t*)malloc(extra_sz);
-		if (!rx->extra_data) {
-			free(sps_buf);
-			free(pps_buf);
-			return;
-		}
-		uint8_t* avcc = rx->extra_data;
-		avcc[0] = 1;
-		avcc[1] = sps_buf[sps_nal_start + 1];
-		avcc[2] = sps_buf[sps_nal_start + 2];
-		avcc[3] = sps_buf[sps_nal_start + 3];
-		avcc[4] = 0xff; /* four-byte NAL length fields */
-		avcc[5] = 0xe1; /* one SPS */
-		avcc[6] = (uint8_t)(sps_nal_len >> 8);
-		avcc[7] = (uint8_t)sps_nal_len;
-		memcpy(avcc + 8, sps_buf + sps_nal_start, sps_nal_len);
-		size_t pps_offset = 8 + sps_nal_len;
-		avcc[pps_offset] = 1; /* one PPS */
-		avcc[pps_offset + 1] = (uint8_t)(pps_nal_len >> 8);
-		avcc[pps_offset + 2] = (uint8_t)pps_nal_len;
-		memcpy(avcc + pps_offset + 3, pps_buf + pps_nal_start, pps_nal_len);
-		rx->extra_data_size = (int)extra_sz;
-		free(sps_buf);
-		free(pps_buf);
-
-		LOGI("ALLEGRO2 decoder init: SPS=%d bytes, PPS=%d bytes, %ux%u @ %.1f fps",
-		     sps_len, pps_len, rx->dec_width, rx->dec_height, rx->dec_fps);
-
-		LOGI("ALLEGRO2 decoder initialization scheduled: %ux%u @ %.1f fps, extra_data=%d bytes",
+		LOGI("ALLEGRO2 decoder initialization scheduled from h26xparse caps: %ux%u @ %.1f fps, avcC=%d bytes",
 		     rx->dec_width, rx->dec_height, rx->dec_fps, rx->extra_data_size);
 		start_vdec_decoder_async(rx);
 	}
@@ -2178,6 +1952,14 @@ namespace __sc6f0_dante_rx__ {
 			return nullptr;
 		}
 		rx->video_stats->rx = rx;
+		if (rx_h264_parser_create(rx) != 0) {
+			zst_element_destroy(rx->rx_video_sink);
+			zst_element_destroy(rx->coordinator);
+			if (rx->session) zst_element_destroy(rx->session);
+			zst_pipeline_destroy(rx->pipe);
+			delete rx;
+			return nullptr;
+		}
 		zst_pad_link(rx->rx_video_pad, zst_element_get_pad(rx->rx_video_sink, "sink"));
 
 		/* 4. Dante DEP audio is excluded from RTP-only measurement mode. */
@@ -2185,6 +1967,7 @@ namespace __sc6f0_dante_rx__ {
 			rx->rx_dep_src = zst_dante_dep_audio_source_create();
 			if (!rx->rx_dep_src) {
 				LOGE("zst_dante_dep_audio_source_create() failed");
+				rx_h264_parser_destroy(rx);
 				zst_element_destroy(rx->rx_video_sink);
 				zst_element_destroy(rx->coordinator);
 				if (rx->session) zst_element_destroy(rx->session);
@@ -2201,6 +1984,7 @@ namespace __sc6f0_dante_rx__ {
 			if (!rx->rx_audio_sink) {
 				LOGE("create_rx_audio_sink() failed");
 				zst_element_destroy(rx->rx_dep_src);
+				rx_h264_parser_destroy(rx);
 				zst_element_destroy(rx->rx_video_sink);
 				zst_element_destroy(rx->coordinator);
 				if (rx->session) zst_element_destroy(rx->session);
@@ -2329,11 +2113,6 @@ namespace __sc6f0_dante_rx__ {
 			? 100.0 * (double)dec_dropped / (double)dec_input : 0.0;
 
 		stop_vdec_decoder(rx);
-		if (rx->extra_data) {
-			free(rx->extra_data);
-			rx->extra_data = nullptr;
-			rx->extra_data_size = 0;
-		}
 		if (rx->vdec_sink) {
 			if (rx->vdec_sink_started)
 				qcap2_video_sink_stop(rx->vdec_sink);
@@ -2357,6 +2136,13 @@ namespace __sc6f0_dante_rx__ {
 			zst_pipeline_set_state(rx->pipe, ZST_STATE_NULL);
 			zst_pipeline_destroy(rx->pipe);
 			rx->pipe = nullptr;
+		}
+		/* Quiesce upstream before destroying the out-of-pipeline observer. */
+		rx_h264_parser_destroy(rx);
+		if (rx->extra_data) {
+			free(rx->extra_data);
+			rx->extra_data = nullptr;
+			rx->extra_data_size = 0;
 		}
 		if (rx->clock) {
 			zst_clock_unref(rx->clock);
@@ -3469,16 +3255,12 @@ namespace __sc6f0_dante_rx__ {
 						std::lock_guard<std::mutex> guard(avh->display_lock);
 						apply_drm_modeset(&ctx, fixed_w, fixed_h, fixed_fps, false);
 						if (avh->vdec_sink) {
-							log_vdec_lifecycle(avh, "sink-teardown-begin");
 							if (avh->vdec_sink_started) {
-								log_vdec_lifecycle(avh, "sink-stop-begin");
 								qcap2_video_sink_stop(avh->vdec_sink);
-								log_vdec_lifecycle(avh, "sink-stop-done");
 							}
 							qcap2_video_sink_delete(avh->vdec_sink);
 							avh->vdec_sink = nullptr;
 							avh->vdec_sink_started = false;
-							log_vdec_lifecycle(avh, "sink-teardown-done");
 						}
 					}
 					stop_hdmi_audio_sink(avh);
@@ -3624,6 +3406,163 @@ namespace __sc6f0_dante_rx__ {
 		LOGI("[ULTRA DIRECT] Stopped cleanly.");
 		return 0;
 	}
+
+	/* Standalone RTSP playback bridge. It intentionally owns only its RTSP
+	 * elements and the existing HDMI output resources; it does not create a
+	 * Dante session/coordinator or enter AVH/Ultra source arbitration. */
+	struct rtsp_playback_t {
+		zst_element_t *source = nullptr, *vdec = nullptr, *aparser = nullptr, *adec = nullptr;
+		zst_element_t *vsink = nullptr, *asink = nullptr;
+		zst_dante_rx_t *output = nullptr;
+		std::mutex video_init_lock;
+		std::atomic<uint64_t> video_frames{0}, audio_frames{0};
+	};
+	struct rtsp_sink_priv_t { rtsp_playback_t *playback; bool video; };
+
+	static zst_result_t rtsp_video_frame(rtsp_playback_t *p, zst_buffer_t *buf) {
+		if (!p || !p->output || !buf || !buf->payload) return ZST_ERROR;
+		auto *vf = (zst_video_frame_t*)buf->payload;
+		if (!vf->width || !vf->height || (vf->width & 1) || (vf->height & 1) || !vf->plane[0]) return ZST_ERROR;
+		zst_dante_rx_t *rx = p->output;
+		std::lock_guard<std::mutex> guard(p->video_init_lock);
+		if (!rx->drm_modeset_active) {
+			rx->dec_width = vf->width; rx->dec_height = vf->height; rx->dec_fps = 60.0;
+			if (start_drm_output(rx) != 0 || start_vdec_sink(rx) != 0) return ZST_ERROR;
+			LOGI("RTSP software decoder HDMI output initialized for %ux%u", vf->width, vf->height);
+		}
+		qcap2_rcbuffer_t *rc = qcap2_rcbuffer_new_av_frame();
+		if (!rc) return ZST_ERROR;
+		auto *frame = (qcap2_av_frame_t*)qcap2_rcbuffer_get_data(rc);
+		qcap2_av_frame_set_video_property(frame, QCAP_COLORSPACE_TYPE_NV12, vf->width, vf->height);
+		if (!qcap2_av_frame_alloc_buffer(frame, 32, 1)) { qcap2_rcbuffer_delete(rc); return ZST_ERROR; }
+		uint8_t *dst[4] = {}; int stride[4] = {};
+		qcap2_av_frame_get_buffer1(frame, dst, stride);
+		const uint32_t w=vf->width,h=vf->height;
+		if (!dst[0] || !dst[1] || stride[0] < (int)w || stride[1] < (int)w) {
+			qcap2_rcbuffer_delete(rc); return ZST_ERROR;
+		}
+		if (vf->format == AV_PIX_FMT_NV12 && vf->plane[1]) {
+			for (uint32_t y=0;y<h;y++) memcpy(dst[0]+(size_t)y*stride[0],vf->plane[0]+(size_t)y*vf->stride[0],w);
+			for (uint32_t y=0;y<(h+1)/2;y++) memcpy(dst[1]+(size_t)y*stride[1],vf->plane[1]+(size_t)y*vf->stride[1],w);
+		} else if ((vf->format == AV_PIX_FMT_YUV420P || vf->format == AV_PIX_FMT_YUVJ420P) && vf->plane[1] && vf->plane[2]) {
+			for (uint32_t y=0;y<h;y++) memcpy(dst[0]+(size_t)y*stride[0],vf->plane[0]+(size_t)y*vf->stride[0],w);
+			for (uint32_t y=0;y<(h+1)/2;y++) {
+				const uint8_t *u=vf->plane[1]+(size_t)y*vf->stride[1], *v=vf->plane[2]+(size_t)y*vf->stride[2];
+				uint8_t *uv=dst[1]+(size_t)y*stride[1];
+				for (uint32_t x=0;x<(w+1)/2;x++){uv[2*x]=u[x];uv[2*x+1]=v[x];}
+			}
+		} else { qcap2_rcbuffer_delete(rc); return ZST_ERROR; }
+		QRESULT qr=qcap2_video_sink_push(rx->vdec_sink,rc);
+		qcap2_rcbuffer_delete(rc);
+		if(qr!=QCAP_RS_SUCCESSFUL) return ZST_ERROR;
+		p->video_frames++;
+		return ZST_OK;
+	}
+
+	static inline int32_t rtsp_audio_sample(const uint8_t *ptr, enum AVSampleFormat fmt) {
+		if (fmt==AV_SAMPLE_FMT_U8 || fmt==AV_SAMPLE_FMT_U8P) return ((int32_t)*ptr-128)*16777216;
+		if (fmt==AV_SAMPLE_FMT_FLTP || fmt==AV_SAMPLE_FMT_FLT) {
+			float f; memcpy(&f,ptr,sizeof(f)); if(f>1.f)f=1.f;if(f< -1.f)f=-1.f;return (int32_t)(f*2147483647.0f);
+		}
+		if (fmt==AV_SAMPLE_FMT_DBLP || fmt==AV_SAMPLE_FMT_DBL) {
+			double d;memcpy(&d,ptr,sizeof(d));if(d>1.0)d=1.0;if(d< -1.0)d=-1.0;return (int32_t)(d*2147483647.0);
+		}
+		if (fmt==AV_SAMPLE_FMT_S16P || fmt==AV_SAMPLE_FMT_S16) { int16_t v;memcpy(&v,ptr,2);return (int32_t)v*65536; }
+		if (fmt==AV_SAMPLE_FMT_S32P || fmt==AV_SAMPLE_FMT_S32) { int32_t v;memcpy(&v,ptr,4);return v; }
+		if (fmt==AV_SAMPLE_FMT_S64P || fmt==AV_SAMPLE_FMT_S64) { int64_t v;memcpy(&v,ptr,8);return (int32_t)(v>>32); }
+		return 0;
+	}
+	static inline int rtsp_audio_sample_size(enum AVSampleFormat fmt) {
+		switch(fmt){
+		case AV_SAMPLE_FMT_U8: case AV_SAMPLE_FMT_U8P: return 1;
+		case AV_SAMPLE_FMT_S16: case AV_SAMPLE_FMT_S16P: return 2;
+		case AV_SAMPLE_FMT_S32: case AV_SAMPLE_FMT_S32P:
+		case AV_SAMPLE_FMT_FLT: case AV_SAMPLE_FMT_FLTP: return 4;
+		case AV_SAMPLE_FMT_S64: case AV_SAMPLE_FMT_S64P:
+		case AV_SAMPLE_FMT_DBL: case AV_SAMPLE_FMT_DBLP: return 8;
+		default:return 0;
+		}
+	}
+	static inline bool rtsp_audio_is_planar(enum AVSampleFormat fmt) {
+		return fmt==AV_SAMPLE_FMT_U8P || fmt==AV_SAMPLE_FMT_S16P ||
+		       fmt==AV_SAMPLE_FMT_S32P || fmt==AV_SAMPLE_FMT_FLTP ||
+		       fmt==AV_SAMPLE_FMT_DBLP || fmt==AV_SAMPLE_FMT_S64P;
+	}
+	static zst_result_t rtsp_audio_frame(rtsp_playback_t *p,zst_buffer_t *buf) {
+		if(!p||!p->output||!p->output->audio_pcm||!buf||!buf->payload)return ZST_ERROR;
+		auto *af=(zst_audio_frame_t*)buf->payload;
+		if(af->sample_rate!=48000 || af->channels==0 || af->channels>2 || af->nb_samples==0)return ZST_ERROR;
+		auto fmt=(enum AVSampleFormat)af->format;
+		int bps=rtsp_audio_sample_size(fmt); if(bps<=0)return ZST_ERROR;
+		bool planar=rtsp_audio_is_planar(fmt);
+		const uint8_t * const *planes=planar?(const uint8_t * const *)af->data:nullptr;
+		const uint8_t *packed=planar?nullptr:(const uint8_t*)af->data;
+		if((planar&&!planes)||(!planar&&!packed))return ZST_ERROR;
+		std::vector<uint8_t> pcm((size_t)af->nb_samples*2*4);
+		for(uint32_t i=0;i<af->nb_samples;i++)for(uint32_t c=0;c<2;c++){
+			uint32_t sc=af->channels==1?0:c;
+			const uint8_t *src=planar?planes[sc]+(size_t)i*bps:packed+((size_t)i*af->channels+sc)*bps;
+			int32_t sample=rtsp_audio_sample(src,fmt)>>8; uint8_t *d=pcm.data()+((size_t)i*2+c)*4;
+			d[0]=(uint8_t)sample;d[1]=(uint8_t)(sample>>8);d[2]=(uint8_t)(sample>>16);d[3]=0;
+		}
+		std::lock_guard<std::mutex> lock(p->output->audio_lock);
+		uint32_t offset=0;
+		while(offset<af->nb_samples){
+			snd_pcm_sframes_t n=snd_pcm_writei(p->output->audio_pcm,
+				pcm.data()+(size_t)offset*2*4,af->nb_samples-offset);
+			if(n>0){offset+=(uint32_t)n;continue;}
+			if(n==-EAGAIN){snd_pcm_wait(p->output->audio_pcm,100);continue;}
+			if(n==-EPIPE||n==-ESTRPIPE){snd_pcm_prepare(p->output->audio_pcm);continue;}
+			return ZST_ERROR;
+		}
+		p->audio_frames++;
+		return ZST_OK;
+	}
+	static zst_result_t rtsp_sink_process(zst_element_t *el,zst_buffer_t *buf,zst_buffer_t **out){
+		if(out)*out=nullptr; auto *s=(rtsp_sink_priv_t*)el->priv;
+		return s->video?rtsp_video_frame(s->playback,buf):rtsp_audio_frame(s->playback,buf);
+	}
+	static zst_result_t rtsp_sink_push(zst_pad_t *pad,zst_buffer_t *buf){return rtsp_sink_process(pad->parent,buf,nullptr);}
+	static zst_element_t *rtsp_sink_create(rtsp_playback_t *p,bool video){
+		static const zst_element_ops_t vops={.name="rtsp_hdmi_video_sink",.process=rtsp_sink_process};
+		static const zst_element_ops_t aops={.name="rtsp_hdmi_audio_sink",.process=rtsp_sink_process};
+		auto *priv=(rtsp_sink_priv_t*)calloc(1,sizeof(rtsp_sink_priv_t));if(!priv)return nullptr;
+		priv->playback=p;priv->video=video;
+		auto *el=zst_element_create(video?&vops:&aops,priv);if(!el){free(priv);return nullptr;}
+		auto *pad=zst_pad_create("sink",ZST_PAD_SINK);if(!pad||zst_element_add_pad(el,pad)!=ZST_OK){zst_element_destroy(el);return nullptr;}
+		pad->push=rtsp_sink_push;return el;
+	}
+	static int run_rtsp_client(const std::string &url) {
+		rtsp_playback_t p; p.output=new(std::nothrow) zst_dante_rx_t(); if(!p.output)return 1;
+		auto cleanup=[&](){
+			zst_element_t *els[]={p.source,p.vdec,p.aparser,p.adec,p.vsink,p.asink};
+			for(auto *el:els)if(el)zst_element_set_state(el,ZST_STATE_NULL);
+			if(p.output->vdec_sink){if(p.output->vdec_sink_started)qcap2_video_sink_stop(p.output->vdec_sink);qcap2_video_sink_delete(p.output->vdec_sink);p.output->vdec_sink=nullptr;}
+			stop_drm_output(p.output);stop_hdmi_audio_sink(p.output);
+			for(auto *el:els)if(el)zst_element_destroy(el);
+			delete p.output;p.output=nullptr;
+		};
+		p.source=zst_rtsp_source_create(url.c_str()); p.vdec=zst_h264_decoder_create();
+		p.aparser=zst_aac_parser_create(); p.adec=zst_aac_decoder_create();
+		p.vsink=rtsp_sink_create(&p,true);p.asink=rtsp_sink_create(&p,false);
+		if(!p.source||!p.vdec||!p.aparser||!p.adec||!p.vsink||!p.asink){LOGE("RTSP playback element creation failed");cleanup();return 1;}
+		if(zst_pad_link(zst_element_get_pad(p.source,"video"),zst_element_get_pad(p.vdec,"sink"))!=ZST_OK||
+		   zst_pad_link(zst_element_get_pad(p.vdec,"src"),zst_element_get_pad(p.vsink,"sink"))!=ZST_OK||
+		   zst_pad_link(zst_element_get_pad(p.source,"audio"),zst_element_get_pad(p.aparser,"sink"))!=ZST_OK||
+		   zst_pad_link(zst_element_get_pad(p.aparser,"src"),zst_element_get_pad(p.adec,"sink"))!=ZST_OK||
+		   zst_pad_link(zst_element_get_pad(p.adec,"src"),zst_element_get_pad(p.asink,"sink"))!=ZST_OK){LOGE("RTSP pipeline pad link failed");cleanup();return 1;}
+		start_hdmi_audio_sink(p.output);
+		zst_element_set_state(p.vdec,ZST_STATE_READY);zst_element_set_state(p.aparser,ZST_STATE_READY);zst_element_set_state(p.adec,ZST_STATE_READY);
+		zst_element_set_state(p.vsink,ZST_STATE_READY);zst_element_set_state(p.asink,ZST_STATE_READY);
+		zst_element_set_state(p.vdec,ZST_STATE_PLAYING);zst_element_set_state(p.aparser,ZST_STATE_PLAYING);zst_element_set_state(p.adec,ZST_STATE_PLAYING);
+		zst_element_set_state(p.vsink,ZST_STATE_PLAYING);zst_element_set_state(p.asink,ZST_STATE_PLAYING);
+		if(zst_element_set_state(p.source,ZST_STATE_PLAYING)!=ZST_OK){LOGE("Could not start RTSP client");cleanup();return 1;}
+		LOGI("Independent RTSP client active: %s",url.c_str());
+		while(!g_stop_requested)pause();
+		zst_element_set_state(p.source,ZST_STATE_NULL);
+		LOGI("RTSP client stopped: video frames=%llu audio frames=%llu",(unsigned long long)p.video_frames.load(),(unsigned long long)p.audio_frames.load());
+		cleanup();return 0;
+	}
 }
 
 using namespace __sc6f0_dante_rx__;
@@ -3654,6 +3593,7 @@ int main(int argc, char* argv[]) {
 	bool recv_only = false;
 	bool rtp_stats_only = false;
 	bool display_enabled = true;
+	std::string rtsp_url;
 	uint32_t reorder_window = 1;
 	uint32_t reorder_timeout_ms = 1;
 	std::string direct_peer;
@@ -3664,6 +3604,7 @@ int main(int argc, char* argv[]) {
 		if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
 			printf("Usage: sc6f0-dante-rx [OPTIONS]\n");
 			printf("Options:\n");
+			printf("  --rtsp-url <url>  Standalone RTSP H.264/AAC decode to HDMI (no Dante/AVH/Ultra)\n");
 			printf("  --use-qcap         Use the QCAP Dante receiver instead of zstreamer (fixed DVR/DEP defaults)\n");
 			printf("  --dvr <path>       Path to Dante DVR socket (default: /var/run/dante/dvr)\n");
 			printf("  --dep <name>       Dante DEP shared memory name (default: DanteEP)\n");
@@ -3695,6 +3636,9 @@ int main(int argc, char* argv[]) {
 			return 0;
 		} else if (strcmp(argv[i], "--use-qcap") == 0) {
 			use_qcap = true;
+		} else if (strcmp(argv[i], "--rtsp-url") == 0) {
+			if (i + 1 >= argc) { LOGE("--rtsp-url requires a URL"); return 1; }
+			rtsp_url = argv[++i];
 		} else if (strcmp(argv[i], "--dvr") == 0 && i + 1 < argc) {
 			dvr_socket = argv[++i];
 		} else if (strcmp(argv[i], "--dep") == 0 && i + 1 < argc) {
@@ -3760,6 +3704,11 @@ int main(int argc, char* argv[]) {
 		LOGE("Invalid --reorder-timeout-ms %u (expected 1..10000)", reorder_timeout_ms);
 		return 1;
 	}
+	if (!rtsp_url.empty() && (use_qcap || direct_mode || !reconstructed_path.empty() ||
+	    recv_only || rtp_stats_only || media_path != "linux-decode" || !display_enabled)) {
+		LOGE("--rtsp-url is an independent playback mode; do not combine it with Dante/Ultra/direct decode options");
+		return 1;
+	}
 
 	decode_enabled = (recv_only || rtp_stats_only) ? false : (direct_mode ? decode_requested : true);
 	if (use_qcap &&
@@ -3793,6 +3742,8 @@ int main(int argc, char* argv[]) {
 
 	signal(SIGINT, sig_handler);
 	signal(SIGTERM, sig_handler);
+	if (!rtsp_url.empty())
+		return run_rtsp_client(rtsp_url);
 
 	printf("============================================================\n");
 	if (use_qcap) {
