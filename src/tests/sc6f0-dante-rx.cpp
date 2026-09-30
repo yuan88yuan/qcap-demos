@@ -56,6 +56,7 @@ extern "C" {
 #include "zstreamer/elements/zst_dante_video_coordinator.h"
 #include "zstreamer/elements/zst_dante_dep_audio.h"
 #include "zstreamer/elements/zst_h26x_parser.h"
+#include "zstreamer/elements/zst_audio_resampler.h"
 #include "zstreamer/elements/zst_rtsp_source.h"
 #include "zstreamer/elements/zst_h264_decoder.h"
 #include "zstreamer/elements/zst_aac_parser.h"
@@ -582,15 +583,9 @@ namespace __sc6f0_dante_rx__ {
 		zst_dante_rx_t* rx;
 	};
 
-	static zst_result_t rx_h264_caps_sink_event(zst_element_t* el, zst_pad_t*,
-	                                            zst_pad_event_t* event) {
-		if (!el || !el->priv || !event || event->type != ZST_PAD_EVENT_CAPS ||
-		    !event->as.caps.caps || !event->as.caps.caps->structs)
-			return ZST_OK;
-		auto* priv = (rx_h264_caps_sink_priv_t*)el->priv;
-		zst_dante_rx_t* rx = priv->rx;
-		const zst_caps_t* caps = event->as.caps.caps;
-		if (!rx || strcmp(caps->structs->media_type, "video/x-h264") != 0)
+	static zst_result_t rx_h264_apply_caps(zst_dante_rx_t* rx, const zst_caps_t* caps) {
+		if (!rx || !caps || !caps->structs ||
+		    strcmp(caps->structs->media_type, "video/x-h264") != 0)
 			return ZST_OK;
 
 		const void* avcc = nullptr;
@@ -631,9 +626,17 @@ namespace __sc6f0_dante_rx__ {
 		return ZST_OK;
 	}
 
+	static zst_result_t rx_h264_caps_sink_event(zst_element_t* el, zst_pad_t*,
+	                                            zst_pad_event_t* event) {
+		if (!el || !el->priv || !event || event->type != ZST_PAD_EVENT_CAPS)
+			return ZST_OK;
+		auto* priv = (rx_h264_caps_sink_priv_t*)el->priv;
+		return rx_h264_apply_caps(priv->rx, event->as.caps.caps);
+	}
+
 	static zst_result_t rx_h264_caps_sink_push(zst_pad_t*, zst_buffer_t*) {
 		/* This side branch only observes parser caps. Decoder input remains the
-		 * original Annex-B AU on the independent Dante RX path. */
+		 * original Annex-B AU on the independent media input path. */
 		return ZST_OK;
 	}
 
@@ -813,7 +816,7 @@ namespace __sc6f0_dante_rx__ {
 		const uint32_t sample_format = audio ? audio->format : ZST_AUDIO_FMT_S32LE;
 		const size_t samples = audio ? audio->nb_samples : buf->memory.size / 8;
 		if (channels != 2 || rate != 48000 || sample_format != ZST_AUDIO_FMT_S32LE ||
-			samples == 0 || samples > 960 || buf->memory.size != samples * 8) {
+			samples == 0 || buf->memory.size != samples * 8) {
 			rx->audio_unsupported_periods++;
 			return;
 		}
@@ -837,16 +840,18 @@ namespace __sc6f0_dante_rx__ {
 			dst[2] = (uint8_t)(sample >> 16);
 			dst[3] = 0;
 		}
-		if (rx->audio_pending_frame.size() < output_bytes)
-			return;
-
-		snd_pcm_sframes_t written = snd_pcm_writei(rx->audio_pcm,
-			rx->audio_pending_frame.data(), 960);
-		rx->audio_pending_frame.clear();
-		if (written != 960 && written != -EAGAIN) {
-			if (written < 0 && (written == -EPIPE || written == -ESTRPIPE))
-				snd_pcm_prepare(rx->audio_pcm);
-			rx->audio_playback_errors++;
+		/* AAC commonly produces 1024 samples; preserve the remainder while
+		 * feeding the same 960-sample HDMI periods used by AVH PCM. */
+		while (rx->audio_pending_frame.size() >= output_bytes) {
+			snd_pcm_sframes_t written = snd_pcm_writei(rx->audio_pcm,
+				rx->audio_pending_frame.data(), 960);
+			rx->audio_pending_frame.erase(rx->audio_pending_frame.begin(),
+				rx->audio_pending_frame.begin() + output_bytes);
+			if (written != 960 && written != -EAGAIN) {
+				if (written < 0 && (written == -EPIPE || written == -ESTRPIPE))
+					snd_pcm_prepare(rx->audio_pcm);
+				rx->audio_playback_errors++;
+			}
 		}
 	}
 
@@ -1036,7 +1041,7 @@ namespace __sc6f0_dante_rx__ {
 		qcap2_video_decoder_set_video_property(rx->vdec, prop.get());
 		qcap2_video_decoder_set_extra_data(rx->vdec, rx->extra_data, rx->extra_data_size);
 
-		/* The Dante coordinator provides one complete Annex-B AU per buffer. */
+		/* Media adapters provide one complete Annex-B AU per buffer. */
 		qcap2_video_decoder_set_input_mode(rx->vdec, AL_DEC_SPLIT_INPUT);
 		qcap2_video_decoder_set_multithread(rx->vdec, false);
 		qcap2_video_decoder_set_frame_count(rx->vdec, 8);
@@ -3411,110 +3416,87 @@ namespace __sc6f0_dante_rx__ {
 	 * elements and the existing HDMI output resources; it does not create a
 	 * Dante session/coordinator or enter AVH/Ultra source arbitration. */
 	struct rtsp_playback_t {
-		zst_element_t *source = nullptr, *vdec = nullptr, *aparser = nullptr, *adec = nullptr;
+		zst_element_t *source = nullptr, *vparser = nullptr, *aparser = nullptr, *adec = nullptr;
+		zst_element_t *audio_adapter = nullptr, *aresampler = nullptr;
 		zst_element_t *vsink = nullptr, *asink = nullptr;
 		zst_dante_rx_t *output = nullptr;
-		std::mutex video_init_lock;
 		std::atomic<uint64_t> video_frames{0}, audio_frames{0};
+		uint32_t audio_rate = 0, audio_channels = 0, audio_format = UINT32_MAX;
 	};
 	struct rtsp_sink_priv_t { rtsp_playback_t *playback; bool video; };
 
 	static zst_result_t rtsp_video_frame(rtsp_playback_t *p, zst_buffer_t *buf) {
-		if (!p || !p->output || !buf || !buf->payload) return ZST_ERROR;
-		auto *vf = (zst_video_frame_t*)buf->payload;
-		if (!vf->width || !vf->height || (vf->width & 1) || (vf->height & 1) || !vf->plane[0]) return ZST_ERROR;
-		zst_dante_rx_t *rx = p->output;
-		std::lock_guard<std::mutex> guard(p->video_init_lock);
-		if (!rx->drm_modeset_active) {
-			rx->dec_width = vf->width; rx->dec_height = vf->height; rx->dec_fps = 60.0;
-			if (start_drm_output(rx) != 0 || start_vdec_sink(rx) != 0) return ZST_ERROR;
-			LOGI("RTSP software decoder HDMI output initialized for %ux%u", vf->width, vf->height);
-		}
-		qcap2_rcbuffer_t *rc = qcap2_rcbuffer_new_av_frame();
-		if (!rc) return ZST_ERROR;
-		auto *frame = (qcap2_av_frame_t*)qcap2_rcbuffer_get_data(rc);
-		qcap2_av_frame_set_video_property(frame, QCAP_COLORSPACE_TYPE_NV12, vf->width, vf->height);
-		if (!qcap2_av_frame_alloc_buffer(frame, 32, 1)) { qcap2_rcbuffer_delete(rc); return ZST_ERROR; }
-		uint8_t *dst[4] = {}; int stride[4] = {};
-		qcap2_av_frame_get_buffer1(frame, dst, stride);
-		const uint32_t w=vf->width,h=vf->height;
-		if (!dst[0] || !dst[1] || stride[0] < (int)w || stride[1] < (int)w) {
-			qcap2_rcbuffer_delete(rc); return ZST_ERROR;
-		}
-		if (vf->format == AV_PIX_FMT_NV12 && vf->plane[1]) {
-			for (uint32_t y=0;y<h;y++) memcpy(dst[0]+(size_t)y*stride[0],vf->plane[0]+(size_t)y*vf->stride[0],w);
-			for (uint32_t y=0;y<(h+1)/2;y++) memcpy(dst[1]+(size_t)y*stride[1],vf->plane[1]+(size_t)y*vf->stride[1],w);
-		} else if ((vf->format == AV_PIX_FMT_YUV420P || vf->format == AV_PIX_FMT_YUVJ420P) && vf->plane[1] && vf->plane[2]) {
-			for (uint32_t y=0;y<h;y++) memcpy(dst[0]+(size_t)y*stride[0],vf->plane[0]+(size_t)y*vf->stride[0],w);
-			for (uint32_t y=0;y<(h+1)/2;y++) {
-				const uint8_t *u=vf->plane[1]+(size_t)y*vf->stride[1], *v=vf->plane[2]+(size_t)y*vf->stride[2];
-				uint8_t *uv=dst[1]+(size_t)y*stride[1];
-				for (uint32_t x=0;x<(w+1)/2;x++){uv[2*x]=u[x];uv[2*x+1]=v[x];}
-			}
-		} else { qcap2_rcbuffer_delete(rc); return ZST_ERROR; }
-		QRESULT qr=qcap2_video_sink_push(rx->vdec_sink,rc);
-		qcap2_rcbuffer_delete(rc);
-		if(qr!=QCAP_RS_SUCCESSFUL) return ZST_ERROR;
+		if (!p || !p->output || !buf || !buf->memory.data) return ZST_ERROR;
+		rx_video_stats_t *stats = p->output->video_stats;
+		stats->total_packets++;
+		stats->total_bytes += buf->memory.size;
+		rx_video_feed_decoder(stats, (const uint8_t*)buf->memory.data,
+		                      buf->memory.size, buf->flags, buf->pts);
 		p->video_frames++;
 		return ZST_OK;
 	}
 
-	static inline int32_t rtsp_audio_sample(const uint8_t *ptr, enum AVSampleFormat fmt) {
-		if (fmt==AV_SAMPLE_FMT_U8 || fmt==AV_SAMPLE_FMT_U8P) return ((int32_t)*ptr-128)*16777216;
-		if (fmt==AV_SAMPLE_FMT_FLTP || fmt==AV_SAMPLE_FMT_FLT) {
-			float f; memcpy(&f,ptr,sizeof(f)); if(f>1.f)f=1.f;if(f< -1.f)f=-1.f;return (int32_t)(f*2147483647.0f);
+	/* AAC decoder uses AVSampleFormat values; audioresample uses ZST_AUDIO_FMT.
+	 * Translate metadata only, keeping the decoder buffer alive through the
+	 * resampler. Never reinterpret enum values or planar data as packed PCM. */
+	static zst_result_t rtsp_audio_adapter_push(zst_pad_t *pad, zst_buffer_t *buf) {
+		if (!pad || !pad->parent || !buf || !buf->payload) return ZST_ERROR;
+		auto *s = (rtsp_sink_priv_t*)pad->parent->priv;
+		auto *p = s->playback;
+		auto *af = (zst_audio_frame_t*)buf->payload;
+		uint32_t format;
+		const char *format_name;
+		switch ((enum AVSampleFormat)af->format) {
+		case AV_SAMPLE_FMT_U8: format = ZST_AUDIO_FMT_U8; format_name = "u8"; break;
+		case AV_SAMPLE_FMT_S16: format = ZST_AUDIO_FMT_S16LE; format_name = "s16"; break;
+		case AV_SAMPLE_FMT_S32: format = ZST_AUDIO_FMT_S32LE; format_name = "s32"; break;
+		case AV_SAMPLE_FMT_FLT: format = ZST_AUDIO_FMT_F32LE; format_name = "flt"; break;
+		case AV_SAMPLE_FMT_S16P: format = ZST_AUDIO_FMT_S16P; format_name = "s16p"; break;
+		case AV_SAMPLE_FMT_S32P: format = ZST_AUDIO_FMT_S32P; format_name = "s32p"; break;
+		case AV_SAMPLE_FMT_FLTP: format = ZST_AUDIO_FMT_F32P; format_name = "fltp"; break;
+		default: LOGE("Unsupported AAC decoder sample format: %u", af->format); return ZST_ERROR;
 		}
-		if (fmt==AV_SAMPLE_FMT_DBLP || fmt==AV_SAMPLE_FMT_DBL) {
-			double d;memcpy(&d,ptr,sizeof(d));if(d>1.0)d=1.0;if(d< -1.0)d=-1.0;return (int32_t)(d*2147483647.0);
+		if (p->audio_rate != af->sample_rate || p->audio_channels != af->channels || p->audio_format != af->format) {
+			LOGI("RTSP AAC output: %u Hz, %u channels, %s -> shared PCM 48000 Hz stereo S32LE",
+			     af->sample_rate, af->channels, format_name);
+			p->audio_rate = af->sample_rate; p->audio_channels = af->channels; p->audio_format = af->format;
 		}
-		if (fmt==AV_SAMPLE_FMT_S16P || fmt==AV_SAMPLE_FMT_S16) { int16_t v;memcpy(&v,ptr,2);return (int32_t)v*65536; }
-		if (fmt==AV_SAMPLE_FMT_S32P || fmt==AV_SAMPLE_FMT_S32) { int32_t v;memcpy(&v,ptr,4);return v; }
-		if (fmt==AV_SAMPLE_FMT_S64P || fmt==AV_SAMPLE_FMT_S64) { int64_t v;memcpy(&v,ptr,8);return (int32_t)(v>>32); }
-		return 0;
+		auto *input = zst_buffer_create(ZST_BUFFER_AUDIO_FRAME);
+		auto *frame = (zst_audio_frame_t*)malloc(sizeof(zst_audio_frame_t));
+		if (!input || !frame) { if (input) zst_buffer_unref(input); free(frame); return ZST_ERROR; }
+		*frame = *af;
+		frame->format = format;
+		input->payload = frame;
+		input->memory.data = buf->memory.data;
+		input->memory.size = buf->memory.size;
+		input->memory.priv = zst_buffer_ref(buf);
+		input->memory.release = [](void *owner) { zst_buffer_unref((zst_buffer_t*)owner); };
+		input->destroy = [](zst_buffer_t *buffer) { free(buffer->payload); };
+		input->pts = buf->pts; input->dts = buf->dts; input->duration = buf->duration; input->flags = buf->flags;
+		zst_result_t result = zst_pad_push(zst_element_get_pad(pad->parent, "src"), input);
+		zst_buffer_unref(input);
+		return result;
 	}
-	static inline int rtsp_audio_sample_size(enum AVSampleFormat fmt) {
-		switch(fmt){
-		case AV_SAMPLE_FMT_U8: case AV_SAMPLE_FMT_U8P: return 1;
-		case AV_SAMPLE_FMT_S16: case AV_SAMPLE_FMT_S16P: return 2;
-		case AV_SAMPLE_FMT_S32: case AV_SAMPLE_FMT_S32P:
-		case AV_SAMPLE_FMT_FLT: case AV_SAMPLE_FMT_FLTP: return 4;
-		case AV_SAMPLE_FMT_S64: case AV_SAMPLE_FMT_S64P:
-		case AV_SAMPLE_FMT_DBL: case AV_SAMPLE_FMT_DBLP: return 8;
-		default:return 0;
+	static zst_element_t *rtsp_audio_adapter_create(rtsp_playback_t *p) {
+		static const zst_element_ops_t ops = {.name="rtsp_aac_format_adapter"};
+		auto *priv = (rtsp_sink_priv_t*)calloc(1, sizeof(rtsp_sink_priv_t));
+		if (!priv) return nullptr;
+		priv->playback = p;
+		auto *el = zst_element_create(&ops, priv);
+		if (!el) { free(priv); return nullptr; }
+		for (int i = 0; i < 2; ++i) {
+			auto *pad = zst_pad_create(i ? "src" : "sink", i ? ZST_PAD_SRC : ZST_PAD_SINK);
+			if (!pad) { zst_element_destroy(el); return nullptr; }
+			if (zst_element_add_pad(el, pad) != ZST_OK) { zst_pad_destroy(pad); zst_element_destroy(el); return nullptr; }
+			if (!i) pad->push = rtsp_audio_adapter_push;
 		}
-	}
-	static inline bool rtsp_audio_is_planar(enum AVSampleFormat fmt) {
-		return fmt==AV_SAMPLE_FMT_U8P || fmt==AV_SAMPLE_FMT_S16P ||
-		       fmt==AV_SAMPLE_FMT_S32P || fmt==AV_SAMPLE_FMT_FLTP ||
-		       fmt==AV_SAMPLE_FMT_DBLP || fmt==AV_SAMPLE_FMT_S64P;
+		return el;
 	}
 	static zst_result_t rtsp_audio_frame(rtsp_playback_t *p,zst_buffer_t *buf) {
 		if(!p||!p->output||!p->output->audio_pcm||!buf||!buf->payload)return ZST_ERROR;
 		auto *af=(zst_audio_frame_t*)buf->payload;
-		if(af->sample_rate!=48000 || af->channels==0 || af->channels>2 || af->nb_samples==0)return ZST_ERROR;
-		auto fmt=(enum AVSampleFormat)af->format;
-		int bps=rtsp_audio_sample_size(fmt); if(bps<=0)return ZST_ERROR;
-		bool planar=rtsp_audio_is_planar(fmt);
-		const uint8_t * const *planes=planar?(const uint8_t * const *)af->data:nullptr;
-		const uint8_t *packed=planar?nullptr:(const uint8_t*)af->data;
-		if((planar&&!planes)||(!planar&&!packed))return ZST_ERROR;
-		std::vector<uint8_t> pcm((size_t)af->nb_samples*2*4);
-		for(uint32_t i=0;i<af->nb_samples;i++)for(uint32_t c=0;c<2;c++){
-			uint32_t sc=af->channels==1?0:c;
-			const uint8_t *src=planar?planes[sc]+(size_t)i*bps:packed+((size_t)i*af->channels+sc)*bps;
-			int32_t sample=rtsp_audio_sample(src,fmt)>>8; uint8_t *d=pcm.data()+((size_t)i*2+c)*4;
-			d[0]=(uint8_t)sample;d[1]=(uint8_t)(sample>>8);d[2]=(uint8_t)(sample>>16);d[3]=0;
-		}
-		std::lock_guard<std::mutex> lock(p->output->audio_lock);
-		uint32_t offset=0;
-		while(offset<af->nb_samples){
-			snd_pcm_sframes_t n=snd_pcm_writei(p->output->audio_pcm,
-				pcm.data()+(size_t)offset*2*4,af->nb_samples-offset);
-			if(n>0){offset+=(uint32_t)n;continue;}
-			if(n==-EAGAIN){snd_pcm_wait(p->output->audio_pcm,100);continue;}
-			if(n==-EPIPE||n==-ESTRPIPE){snd_pcm_prepare(p->output->audio_pcm);continue;}
-			return ZST_ERROR;
-		}
+		if (af->sample_rate != 48000 || af->channels != 2 || af->format != ZST_AUDIO_FMT_S32LE) return ZST_ERROR;
+		rx_audio_playback(p->output, buf, af);
 		p->audio_frames++;
 		return ZST_OK;
 	}
@@ -3523,8 +3505,13 @@ namespace __sc6f0_dante_rx__ {
 		return s->video?rtsp_video_frame(s->playback,buf):rtsp_audio_frame(s->playback,buf);
 	}
 	static zst_result_t rtsp_sink_push(zst_pad_t *pad,zst_buffer_t *buf){return rtsp_sink_process(pad->parent,buf,nullptr);}
+	static zst_result_t rtsp_video_sink_event(zst_element_t *el, zst_pad_t*, zst_pad_event_t *event) {
+		if (!el || !el->priv || !event || event->type != ZST_PAD_EVENT_CAPS) return ZST_OK;
+		auto *s = (rtsp_sink_priv_t*)el->priv;
+		return rx_h264_apply_caps(s->playback->output, event->as.caps.caps);
+	}
 	static zst_element_t *rtsp_sink_create(rtsp_playback_t *p,bool video){
-		static const zst_element_ops_t vops={.name="rtsp_hdmi_video_sink",.process=rtsp_sink_process};
+		static const zst_element_ops_t vops={.name="rtsp_hdmi_video_sink",.process=rtsp_sink_process,.event=rtsp_video_sink_event};
 		static const zst_element_ops_t aops={.name="rtsp_hdmi_audio_sink",.process=rtsp_sink_process};
 		auto *priv=(rtsp_sink_priv_t*)calloc(1,sizeof(rtsp_sink_priv_t));if(!priv)return nullptr;
 		priv->playback=p;priv->video=video;
@@ -3533,34 +3520,47 @@ namespace __sc6f0_dante_rx__ {
 		pad->push=rtsp_sink_push;return el;
 	}
 	static int run_rtsp_client(const std::string &url) {
-		rtsp_playback_t p; p.output=new(std::nothrow) zst_dante_rx_t(); if(!p.output)return 1;
+		rtsp_playback_t p; p.output=start_qcap_media_rx(true); if(!p.output)return 1;
 		auto cleanup=[&](){
-			zst_element_t *els[]={p.source,p.vdec,p.aparser,p.adec,p.vsink,p.asink};
+			zst_element_t *els[]={p.source,p.vparser,p.aparser,p.adec,p.audio_adapter,p.aresampler,p.vsink,p.asink};
 			for(auto *el:els)if(el)zst_element_set_state(el,ZST_STATE_NULL);
-			if(p.output->vdec_sink){if(p.output->vdec_sink_started)qcap2_video_sink_stop(p.output->vdec_sink);qcap2_video_sink_delete(p.output->vdec_sink);p.output->vdec_sink=nullptr;}
-			stop_drm_output(p.output);stop_hdmi_audio_sink(p.output);
 			for(auto *el:els)if(el)zst_element_destroy(el);
-			delete p.output;p.output=nullptr;
+			stop_qcap_media_rx(p.output);p.output=nullptr;
 		};
-		p.source=zst_rtsp_source_create(url.c_str()); p.vdec=zst_h264_decoder_create();
+		p.source=zst_rtsp_source_create(url.c_str()); p.vparser=zst_h26x_parser_create();
 		p.aparser=zst_aac_parser_create(); p.adec=zst_aac_decoder_create();
+		p.audio_adapter=rtsp_audio_adapter_create(&p); p.aresampler=zst_audio_resampler_create(48000,2,"S32LE");
 		p.vsink=rtsp_sink_create(&p,true);p.asink=rtsp_sink_create(&p,false);
-		if(!p.source||!p.vdec||!p.aparser||!p.adec||!p.vsink||!p.asink){LOGE("RTSP playback element creation failed");cleanup();return 1;}
-		if(zst_pad_link(zst_element_get_pad(p.source,"video"),zst_element_get_pad(p.vdec,"sink"))!=ZST_OK||
-		   zst_pad_link(zst_element_get_pad(p.vdec,"src"),zst_element_get_pad(p.vsink,"sink"))!=ZST_OK||
+		if(!p.source||!p.vparser||!p.aparser||!p.adec||!p.audio_adapter||!p.aresampler||!p.vsink||!p.asink){LOGE("RTSP playback element creation failed");cleanup();return 1;}
+		/* The bundled AArch64 floating-point AAC SIMD path corrupts PCM.
+		 * Use the independently verified fixed-point backend without changing
+		 * process-global FFmpeg CPU flags or the shared media output path. */
+		if(zst_element_set_property_string(p.adec,"decoder","aac_fixed")!=ZST_OK){LOGE("RTSP AAC fixed-point decoder configuration failed");cleanup();return 1;}
+		if(zst_element_set_property_string(p.vparser,"codec","h264")!=ZST_OK||
+		   zst_element_set_property_string(p.vparser,"input-stream-format","byte-stream")!=ZST_OK||
+		   zst_element_set_property_string(p.vparser,"aggregate-au","true")!=ZST_OK){LOGE("RTSP H.264 AU parser configuration failed");cleanup();return 1;}
+		if(zst_pad_link(zst_element_get_pad(p.source,"video"),zst_element_get_pad(p.vparser,"sink"))!=ZST_OK||
+		   zst_pad_link(zst_element_get_pad(p.vparser,"src"),zst_element_get_pad(p.vsink,"sink"))!=ZST_OK||
 		   zst_pad_link(zst_element_get_pad(p.source,"audio"),zst_element_get_pad(p.aparser,"sink"))!=ZST_OK||
 		   zst_pad_link(zst_element_get_pad(p.aparser,"src"),zst_element_get_pad(p.adec,"sink"))!=ZST_OK||
-		   zst_pad_link(zst_element_get_pad(p.adec,"src"),zst_element_get_pad(p.asink,"sink"))!=ZST_OK){LOGE("RTSP pipeline pad link failed");cleanup();return 1;}
-		start_hdmi_audio_sink(p.output);
-		zst_element_set_state(p.vdec,ZST_STATE_READY);zst_element_set_state(p.aparser,ZST_STATE_READY);zst_element_set_state(p.adec,ZST_STATE_READY);
+		   zst_pad_link(zst_element_get_pad(p.adec,"src"),zst_element_get_pad(p.audio_adapter,"sink"))!=ZST_OK||
+		   zst_pad_link(zst_element_get_pad(p.audio_adapter,"src"),zst_element_get_pad(p.aresampler,"sink"))!=ZST_OK||
+		   zst_pad_link(zst_element_get_pad(p.aresampler,"src"),zst_element_get_pad(p.asink,"sink"))!=ZST_OK){LOGE("RTSP pipeline pad link failed");cleanup();return 1;}
+		zst_element_set_state(p.audio_adapter,ZST_STATE_READY);zst_element_set_state(p.aresampler,ZST_STATE_READY);
+		zst_element_set_state(p.vparser,ZST_STATE_READY);zst_element_set_state(p.aparser,ZST_STATE_READY);zst_element_set_state(p.adec,ZST_STATE_READY);
 		zst_element_set_state(p.vsink,ZST_STATE_READY);zst_element_set_state(p.asink,ZST_STATE_READY);
-		zst_element_set_state(p.vdec,ZST_STATE_PLAYING);zst_element_set_state(p.aparser,ZST_STATE_PLAYING);zst_element_set_state(p.adec,ZST_STATE_PLAYING);
+		zst_element_set_state(p.vparser,ZST_STATE_PLAYING);zst_element_set_state(p.aparser,ZST_STATE_PLAYING);zst_element_set_state(p.adec,ZST_STATE_PLAYING);
+		zst_element_set_state(p.audio_adapter,ZST_STATE_PLAYING);zst_element_set_state(p.aresampler,ZST_STATE_PLAYING);
 		zst_element_set_state(p.vsink,ZST_STATE_PLAYING);zst_element_set_state(p.asink,ZST_STATE_PLAYING);
 		if(zst_element_set_state(p.source,ZST_STATE_PLAYING)!=ZST_OK){LOGE("Could not start RTSP client");cleanup();return 1;}
-		LOGI("Independent RTSP client active: %s",url.c_str());
+		LOGI("Independent RTSP client active: H.264 -> shared ALLEGRO2/DRM, AAC -> shared PCM/HDMI: %s",url.c_str());
 		while(!g_stop_requested)pause();
 		zst_element_set_state(p.source,ZST_STATE_NULL);
-		LOGI("RTSP client stopped: video frames=%llu audio frames=%llu",(unsigned long long)p.video_frames.load(),(unsigned long long)p.audio_frames.load());
+		stop_vdec_decoder(p.output);
+		LOGI("RTSP client stopped: video AUs=%llu decoded frames=%llu decode errors=%llu audio frames=%llu audio playback errors=%llu unsupported audio periods=%llu",
+		     (unsigned long long)p.video_frames.load(),(unsigned long long)p.output->decoded_frames.load(),
+		     (unsigned long long)p.output->decoded_errors.load(),(unsigned long long)p.audio_frames.load(),
+		     (unsigned long long)p.output->audio_playback_errors.load(),(unsigned long long)p.output->audio_unsupported_periods.load());
 		cleanup();return 0;
 	}
 }
