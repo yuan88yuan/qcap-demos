@@ -117,9 +117,7 @@ struct App0 {
 	}
 
 	int Run() {
-		mTestCase1.DoWork();
-
-		return 0;
+		return mTestCase1.DoWork() == QCAP_RS_SUCCESSFUL ? 0 : 1;
 	}
 
 	struct qcap_dante_tx_t {
@@ -370,8 +368,8 @@ struct App0 {
 		}
 #endif // BUILD_WITH_DAUSERVICE
 
-		void DoWork() {
-			QRESULT qres;
+		QRESULT DoWork() {
+			QRESULT qres = QCAP_RS_SUCCESSFUL;
 
 			memset(&current_video_format, 0, sizeof(current_video_format));
 			memset(&current_audio_info, 0, sizeof(current_audio_info));
@@ -402,6 +400,7 @@ struct App0 {
 					break;
 				}
 				if(qres_evt != QCAP_RS_SUCCESSFUL) {
+					qres = qres_evt;
 					break;
 				}
 
@@ -411,6 +410,7 @@ struct App0 {
 			}
 
 			_FreeStack_main_.flush();
+			return qres;
 		}
 
 		QRETURN OnStart(free_stack_t& _FreeStack_, QRESULT& qres) {
@@ -429,7 +429,7 @@ struct App0 {
 
 				this->pHdmiRxDauServ = pHdmiRxDauServ;
 
-				StartDmx();
+				qres = StartDmx();
 			}
 			return QCAP_RT_OK;
 		}
@@ -486,8 +486,8 @@ struct App0 {
 		}
 #endif // BUILD_WITH_DAUSERVICE
 
-		void StartDmx() {
-			QRESULT qres;
+		QRESULT StartDmx() {
+			QRESULT qres = QCAP_RS_SUCCESSFUL;
 			free_stack_t& _FreeStack_ = _FreeStack_evt_;
 
 			if(! bDmxStarted) switch(1) { case 1:
@@ -512,6 +512,7 @@ struct App0 {
 
 				bDmxStarted = true;
 			}
+			return qres;
 		}
 
 		QRESULT StartDmx(free_stack_t& _FreeStack_, qcap2_demuxer_t** ppDmx, qcap2_event_t** ppDmxEvent) {
