@@ -55,8 +55,47 @@ that decoding and HDMI playback recovered.
 The retry delay is in addition to connection/handshake timeouts. A silent
 network blackhole that does not close/error the socket is not covered by a
 media-inactivity watchdog here; recovery may depend on TCP detecting the loss.
-Changing stream codec/resolution during server restart is a separate test.
+Changing stream codec during server restart is a separate test.
 The operator reported that hardware reconnect testing passed on 2026-10-01
 using the rebuilt xlnk2_arm64 SDK and RX application. Detailed test logs and
 the individual scenarios exercised were not supplied; the coding agent did
 not independently verify hardware recovery.
+
+## RTSP EDID / VProcSS scaling
+
+RTSP uses the same output setup as AVH: source dimensions and frame rate come
+from h26xparse SPS/PPS caps, and HDMI timing is selected from the connected
+display's EDID modes. An exact supported mode is preferred; otherwise the
+highest-resolution, highest-refresh progressive mode within 3840x2160,
+594 MHz and 60 Hz is selected, following the existing AVH policy.
+
+The decoded framebuffer supplies the DRM plane source dimensions. The plane
+destination rectangle configures VProcSS scaling, preserving aspect ratio
+with centered letterboxing/pillarboxing and even-sized NV12 dimensions. The
+black primary plane fills the unused output area. No software scaling is used.
+
+For a non-exact EDID match the application reports, for example:
+
+```text
+WARN[sc6f0-dante-rx]: [RTSP] input 3840x2160@60.00 not in EDID; scaling to 1920x1080 (1920x1080@60.00)
+```
+
+`RTSP VProcSS scaler` additionally reports source dimensions, scaled destination
+dimensions, destination position, and HDMI output timing.
+
+When RTSP caps change after startup, decoder output callbacks are stopped,
+the old decoder and display are released, and new caps are applied. The next
+IDR rebuilds the shared EDID/VProcSS output and decoder. Unchanged caps during
+a reconnect do not force a rebuild. This is limited to H.264 playback; HDMI
+hotplug without a source caps change does not trigger an automatic modeset.
+
+Operator verification should include 3840x2160 input on a 1920x1080-only
+monitor, a matching input/output mode, non-16:9 input (aspect preservation),
+and a server restart with changed H.264 resolution. Confirm the scaler log,
+HDMI picture, and increasing decoded frame count for each case.
+
+The operator reported that testing of the EDID/VProcSS changes passed on
+2026-10-01 using the rebuilt xlnk2_arm64 RX application (SHA-256:
+`39c2f46813441c05c20b32712ef5dc9b2b7fd5bb4ef0a637a4425782e092c091`).
+Detailed logs and individual scenario coverage were not supplied; this report
+does not establish that every scenario above was exercised.

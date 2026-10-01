@@ -564,6 +564,9 @@ namespace __sc6f0_dante_rx__ {
 		/* Direct RTP verification mode (bypasses the Dante daemon/session). */
 		bool direct_mode = false;
 		bool decode_enabled = true;
+		/* RTSP already supplies parsed AUs and caps from its pipeline parser. */
+		bool h264_input_parsed = false;
+		const char* media_source_name = "AVH";
 		/* Decode-only isolation: run VCU decode + pop counting without
 		 * DRM modeset / vsink display on plane 36. */
 		std::atomic<bool> display_enabled{true};
@@ -1076,8 +1079,8 @@ namespace __sc6f0_dante_rx__ {
 		rx->decoder_wait_for_idr.store(true, std::memory_order_release);
 		rx->vdec_init_thread = std::thread([rx]() {
 			bool ready = true;
-			/* Establish the known-good CEA 2160p60 timing before the XLNX2 plane
-			 * sink begins flips. This avoids the monitor's 533.25 MHz RB mode. */
+			/* Select HDMI timing from EDID using the source format, then configure
+			 * the shared VProcSS destination before decoder output begins flips. */
 			if (rx->display_enabled &&
 				(start_drm_output(rx) != 0 || start_vdec_sink(rx) != 0))
 				ready = false;
@@ -1350,12 +1353,16 @@ namespace __sc6f0_dante_rx__ {
 		}
 		rx->drm_modeset_active = true;
 		rx->drm_output_mode = mode;
+		if (!selected_exact)
+			LOGW("[%s] input %ux%u@%.2f not in EDID; scaling to %s (%ux%u@%.2f)",
+			     rx->media_source_name, width, height, rx->dec_fps,
+			     mode.name, mode.hdisplay, mode.vdisplay, mode_vrefresh(&mode));
 		if (!selected_exact && mode_vrefresh(&mode) + 0.5 < rx->dec_fps)
-			LOGW("EDID output %.2f Hz is slower than AVH input %.2f fps; display frames may be dropped",
-			     mode_vrefresh(&mode), rx->dec_fps);
-		LOGI("DRM HDMI active: %s %ux%u@%.2f, clock=%u kHz; AVH input %ux%u@%.2f (%s); connector %u, CRTC %u, primary plane %u, video plane %u",
+			LOGW("EDID output %.2f Hz is slower than %s input %.2f fps; display frames may be dropped",
+			     mode_vrefresh(&mode), rx->media_source_name, rx->dec_fps);
+		LOGI("DRM HDMI active: %s %ux%u@%.2f, clock=%u kHz; %s input %ux%u@%.2f (%s); connector %u, CRTC %u, primary plane %u, video plane %u",
 		     mode.name, mode.hdisplay, mode.vdisplay, mode_vrefresh(&mode), mode.clock,
-		     width, height, rx->dec_fps, selected_exact ? "exact" : "VProcSS scaling",
+		     rx->media_source_name, width, height, rx->dec_fps, selected_exact ? "exact" : "VProcSS scaling",
 		     rx->drm_connector_id, rx->drm_crtc_id, rx->drm_primary_plane_id, video_plane_id);
 		return 0;
 	}
@@ -1377,6 +1384,11 @@ namespace __sc6f0_dante_rx__ {
 		 * supplies SRC_W/H. A separate DRM rect supplies CRTC_W/H to VProcSS. */
 		const uint32_t out_w = rx->drm_output_mode.hdisplay;
 		const uint32_t out_h = rx->drm_output_mode.vdisplay;
+		if (!rx->dec_width || !rx->dec_height || !out_w || !out_h) {
+			LOGE("cannot configure VProcSS without source and HDMI output dimensions");
+			qcap2_video_sink_delete(sink);
+			return -1;
+		}
 		uint32_t rect_w = out_w, rect_h = out_h;
 		if ((uint64_t)rx->dec_width * out_h > (uint64_t)rx->dec_height * out_w)
 			rect_h = (uint64_t)out_w * rx->dec_height / rx->dec_width;
@@ -1408,8 +1420,25 @@ namespace __sc6f0_dante_rx__ {
 
 		rx->vdec_sink = sink;
 		rx->vdec_sink_started = true;
+		LOGI("%s VProcSS scaler: source %ux%u -> destination %ux%u at (%u,%u), HDMI %ux%u@%.2f (aspect preserved)",
+		     rx->media_source_name, rx->dec_width, rx->dec_height, rect_w, rect_h,
+		     (out_w - rect_w) / 2, (out_h - rect_h) / 2,
+		     out_w, out_h, mode_vrefresh(&rx->drm_output_mode));
 		LOGI("ALLEGRO2 decoder output is displayed on DRM plane %u", drm_plane_id);
 		return 0;
+	}
+
+	/* Stop decoder callbacks before calling this helper. The next startup must
+	 * re-read EDID and recalculate the VProcSS rectangle for the new source. */
+	static void stop_vdec_display(zst_dante_rx_t* rx) {
+		std::lock_guard<std::mutex> display_guard(rx->display_lock);
+		if (rx->vdec_sink) {
+			if (rx->vdec_sink_started) qcap2_video_sink_stop(rx->vdec_sink);
+			qcap2_video_sink_delete(rx->vdec_sink);
+			rx->vdec_sink = nullptr;
+		}
+		rx->vdec_sink_started = false;
+		stop_drm_output(rx);
 	}
 
 	/* QCAP owns Dante control/RTP/depayload in --use-qcap mode. Keep the
@@ -1443,11 +1472,7 @@ namespace __sc6f0_dante_rx__ {
 		stop_vdec_decoder(rx);
 		rx_h264_parser_destroy(rx);
 		if (rx->extra_data) free(rx->extra_data);
-		if (rx->vdec_sink) {
-			if (rx->vdec_sink_started) qcap2_video_sink_stop(rx->vdec_sink);
-			qcap2_video_sink_delete(rx->vdec_sink);
-		}
-		stop_drm_output(rx);
+		stop_vdec_display(rx);
 		stop_hdmi_audio_sink(rx);
 		free(rx->video_stats);
 		free(rx->audio_stats);
@@ -1588,7 +1613,7 @@ namespace __sc6f0_dante_rx__ {
 		}
 		/* The scheduler has multiple workers. Serialize file writes and decoder
 		 * initialization/input even when upstream pushes overlap. */
-		if (rx->decode_enabled) {
+		if (rx->decode_enabled && !rx->h264_input_parsed) {
 			zst_result_t parse_result = rx_h264_parser_push(rx, data, data_size, pts);
 			if (parse_result != ZST_OK) {
 				static std::atomic<uint64_t> parser_errors{0};
@@ -3508,7 +3533,41 @@ namespace __sc6f0_dante_rx__ {
 	static zst_result_t rtsp_video_sink_event(zst_element_t *el, zst_pad_t*, zst_pad_event_t *event) {
 		if (!el || !el->priv || !event || event->type != ZST_PAD_EVENT_CAPS) return ZST_OK;
 		auto *s = (rtsp_sink_priv_t*)el->priv;
-		return rx_h264_apply_caps(s->playback->output, event->as.caps.caps);
+		auto *rx = s->playback->output;
+		const zst_caps_t *caps = event->as.caps.caps;
+		if (!caps || !caps->structs || strcmp(caps->structs->media_type,"video/x-h264") != 0)
+			return ZST_OK;
+		const void *avcc = nullptr;
+		size_t avcc_size = 0;
+		uint32_t width = 0, height = 0;
+		double fps = 0.0;
+		if (zst_caps_get_buffer(caps,ZST_H26X_PARSER_CAPS_AVCC,&avcc,&avcc_size) != ZST_OK ||
+		    !avcc || avcc_size < 11 || avcc_size > INT_MAX ||
+		    zst_caps_get_uint(caps,"width",&width) != ZST_OK ||
+		    zst_caps_get_uint(caps,"height",&height) != ZST_OK || !width || !height)
+			return ZST_OK;
+		if (zst_caps_get_double(caps,ZST_H26X_PARSER_CAPS_FRAMERATE,&fps) != ZST_OK ||
+		    fps < 1.0 || fps > 240.0) fps = 60.0;
+		bool restart = false;
+		{
+			std::lock_guard<std::mutex> decoder_guard(rx->decoder_lock);
+			restart = (rx->decoder_initializing.load(std::memory_order_acquire) ||
+			           rx->vdec_started || rx->drm_modeset_active) &&
+			          (rx->dec_width != width || rx->dec_height != height || fabs(rx->dec_fps-fps) > 0.005 ||
+			           !rx->extra_data || rx->extra_data_size != (int)avcc_size ||
+			           memcmp(rx->extra_data,avcc,avcc_size) != 0);
+		}
+		if (restart) {
+			LOGI("RTSP source format changed to %ux%u@%.2f; rebuilding decoder and EDID/VProcSS output",
+			     width,height,fps);
+			/* CAPS and AUs are delivered serially by the RTSP source thread.
+			 * Never hold decoder_lock while joining initialization/callbacks. */
+			stop_vdec_decoder(rx);
+			stop_vdec_display(rx);
+		}
+		/* The next IDR uses AVH's common asynchronous DRM/sink initialization:
+		 * EDID selects HDMI timing; source dimensions select the scaler rect. */
+		return rx_h264_apply_caps(rx,caps);
 	}
 	static zst_element_t *rtsp_sink_create(rtsp_playback_t *p,bool video){
 		static const zst_element_ops_t vops={.name="rtsp_hdmi_video_sink",.process=rtsp_sink_process,.event=rtsp_video_sink_event};
@@ -3521,6 +3580,8 @@ namespace __sc6f0_dante_rx__ {
 	}
 	static int run_rtsp_client(const std::string &url) {
 		rtsp_playback_t p; p.output=start_qcap_media_rx(true); if(!p.output)return 1;
+		p.output->h264_input_parsed = true;
+		p.output->media_source_name = "RTSP";
 		auto cleanup=[&](){
 			zst_element_t *els[]={p.source,p.vparser,p.aparser,p.adec,p.audio_adapter,p.aresampler,p.vsink,p.asink};
 			for(auto *el:els)if(el)zst_element_set_state(el,ZST_STATE_NULL);
