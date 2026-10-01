@@ -3532,6 +3532,10 @@ namespace __sc6f0_dante_rx__ {
 		p.audio_adapter=rtsp_audio_adapter_create(&p); p.aresampler=zst_audio_resampler_create(48000,2,"S32LE");
 		p.vsink=rtsp_sink_create(&p,true);p.asink=rtsp_sink_create(&p,false);
 		if(!p.source||!p.vparser||!p.aparser||!p.adec||!p.audio_adapter||!p.aresampler||!p.vsink||!p.asink){LOGE("RTSP playback element creation failed");cleanup();return 1;}
+		/* Keep this playback instance alive across server restarts and outages. */
+		if(zst_element_set_property_bool(p.source,"reconnect",true)!=ZST_OK||
+		   zst_element_set_property_int(p.source,"reconnect-delay-ms",1000)!=ZST_OK||
+		   zst_element_set_property_int(p.source,"max-reconnect-attempts",-1)!=ZST_OK){LOGE("RTSP reconnect configuration failed");cleanup();return 1;}
 		/* The bundled AArch64 floating-point AAC SIMD path corrupts PCM.
 		 * Use the independently verified fixed-point backend without changing
 		 * process-global FFmpeg CPU flags or the shared media output path. */
@@ -3554,7 +3558,15 @@ namespace __sc6f0_dante_rx__ {
 		zst_element_set_state(p.vsink,ZST_STATE_PLAYING);zst_element_set_state(p.asink,ZST_STATE_PLAYING);
 		if(zst_element_set_state(p.source,ZST_STATE_PLAYING)!=ZST_OK){LOGE("Could not start RTSP client");cleanup();return 1;}
 		LOGI("Independent RTSP client active: H.264 -> shared ALLEGRO2/DRM, AAC -> shared PCM/HDMI: %s",url.c_str());
-		while(!g_stop_requested)pause();
+		LOGI("RTSP reconnect enabled: retry delay=1000 ms, unlimited attempts");
+		while(!g_stop_requested){
+			sleep(3);
+			if(g_stop_requested)break;
+			LOGI("RTSP playback: video AUs=%llu decoded frames=%llu decode errors=%llu audio frames=%llu audio playback errors=%llu",
+			     (unsigned long long)p.video_frames.load(),(unsigned long long)p.output->decoded_frames.load(),
+			     (unsigned long long)p.output->decoded_errors.load(),(unsigned long long)p.audio_frames.load(),
+			     (unsigned long long)p.output->audio_playback_errors.load());
+		}
 		zst_element_set_state(p.source,ZST_STATE_NULL);
 		stop_vdec_decoder(p.output);
 		LOGI("RTSP client stopped: video AUs=%llu decoded frames=%llu decode errors=%llu audio frames=%llu audio playback errors=%llu unsupported audio periods=%llu",
