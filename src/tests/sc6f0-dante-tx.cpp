@@ -217,10 +217,71 @@ struct App0 {
 				lhs.sample_bits == rhs.sample_bits;
 		}
 
+		static void log_dau_method(const char* method, struct dau_service* dau,
+			struct DBusMessage* message, void* ctxt)
+		{
+			LOGI("DAU method=%s dau=%p message=%p ctxt=%p", method,
+				(void*)dau, (void*)message, ctxt);
+		}
+
+		static std::string dau_hex_bytes(const void* data, size_t size)
+		{
+			if(! data)
+				return "<null>";
+			static const char hex[] = "0123456789abcdef";
+			const unsigned char* bytes = (const unsigned char*)data;
+			std::string text;
+			text.reserve(size * 2);
+			for(size_t i = 0; i < size; ++i) {
+				text += hex[bytes[i] >> 4];
+				text += hex[bytes[i] & 0x0f];
+			}
+			return text;
+		}
+
+		static void log_dau_video_format(const char* method, const struct video_format* format)
+		{
+			if(! format) {
+				LOGI("DAU method=%s video_format=<null>", method);
+				return;
+			}
+			LOGI("DAU method=%s width=%u height=%u framerate=%u colorformat=%d bpp=%u interlaced=%d locked=%d",
+				method, format->width, format->height, format->framerate,
+				(int)format->colorformat, format->bpp,
+				(int)format->interlaced, (int)format->locked);
+		}
+
+		static void log_dau_audio_info(const char* method, const struct audio_info* info)
+		{
+			if(! info) {
+				LOGI("DAU method=%s audio_info=<null>", method);
+				return;
+			}
+			LOGI("DAU method=%s channel_count=%u speaker_map=%d level_shift_value=%u downmix_inhibit=%d lfe_playback_level=%u sample_rate=%u encoding=%d sample_bits=%u",
+				method, info->channel_count, (int)info->speaker_map,
+				info->level_shift_value, (int)info->downmix_inhibit,
+				info->lfe_playback_level, info->sample_rate,
+				(int)info->encoding, info->sample_bits);
+		}
+
+		static void log_dau_hdr_info(const char* method, const struct hdr_info* info)
+		{
+			if(! info) {
+				LOGI("DAU method=%s hdr_info=<null>", method);
+				return;
+			}
+			LOGI("DAU method=%s avi_c=%u avi_ec=%u avi_q=%u dv_tunneling=%d hdr[%u]=%s dv[%u]=%s",
+				method, (unsigned int)info->avi_c, (unsigned int)info->avi_ec,
+				(unsigned int)info->avi_q, (int)info->dv_tunneling,
+				(unsigned int)HDR_LEN, dau_hex_bytes(info->hdr, HDR_LEN).c_str(),
+				(unsigned int)DV_LEN, dau_hex_bytes(info->dv, DV_LEN).c_str());
+		}
+
 		static void _get_cable_status(struct dau_service *dau,
 						 struct DBusMessage *message,
 						 void *ctxt)
 		{
+			log_dau_method("GetCableStatus", dau, message, ctxt);
 			self_t* pThis = (self_t*)ctxt;
 
 			pThis->get_cable_status(dau, message);
@@ -233,6 +294,7 @@ struct App0 {
 			bool locked = current_video_format.locked;
 			spinlock_unlock(current_video_format_spinlock);
 
+			LOGI("DAU method=GetCableStatus locked=%d", (int)locked);
 			dau_reply_get_cable_status(dau, message, locked);
 
 			// StartDmx();
@@ -242,6 +304,7 @@ struct App0 {
 						struct DBusMessage *message,
 						void *ctxt)
 		{
+			log_dau_method("GetHDCP", dau, message, ctxt);
 			struct hdcp hdcp;
 
 			memset(&hdcp, 0x00, sizeof(hdcp));
@@ -249,6 +312,8 @@ struct App0 {
 			hdcp.hdcp14_supported = false;
 			hdcp.hdcp22_supported = true;
 
+			LOGI("DAU method=GetHDCP current=%d hdcp14_supported=%d hdcp22_supported=%d",
+				(int)hdcp.current, (int)hdcp.hdcp14_supported, (int)hdcp.hdcp22_supported);
 			dau_reply_get_hdcp(dau, message, &hdcp);
 		}
 
@@ -257,6 +322,8 @@ struct App0 {
 						enum hdcp_version version,
 						void *ctxt)
 		{
+			log_dau_method("SetHDCP", dau, message, ctxt);
+			LOGI("DAU method=SetHDCP version=%d (acknowledge only)", (int)version);
 			dau_reply_success(dau, message);
 		}
 
@@ -264,6 +331,7 @@ struct App0 {
 						 struct DBusMessage *message,
 						 void *ctxt)
 		{
+			log_dau_method("GetVideoFormat", dau, message, ctxt);
 			self_t* pThis = (self_t*)ctxt;
 
 			pThis->get_video_format(dau, message);
@@ -276,6 +344,7 @@ struct App0 {
 			format = current_video_format;
 			spinlock_unlock(current_video_format_spinlock);
 
+			log_dau_video_format("GetVideoFormat", &format);
 			dau_reply_get_video_format(dau, message, &format);
 		}
 
@@ -283,6 +352,7 @@ struct App0 {
 						   struct DBusMessage *message,
 						   void *ctxt)
 		{
+			log_dau_method("GetAudioInfo", dau, message, ctxt);
 			self_t* pThis = (self_t*)ctxt;
 
 			pThis->get_audio_info(dau, message);
@@ -295,6 +365,7 @@ struct App0 {
 			info = current_audio_info;
 			spinlock_unlock(current_audio_info_spinlock);
 
+			log_dau_audio_info("GetAudioInfo", &info);
 			dau_reply_get_audio_info(dau, message, &info);
 		}
 
@@ -302,6 +373,7 @@ struct App0 {
 					struct DBusMessage *message,
 					void *ctxt)
 		{
+			log_dau_method("GetHDR", dau, message, ctxt);
 			char hdr[HDR_LEN] = { 0x00, 0x01, 0x02 };
 			char dv[DV_LEN] = { 0x04, 0x05, 0x06 };
 			struct hdr_info info = {
@@ -312,6 +384,7 @@ struct App0 {
 				.dv = dv
 			};
 
+			log_dau_hdr_info("GetHDR", &info);
 			dau_reply_get_hdr(dau, message, &info);
 		}
 
@@ -320,6 +393,9 @@ struct App0 {
 						const void *edid,
 						void *ctxt)
 		{
+			log_dau_method("SetEDID", dau, message, ctxt);
+			LOGI("DAU method=SetEDID edid[%u]=%s (acknowledge only)",
+				(unsigned int)EDID_LEN, dau_hex_bytes(edid, EDID_LEN).c_str());
 			dau_reply_success(dau, message);
 		}
 
@@ -327,6 +403,8 @@ struct App0 {
 					   struct DBusMessage *message,
 					   void *ctxt)
 		{
+			log_dau_method("ToggleHPD", dau, message, ctxt);
+			LOGI("DAU method=ToggleHPD (acknowledge only)");
 			dau_reply_success(dau, message);
 		}
 
@@ -335,6 +413,8 @@ struct App0 {
 						 const struct video_format *format,
 						 void *ctxt)
 		{
+			log_dau_method("SetVideoFormat", dau, message, ctxt);
+			log_dau_video_format("SetVideoFormat", format);
 			dau_reply_success(dau, message);
 		}
 
@@ -343,6 +423,8 @@ struct App0 {
 						   const struct audio_info *info,
 						   void *ctxt)
 		{
+			log_dau_method("SetAudioInfo", dau, message, ctxt);
+			log_dau_audio_info("SetAudioInfo", info);
 			dau_reply_success(dau, message);
 		}
 
@@ -351,6 +433,8 @@ struct App0 {
 					const struct hdr_info *hdr,
 					void *ctxt)
 		{
+			log_dau_method("SetHDR", dau, message, ctxt);
+			log_dau_hdr_info("SetHDR", hdr);
 			dau_reply_success(dau, message);
 		}
 
@@ -358,12 +442,15 @@ struct App0 {
 					 struct DBusMessage *message,
 					 void *ctxt)
 		{
+			log_dau_method("GetEDID", dau, message, ctxt);
 			unsigned char edid[EDID_LEN];
 			unsigned int i;
 
 			for (i = 0; i < sizeof(edid); ++i)
 				edid[i] = i;
 
+			LOGI("DAU method=GetEDID edid[%u]=%s",
+				(unsigned int)EDID_LEN, dau_hex_bytes(edid, sizeof(edid)).c_str());
 			dau_reply_get_edid(dau, message, edid);
 		}
 #endif // BUILD_WITH_DAUSERVICE
@@ -666,12 +753,31 @@ struct App0 {
 					const bool publishVideoChange = (! mHavePublishedVideoState) ||
 						(! video_format_equal(oldVideoFormat, newVideoFormat));
 
+					LOGI("DAU video publish decision service=%p have_published=%d lock_changed=%d format_changed=%d publish_cable=%d publish_video=%d",
+						(void*)pHdmiRxDauServ, (int)mHavePublishedVideoState,
+						(int)(oldVideoFormat.locked != newVideoFormat.locked),
+						(int)(! video_format_equal(oldVideoFormat, newVideoFormat)),
+						(int)publishCableChange, (int)publishVideoChange);
+					log_dau_video_format("PublishVideo.old", &oldVideoFormat);
+					log_dau_video_format("PublishVideo.new", &newVideoFormat);
+
 					if(pHdmiRxDauServ && publishCableChange) {
+						LOGI("DAU signal=CableChange call service=%p locked=%d",
+							(void*)pHdmiRxDauServ, (int)newVideoFormat.locked);
 						dau_signal_cable_change(pHdmiRxDauServ);
+						LOGI("DAU signal=CableChange returned (receiver handling not confirmed)");
+					} else {
+						LOGI("DAU signal=CableChange skipped service_present=%d publish=%d",
+							(int)(pHdmiRxDauServ != NULL), (int)publishCableChange);
 					}
 
 					if(pHdmiRxDauServ && publishVideoChange) {
+						LOGI("DAU signal=VideoChange call service=%p", (void*)pHdmiRxDauServ);
 						dau_signal_video_change(pHdmiRxDauServ);
+						LOGI("DAU signal=VideoChange returned (receiver handling not confirmed)");
+					} else {
+						LOGI("DAU signal=VideoChange skipped service_present=%d publish=%d",
+							(int)(pHdmiRxDauServ != NULL), (int)publishVideoChange);
 					}
 #endif // BUILD_WITH_DAUSERVICE
 
