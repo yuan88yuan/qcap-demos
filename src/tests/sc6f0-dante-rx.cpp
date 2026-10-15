@@ -41,6 +41,7 @@ extern "C" {
 #include "ZzClock.h"
 #include "ZzUtils.h"
 #include "testkit.h"
+#include "sc6f0-dante-rx-output.h"
 
 // zstreamer headers
 #include "zst_types.h"
@@ -80,6 +81,32 @@ ZZ_MODULE_DECL(__zz_log__);
 using namespace __zz_clock__;
 
 namespace __sc6f0_dante_rx__ {
+	static sc6f0_rx_output::Backend g_output_backend = sc6f0_rx_output::Backend::HDMI;
+	static bool output_is_sdi() { return g_output_backend == sc6f0_rx_output::Backend::SDI; }
+	static const char* output_name() { return output_is_sdi() ? "SDI" : "HDMI"; }
+	static uint32_t g_sdi_output_width = 1920;
+	static uint32_t g_sdi_output_height = 1080;
+	static std::string output_audio_card() {
+		if (!output_is_sdi()) return "hw:xlnxhdmi1";
+		std::string selected;
+		int card = -1;
+		while (snd_card_next(&card) >= 0 && card >= 0) {
+			snd_ctl_t* control = nullptr;
+			const std::string device = "hw:" + std::to_string(card);
+			if (snd_ctl_open(&control, device.c_str(), 0) < 0) continue;
+			snd_ctl_card_info_t* info;
+			snd_ctl_card_info_alloca(&info);
+			if (snd_ctl_card_info(control, info) >= 0) {
+				const char* id = snd_ctl_card_info_get_id(info);
+				if (id && sc6f0_rx_output::sdi_card_id(id)) {
+					if (!selected.empty()) { snd_ctl_close(control); return ""; }
+					selected = std::string("hw:") + id;
+				}
+			}
+			snd_ctl_close(control);
+		}
+		return selected;
+	}
 	ZZ_MODULES_INIT();
 	struct modules_init_t {
 		modules_init_t() {
@@ -123,6 +150,36 @@ namespace __sc6f0_dante_rx__ {
 	}
 
 	/* ── Video statistics & custom sink ──────────────────────────────── */
+	static bool is_output_connector(int fd, const drmModeConnector* connector) {
+		if (!connector) return false;
+		if (!output_is_sdi()) return connector->connector_type == DRM_MODE_CONNECTOR_HDMIA;
+		/* Xilinx SDI uses Unknown; require its properties, not type alone. */
+		return connector->connector_type == DRM_MODE_CONNECTOR_Unknown &&
+			drm_property_id(fd, connector->connector_id, DRM_MODE_OBJECT_CONNECTOR, "sdi_mode") &&
+			drm_property_id(fd, connector->connector_id, DRM_MODE_OBJECT_CONNECTOR, "sdi_data_stream");
+	}
+
+	static bool is_sdi_mode(const drmModeModeInfo& mode) {
+		double fps = mode.htotal && mode.vtotal ?
+			(double)mode.clock * 1000.0 / mode.htotal / mode.vtotal : 0;
+		return sc6f0_rx_output::sdi_mode(mode.hdisplay, mode.vdisplay, fps, mode.clock,
+			(mode.flags & (DRM_MODE_FLAG_INTERLACE | DRM_MODE_FLAG_DBLSCAN)) != 0);
+	}
+
+	static bool add_output_properties(int fd, uint32_t connector, drmModeAtomicReq* request,
+		const drmModeModeInfo& mode) {
+		if (!output_is_sdi()) return true;
+		if (!is_sdi_mode(mode)) return false;
+		for (const auto& value : sc6f0_rx_output::sdi_properties(mode.hdisplay, mode.vdisplay)) {
+			uint32_t id = drm_property_id(fd, connector, DRM_MODE_OBJECT_CONNECTOR, value.name);
+			if (!id || drmModeAtomicAddProperty(request, connector, id, value.value) < 0) {
+				LOGE("required SDI property %s is unavailable", value.name);
+				return false;
+			}
+		}
+		return true;
+	}
+
 	struct zst_dante_rx_t; /* forward declaration */
 	struct rx_video_stats_t {
 		zst_dante_rx_t* rx = nullptr;
@@ -544,6 +601,8 @@ namespace __sc6f0_dante_rx__ {
 		std::atomic<bool>            decoder_initializing{false};
 		std::atomic<bool>            decoder_wait_for_idr{false};
 		std::mutex                   decoder_lock;
+		/* SDI output draining must remain live while input push blocks. */
+		std::mutex                   decoder_output_lock;
 		std::mutex                   h264_parser_lock;
 		std::mutex                   display_lock;
 		std::thread                  vdec_init_thread;
@@ -725,11 +784,40 @@ namespace __sc6f0_dante_rx__ {
 		return result;
 	}
 
-	static int select_hdmi_audio_route(unsigned int route) {
+	static int set_sdi_fpga_passthrough(bool enable) {
+		if (!output_is_sdi()) return 0;
+		const std::string card = output_audio_card();
+		if (card.empty()) return -1;
 		snd_ctl_t* control = nullptr;
-		int err = snd_ctl_open(&control, "hw:xlnxhdmi1", 0);
+		int err = snd_ctl_open(&control, card.c_str(), 0);
+		if (err < 0) return -1;
+		snd_ctl_elem_id_t* id;
+		snd_ctl_elem_value_t* value;
+		snd_ctl_elem_id_alloca(&id);
+		snd_ctl_elem_value_alloca(&value);
+		snd_ctl_elem_id_set_interface(id, SND_CTL_ELEM_IFACE_MIXER);
+		snd_ctl_elem_id_set_name(id, "SDI FPGA Passthrough");
+		snd_ctl_elem_value_set_id(value, id);
+		snd_ctl_elem_value_set_boolean(value, 0, enable);
+		err = snd_ctl_elem_write(control, value);
+		if (err >= 0) {
+			err = snd_ctl_elem_read(control, value);
+			if (err >= 0 && !!snd_ctl_elem_value_get_boolean(value, 0) != enable) err = -EIO;
+		}
+		snd_ctl_close(control);
+		if (err < 0) LOGE("SDI FPGA passthrough %s failed: %s", enable ? "enable" : "disable", snd_strerror(err));
+		return err < 0 ? -1 : 0;
+	}
+
+	static int select_hdmi_audio_route(unsigned int route) {
+		/* Never change the FPGA audio source while its embedder is enabled. */
+		if (output_is_sdi() && set_sdi_fpga_passthrough(false) != 0) return -1;
+		snd_ctl_t* control = nullptr;
+		const std::string card = output_audio_card();
+		if (card.empty()) { LOGE("unique SDI ALSA card is unavailable"); return -1; }
+		int err = snd_ctl_open(&control, card.c_str(), 0);
 		if (err < 0) {
-			LOGE("snd_ctl_open(xlnxhdmi1) failed: %s", snd_strerror(err));
+			LOGE("snd_ctl_open(%s) failed: %s", card.c_str(), snd_strerror(err));
 			return -1;
 		}
 		snd_ctl_elem_id_t* id;
@@ -743,7 +831,7 @@ namespace __sc6f0_dante_rx__ {
 		err = snd_ctl_elem_write(control, value);
 		snd_ctl_close(control);
 		if (err < 0) {
-			LOGE("cannot select HDMI audio route %u: %s", route, snd_strerror(err));
+			LOGE("cannot select %s audio route %u: %s", output_name(), route, snd_strerror(err));
 			return -1;
 		}
 		return 0;
@@ -751,9 +839,11 @@ namespace __sc6f0_dante_rx__ {
 
 	static int read_hdmi_audio_route() {
 		snd_ctl_t* control = nullptr;
-		int err = snd_ctl_open(&control, "hw:xlnxhdmi1", 0);
+		const std::string card = output_audio_card();
+		if (card.empty()) return -1;
+		int err = snd_ctl_open(&control, card.c_str(), 0);
 		if (err < 0) {
-			LOGE("snd_ctl_open(xlnxhdmi1) failed: %s", snd_strerror(err));
+			LOGE("snd_ctl_open(%s) failed: %s", card.c_str(), snd_strerror(err));
 			return -1;
 		}
 		snd_ctl_elem_id_t* id;
@@ -766,7 +856,7 @@ namespace __sc6f0_dante_rx__ {
 		err = snd_ctl_elem_read(control, value);
 		snd_ctl_close(control);
 		if (err < 0) {
-			LOGE("cannot read HDMI audio route: %s", snd_strerror(err));
+			LOGE("cannot read %s audio route: %s", output_name(), snd_strerror(err));
 			return -1;
 		}
 		return snd_ctl_elem_value_get_enumerated(value, 0);
@@ -784,26 +874,32 @@ namespace __sc6f0_dante_rx__ {
 	}
 
 	static int start_hdmi_audio_sink(zst_dante_rx_t* rx) {
+		std::lock_guard<std::mutex> lock(rx->audio_lock);
+		if (rx->audio_pcm_started) return 0;
+		/* Native SDI hw_params requires an active DRM video_mode. */
+		if (output_is_sdi() && !rx->drm_modeset_active) return 0;
 		if (select_hdmi_audio_route(0) != 0)
 			return -1;
 		rx->audio_pending_frame.reserve(960 * 2 * sizeof(int32_t));
-		int err = snd_pcm_open(&rx->audio_pcm, "hw:xlnxhdmi1,0", SND_PCM_STREAM_PLAYBACK,
+		const std::string pcm = output_audio_card() + ",0";
+		int err = snd_pcm_open(&rx->audio_pcm, pcm.c_str(), SND_PCM_STREAM_PLAYBACK,
 			SND_PCM_NONBLOCK);
 		if (err >= 0)
 			err = snd_pcm_set_params(rx->audio_pcm, SND_PCM_FORMAT_S24_LE,
 				SND_PCM_ACCESS_RW_INTERLEAVED, 2, 48000, 0, 160000);
 		if (err < 0) {
-			LOGE("cannot configure hw:xlnxhdmi1,0: %s", snd_strerror(err));
+			LOGE("cannot configure %s: %s", pcm.c_str(), snd_strerror(err));
 			if (rx->audio_pcm) snd_pcm_close(rx->audio_pcm);
 			rx->audio_pcm = nullptr;
 			return -1;
 		}
 		rx->audio_pcm_started = true;
-		LOGI("HDMI audio output active: xlnxhdmi1,0 via audio formatter");
+		LOGI("%s audio output active: %s via audio formatter", output_name(), pcm.c_str());
 		return 0;
 	}
 
 	static void stop_hdmi_audio_sink(zst_dante_rx_t* rx) {
+		std::lock_guard<std::mutex> lock(rx->audio_lock);
 		if (rx->audio_pcm) snd_pcm_close(rx->audio_pcm);
 		rx->audio_pcm = nullptr;
 		rx->audio_pcm_started = false;
@@ -811,6 +907,8 @@ namespace __sc6f0_dante_rx__ {
 
 	static void rx_audio_playback(zst_dante_rx_t* rx, const zst_buffer_t* buf,
 		const zst_audio_frame_t* audio) {
+		if (!rx) return;
+		std::lock_guard<std::mutex> lock(rx->audio_lock);
 		if (!rx || !rx->audio_pcm || !rx->audio_pcm_started ||
 			!buf || !buf->memory.data)
 			return;
@@ -824,7 +922,6 @@ namespace __sc6f0_dante_rx__ {
 			return;
 		}
 
-		std::lock_guard<std::mutex> lock(rx->audio_lock);
 		const size_t input_bytes = samples * channels * sizeof(int32_t);
 		const size_t output_bytes = 960 * 2 * sizeof(int32_t);
 		if (rx->audio_pending_frame.empty())
@@ -955,7 +1052,8 @@ namespace __sc6f0_dante_rx__ {
 			qcap2_rcbuffer_t* pFrame = nullptr;
 			QRESULT qres;
 			{
-				std::lock_guard<std::mutex> decoder_guard(rx->decoder_lock);
+				std::lock_guard<std::mutex> decoder_guard(output_is_sdi()
+					? rx->decoder_output_lock : rx->decoder_lock);
 				if (!rx->vdec || !rx->vdec_started) return QCAP_RT_OK;
 				qres = qcap2_video_decoder_pop(rx->vdec, &pFrame);
 			}
@@ -1086,7 +1184,15 @@ namespace __sc6f0_dante_rx__ {
 				ready = false;
 			if (ready) {
 				std::lock_guard<std::mutex> decoder_guard(rx->decoder_lock);
+				/* Publish SDI decoder state under the output lifetime lock too.
+				 * The event callback may start before decoder_start returns. */
+				std::unique_lock<std::mutex> output_guard(rx->decoder_output_lock,
+					std::defer_lock);
+				if (output_is_sdi()) output_guard.lock();
 				ready = SetupVdecAsync(rx) == 0 && init_vdec_decoder(rx) == 0;
+				/* Failure cleanup joins handlers: do not hold the lock a
+				 * queued SDI callback needs while joining that callback. */
+				if (output_guard.owns_lock()) output_guard.unlock();
 				if (!ready) StopVdecAsync(rx);
 			}
 			if (!ready) {
@@ -1107,6 +1213,9 @@ namespace __sc6f0_dante_rx__ {
 			rx->vdec_event_handlers = nullptr;
 		}
 		std::lock_guard<std::mutex> decoder_guard(rx->decoder_lock);
+		std::unique_lock<std::mutex> output_guard(rx->decoder_output_lock,
+			std::defer_lock);
+		if (output_is_sdi()) output_guard.lock();
 		if (rx->vdec) {
 			if (rx->vdec_started) {
 				qcap2_video_decoder_stop(rx->vdec);
@@ -1119,6 +1228,7 @@ namespace __sc6f0_dante_rx__ {
 	}
 
 	static void stop_drm_output(zst_dante_rx_t* rx) {
+		if (output_is_sdi()) stop_hdmi_audio_sink(rx);
 		if (rx->drm_fd < 0) return;
 		if (rx->drm_modeset_active) {
 			std::shared_ptr<drmModeAtomicReq> request(drmModeAtomicAlloc(), drmModeAtomicFree);
@@ -1163,9 +1273,9 @@ namespace __sc6f0_dante_rx__ {
 	static int start_drm_output(zst_dante_rx_t* rx) {
 		if (rx->drm_modeset_active)
 			return 0;
-		const uint32_t width = rx->dec_width;
-		const uint32_t height = rx->dec_height;
-		const uint32_t fps = (uint32_t)(rx->dec_fps + 0.5);
+		const uint32_t width = output_is_sdi() ? g_sdi_output_width : rx->dec_width;
+		const uint32_t height = output_is_sdi() ? g_sdi_output_height : rx->dec_height;
+		const uint32_t fps = output_is_sdi() ? 60 : (uint32_t)(rx->dec_fps + 0.5);
 		rx->drm_fd = drmOpen("xlnx", nullptr);
 		if (rx->drm_fd < 0 || drmSetClientCap(rx->drm_fd, DRM_CLIENT_CAP_ATOMIC, 1) ||
 			drmSetClientCap(rx->drm_fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1)) {
@@ -1210,13 +1320,14 @@ namespace __sc6f0_dante_rx__ {
 		for (int i = 0; i < resources->count_connectors && crtc_index < 0; ++i) {
 			std::shared_ptr<drmModeConnector> connector(
 				drmModeGetConnector(rx->drm_fd, resources->connectors[i]), drmModeFreeConnector);
-			if (!connector || connector->connector_type != DRM_MODE_CONNECTOR_HDMIA ||
+			if (!is_output_connector(rx->drm_fd, connector.get()) ||
 			    connector->connection != DRM_MODE_CONNECTED) continue;
 			drmModeModeInfo connector_mode = {};
 			bool connector_has_mode = false;
 			bool exact_mode = false;
 			for (int m = 0; m < connector->count_modes; ++m) {
 				const drmModeModeInfo& candidate = connector->modes[m];
+				if (output_is_sdi() && !is_sdi_mode(candidate)) continue;
 				/* The shared VProcSS is built for at most 3840x2160 and the
 				 * HDMI TX path is qualified up to 594 MHz / 60 Hz. */
 				if (!candidate.hdisplay || !candidate.vdisplay ||
@@ -1261,8 +1372,8 @@ namespace __sc6f0_dante_rx__ {
 			}
 		}
 		if (crtc_index < 0 || !have_mode) {
-			LOGE("no connected HDMI-A path with a VProcSS-compatible EDID mode supports DRM plane %u",
-			     video_plane_id);
+			LOGE("no connected %s path with supported timing for DRM plane %u",
+			     output_name(), video_plane_id);
 			stop_drm_output(rx);
 			return -1;
 		}
@@ -1346,13 +1457,16 @@ namespace __sc6f0_dante_rx__ {
 			DRM_MODE_OBJECT_PLANE, "SC6F0_OVERLAY_SOURCE");
 		/* This path displays decoded DDR frames; DUMMY is the driver default. */
 		drmModeAtomicAddProperty(request.get(), video_plane_id, overlay_source, 2);
-		if (drmModeAtomicCommit(rx->drm_fd, request.get(), DRM_MODE_ATOMIC_ALLOW_MODESET, nullptr)) {
-			LOGE("DRM HDMI modeset failed, err=%d", errno);
+		if (!add_output_properties(rx->drm_fd, rx->drm_connector_id, request.get(), mode) ||
+		    drmModeAtomicCommit(rx->drm_fd, request.get(), DRM_MODE_ATOMIC_ALLOW_MODESET, nullptr)) {
+			LOGE("DRM %s modeset failed, err=%d", output_name(), errno);
 			stop_drm_output(rx);
 			return -1;
 		}
 		rx->drm_modeset_active = true;
 		rx->drm_output_mode = mode;
+		if (output_is_sdi() && start_hdmi_audio_sink(rx) != 0)
+			LOGW("SDI PCM unavailable after modeset; continuing with video only");
 		if (!selected_exact)
 			LOGW("[%s] input %ux%u@%.2f not in EDID; scaling to %s (%ux%u@%.2f)",
 			     rx->media_source_name, width, height, rx->dec_fps,
@@ -1360,8 +1474,8 @@ namespace __sc6f0_dante_rx__ {
 		if (!selected_exact && mode_vrefresh(&mode) + 0.5 < rx->dec_fps)
 			LOGW("EDID output %.2f Hz is slower than %s input %.2f fps; display frames may be dropped",
 			     mode_vrefresh(&mode), rx->media_source_name, rx->dec_fps);
-		LOGI("DRM HDMI active: %s %ux%u@%.2f, clock=%u kHz; %s input %ux%u@%.2f (%s); connector %u, CRTC %u, primary plane %u, video plane %u",
-		     mode.name, mode.hdisplay, mode.vdisplay, mode_vrefresh(&mode), mode.clock,
+		LOGI("DRM %s active: %s %ux%u@%.2f, clock=%u kHz; %s input %ux%u@%.2f (%s); connector %u, CRTC %u, primary plane %u, video plane %u",
+		     output_name(), mode.name, mode.hdisplay, mode.vdisplay, mode_vrefresh(&mode), mode.clock,
 		     rx->media_source_name, width, height, rx->dec_fps, selected_exact ? "exact" : "VProcSS scaling",
 		     rx->drm_connector_id, rx->drm_crtc_id, rx->drm_primary_plane_id, video_plane_id);
 		return 0;
@@ -2657,12 +2771,21 @@ namespace __sc6f0_dante_rx__ {
 
 		drmModeModeInfo mode = {};
 		bool exact = find_matching_mode(connector.get(), width, height, fps, false, &mode);
+		if (output_is_sdi()) {
+			if (!sc6f0_rx_output::sdi_size(width, height) || !std::isfinite(fps) ||
+			    std::fabs(fps - 60.0) >= 0.005) {
+				LOGE("SDI Ultra output requires integer 1080p60 or 2160p60");
+				return -1;
+			}
+			exact = exact && is_sdi_mode(mode);
+		}
 		if (exact && (mode.clock > 594000 || mode_vrefresh(&mode) > 60.5))
 			exact = false;
 		if (!exact) {
 			bool found = false;
 			for (int i = 0; i < connector->count_modes; ++i) {
 				const drmModeModeInfo& candidate = connector->modes[i];
+				if (output_is_sdi() && !is_sdi_mode(candidate)) continue;
 				if (!candidate.hdisplay || !candidate.vdisplay ||
 				    candidate.hdisplay > 3840 || candidate.vdisplay > 2160 ||
 				    candidate.clock > 594000 || mode_vrefresh(&candidate) <= 0 ||
@@ -2812,7 +2935,9 @@ namespace __sc6f0_dante_rx__ {
 			}
 		}
 
-		int err = drmModeAtomicCommit(ctx->drm_fd, req.get(), DRM_MODE_ATOMIC_ALLOW_MODESET, nullptr);
+		int err = (set_sdi_fpga_passthrough(false) == 0 &&
+			add_output_properties(ctx->drm_fd, ctx->connector_id, req.get(), mode)) ?
+			drmModeAtomicCommit(ctx->drm_fd, req.get(), DRM_MODE_ATOMIC_ALLOW_MODESET, nullptr) : -EINVAL;
 		if (err != 0) {
 			LOGE("[ULTRA DIRECT] drmModeAtomicCommit failed: %d", errno);
 			destroy_dumb_fb(ctx->drm_fd, &new_primary_fb, &new_primary_bo);
@@ -2834,6 +2959,10 @@ namespace __sc6f0_dante_rx__ {
 		ctx->modeset_active = true;
 		ctx->overlay_active = enable_overlay;
 		ctx->current_mode = mode;
+		if (output_is_sdi() && enable_overlay && set_sdi_fpga_passthrough(true) != 0) {
+			LOGE("SDI video committed, but native FPGA audio could not be enabled");
+			return -1;
+		}
 
 		// Ensure VTPG is generating frames to keep v_mix master layer active
 		configure_vtpg(output_w, output_h, g_tpg_pattern);
@@ -2841,8 +2970,8 @@ namespace __sc6f0_dante_rx__ {
 			set_vmix_layer1_opaque();
 		}
 
-		LOGI("[ULTRA DIRECT] DRM modeset active: HDMI %ux%u@%.2fHz (%s) | source %ux%u@%.2f | primary plane %u, overlay plane %u (active=%d)",
-		     mode.hdisplay, mode.vdisplay, mode_vrefresh(&mode), mode.name,
+		LOGI("[ULTRA DIRECT] DRM modeset active: %s %ux%u@%.2fHz (%s) | source %ux%u@%.2f | primary plane %u, overlay plane %u (active=%d)",
+		     output_name(), mode.hdisplay, mode.vdisplay, mode_vrefresh(&mode), mode.name,
 		     width, height, fps,
 		     ctx->primary_plane_id, ctx->overlay_plane_id, (int)enable_overlay);
 		return 0;
@@ -2850,6 +2979,8 @@ namespace __sc6f0_dante_rx__ {
 
 	static void cleanup_ultra_direct_drm(ultra_direct_context_t* ctx) {
 		if (!ctx || ctx->drm_fd < 0) return;
+		if (set_sdi_fpga_passthrough(false) != 0)
+			LOGE("SDI embedder disable failed during cleanup");
 		destroy_dumb_fb(ctx->drm_fd, &ctx->primary_fb_id, &ctx->primary_bo_handle);
 		destroy_dumb_fb(ctx->drm_fd, &ctx->overlay_fb_id, &ctx->overlay_bo_handle);
 		if (ctx->mode_blob_id) {
@@ -2886,21 +3017,31 @@ namespace __sc6f0_dante_rx__ {
 	static void dau_get_hdcp(struct dau_service *dau, struct DBusMessage *reply, void *ctxt) {
 		(void)ctxt;
 		struct hdcp h = {};
-		h.current = HDCP_VERSION_22;
+		h.current = output_is_sdi() ? HDCP_VERSION_NONE : HDCP_VERSION_22;
 		h.hdcp14_supported = false;
-		h.hdcp22_supported = true;
-		LOGI("[ULTRA DIRECT][DAU] get_hdcp -> HDCP 2.2");
+		h.hdcp22_supported = !output_is_sdi();
+		LOGI("[ULTRA DIRECT][DAU] get_hdcp -> %s", output_is_sdi() ? "none (SDI)" : "HDCP 2.2");
 		dau_reply_get_hdcp(dau, reply, &h);
 	}
 
 	static void dau_set_hdcp(struct dau_service *dau, struct DBusMessage *reply,
 	                         enum hdcp_version version, void *ctxt) {
 		(void)ctxt;
+		if (output_is_sdi() && version != HDCP_VERSION_NONE) {
+			dau_reply_error(dau, reply, "SDI has no HDCP support");
+			return;
+		}
 		LOGI("[ULTRA DIRECT][DAU] set_hdcp (version=%d)", (int)version);
 		dau_reply_success(dau, reply);
 	}
 
 	static void dau_get_edid(struct dau_service *dau, struct DBusMessage *reply, void *ctxt) {
+		if (output_is_sdi()) {
+			const auto capabilities = sc6f0_rx_output::sdi_capabilities();
+			LOGI("[SDI][DAU] returning fixed software capabilities, not cable EDID");
+			dau_reply_get_edid(dau, reply, capabilities.data());
+			return;
+		}
 		auto* ctx = static_cast<ultra_direct_context_t*>(ctxt);
 		unsigned char edid[EDID_LEN];
 		memset(edid, 0, sizeof(edid));
@@ -3061,7 +3202,7 @@ namespace __sc6f0_dante_rx__ {
 	                            uint32_t reorder_timeout_ms = 1) {
 		if (stat_interval == 0)
 			stat_interval = 3;
-		LOGI("[ULTRA DIRECT] Dante Ultra FPGA media path: VSINK video (v_mix layer 1) and AES3 audio (SI1) -> HDMI");
+		LOGI("[ULTRA DIRECT] Dante Ultra FPGA media path: VSINK video (v_mix layer 1) and AES3 audio (SI1) -> %s", output_name());
 		LOGI("[ULTRA DIRECT] Hardware passthrough: bypasses DVR socket, DEP, VCU, and ALSA PCM playback.");
 
 		if (select_hdmi_audio_route(1) != 0) {
@@ -3069,8 +3210,8 @@ namespace __sc6f0_dante_rx__ {
 			return 1;
 		}
 		int initial_route = read_hdmi_audio_route();
-		LOGI("[ULTRA DIRECT] HDMI audio route set to SI1 (%s)",
-		     hdmi_audio_route_name(initial_route));
+		LOGI("[ULTRA DIRECT] %s audio route set to SI1 (%s)",
+		     output_name(), hdmi_audio_route_name(initial_route));
 
 		ultra_direct_context_t ctx;
 		ctx.fixed_mode_override = fixed_mode_override;
@@ -3098,7 +3239,7 @@ namespace __sc6f0_dante_rx__ {
 			std::shared_ptr<drmModeConnector> conn(
 				drmModeGetConnector(ctx.drm_fd, resources->connectors[i]), drmModeFreeConnector);
 			if (!conn) continue;
-			if (conn->connector_type == DRM_MODE_CONNECTOR_HDMIA) {
+			if (is_output_connector(ctx.drm_fd, conn.get())) {
 				ctx.connector_id = conn->connector_id;
 				ctx.last_connector_connected = (conn->connection == DRM_MODE_CONNECTED);
 				ctx.have_last_connector_state = true;
@@ -3143,6 +3284,7 @@ namespace __sc6f0_dante_rx__ {
 			const drmModeModeInfo* best = nullptr;
 			for (int i = 0; connector && i < connector->count_modes; ++i) {
 				const drmModeModeInfo* candidate = &connector->modes[i];
+				if (output_is_sdi() && !is_sdi_mode(*candidate)) continue;
 				if (!candidate->hdisplay || !candidate->vdisplay ||
 				    candidate->hdisplay > 3840 || candidate->vdisplay > 2160 ||
 				    candidate->clock > 594000 || mode_vrefresh(candidate) <= 0 ||
@@ -3182,8 +3324,10 @@ namespace __sc6f0_dante_rx__ {
 			}
 		}
 
-		ctx.uevent_fd = open_drm_uevent_socket();
-		if (ctx.uevent_fd < 0) {
+		ctx.uevent_fd = output_is_sdi() ? -1 : open_drm_uevent_socket();
+		if (output_is_sdi()) {
+			LOGI("SDI has no HDMI HPD/EDID cable monitor");
+		} else if (ctx.uevent_fd < 0) {
 			LOGW("[ULTRA DIRECT] open_drm_uevent_socket failed: %d (hotplug detection degraded)", errno);
 		} else {
 			LOGI("[ULTRA DIRECT] DRM connector monitor active (uevent fd=%d)", ctx.uevent_fd);
@@ -3278,6 +3422,7 @@ namespace __sc6f0_dante_rx__ {
 				}
 				if (!flow && ctx.avh_active) {
 					LOGI("[AUTO] AVH flow removed; VCU -> DUMMY -> DANTE");
+					if (output_is_sdi()) stop_hdmi_audio_sink(avh);
 					avh->display_enabled = false;
 					/* Stop displaying decoded frames before releasing the sink;
 					 * route the mixer to the continuous dummy path first. */
@@ -3645,6 +3790,17 @@ int main(int argc, char* argv[]) {
 	g_argv = argv;
 
 	modules_init_t _modules_init_;
+	{
+		char product[128] = {};
+		FILE* file = fopen("/proc/device-tree/vp_boot/product", "rb");
+		if (file) {
+			size_t count = fread(product, 1, sizeof(product)-1, file);
+			product[count] = 0;
+			fclose(file);
+		}
+		g_output_backend = sc6f0_rx_output::from_product(product);
+		LOGI("RX output backend: %s (device-tree product)", output_name());
+	}
 
 	std::string dvr_socket = "/var/run/dante/dvr";
 	std::string dep_name = "DanteEP";
@@ -3767,6 +3923,21 @@ int main(int argc, char* argv[]) {
 		} else if (strcmp(argv[i], "--reorder-timeout-ms") == 0 && i + 1 < argc) {
 			reorder_timeout_ms = (uint32_t)strtoul(argv[++i], nullptr, 10);
 		}
+	}
+
+	if (output_is_sdi()) {
+		if (!fixed_mode_override) {
+			fixed_w = 1920;
+			fixed_h = 1080;
+			fixed_fps = 60;
+			fixed_mode_override = true;
+		}
+		if (!sc6f0_rx_output::sdi_size(fixed_w, fixed_h) || fixed_fps != 60) {
+			LOGE("SDI output requires --mode 1920x1080@60 or 3840x2160@60");
+			return 1;
+		}
+		g_sdi_output_width = fixed_w;
+		g_sdi_output_height = fixed_h;
 	}
 
 	if (reorder_window < 1 || reorder_window > 4096) {

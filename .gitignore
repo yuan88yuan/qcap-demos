@@ -3,3 +3,6 @@ _objs/
 .plan*.md
 .pi-subagents/
 3rdparty/
+
+__pycache__/
+*.pyc
