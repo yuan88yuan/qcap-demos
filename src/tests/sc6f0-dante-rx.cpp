@@ -3757,8 +3757,8 @@ namespace __sc6f0_dante_rx__ {
 		auto *pad=zst_pad_create("sink",ZST_PAD_SINK);if(!pad||zst_element_add_pad(el,pad)!=ZST_OK){zst_element_destroy(el);return nullptr;}
 		pad->push=rtsp_sink_push;return el;
 	}
-	static int run_rtsp_client(const std::string &url) {
-		rtsp_playback_t p; p.output=start_qcap_media_rx(true); if(!p.output)return 1;
+	static int run_rtsp_client(const std::string &url, bool display_enabled) {
+		rtsp_playback_t p; p.output=start_qcap_media_rx(display_enabled); if(!p.output)return 1;
 		p.output->h264_input_parsed = true;
 		p.output->media_source_name = "RTSP";
 		auto cleanup=[&](){
@@ -3797,7 +3797,8 @@ namespace __sc6f0_dante_rx__ {
 		zst_element_set_state(p.audio_adapter,ZST_STATE_PLAYING);zst_element_set_state(p.aresampler,ZST_STATE_PLAYING);
 		zst_element_set_state(p.vsink,ZST_STATE_PLAYING);zst_element_set_state(p.asink,ZST_STATE_PLAYING);
 		if(zst_element_set_state(p.source,ZST_STATE_PLAYING)!=ZST_OK){LOGE("Could not start RTSP client");cleanup();return 1;}
-		LOGI("Independent RTSP client active: H.264 -> shared ALLEGRO2/DRM, AAC -> shared PCM/HDMI: %s",url.c_str());
+		LOGI("Independent RTSP client active: H.264 -> shared ALLEGRO2 (%s), AAC -> shared PCM: %s",
+		     display_enabled ? "DRM display" : "decode-only; no DRM modeset/sink", url.c_str());
 		LOGI("RTSP reconnect enabled: retry delay=1000 ms, unlimited attempts");
 		while(!g_stop_requested){
 			sleep(3);
@@ -3807,6 +3808,7 @@ namespace __sc6f0_dante_rx__ {
 			     (unsigned long long)p.output->decoded_errors.load(),(unsigned long long)p.audio_frames.load(),
 			     (unsigned long long)p.output->audio_playback_errors.load());
 			log_pcm_stats(p.output);
+			fflush(stdout); /* Preserve live progress even when journald is a pipe. */
 		}
 		zst_element_set_state(p.source,ZST_STATE_NULL);
 		stop_vdec_decoder(p.output);
@@ -3992,7 +3994,7 @@ int main(int argc, char* argv[]) {
 		return 1;
 	}
 	if (!rtsp_url.empty() && (use_qcap || direct_mode || !reconstructed_path.empty() ||
-	    recv_only || rtp_stats_only || media_path != "linux-decode" || !display_enabled)) {
+	    recv_only || rtp_stats_only || media_path != "linux-decode")) {
 		LOGE("--rtsp-url is an independent playback mode; do not combine it with Dante/Ultra/direct decode options");
 		return 1;
 	}
@@ -4030,7 +4032,7 @@ int main(int argc, char* argv[]) {
 	signal(SIGINT, sig_handler);
 	signal(SIGTERM, sig_handler);
 	if (!rtsp_url.empty())
-		return run_rtsp_client(rtsp_url);
+		return run_rtsp_client(rtsp_url, display_enabled);
 
 	printf("============================================================\n");
 	if (use_qcap) {

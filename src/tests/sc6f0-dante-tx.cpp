@@ -61,6 +61,7 @@ static uint16_t g_tx_direct_port = 16490;
 static std::string g_tx_direct_mirror_rx_ip;
 static uint16_t g_tx_direct_mirror_port = 16491;
 static bool g_tx_use_qcap = false;
+static bool g_tx_rtsp_only = false;
 static bool g_tx_direct_option_used = false;
 static uint32_t g_tx_send_buffer_size = 0;
 
@@ -1107,7 +1108,7 @@ struct App0 {
 					break;
 				}
 
-				if(pDanteTx && pDanteTx->app_video_src_pad) {
+				if(pDanteTx && (pDanteTx->app_video_src_pad || pDanteTx->rtsp_video_pad)) {
 					std::shared_ptr<qcap2_av_packet_t> pAVPacket((qcap2_av_packet_t*)qcap2_rcbuffer_lock_data(pRCBuffer),
 						[pRCBuffer](qcap2_av_packet_t*) {
 							qcap2_rcbuffer_unlock_data(pRCBuffer);
@@ -1189,7 +1190,8 @@ struct App0 {
 								if (bIsKeyFrame || has_idr) {
 									zbuf->flags |= ZST_BUFFER_FLAG_KEYFRAME;
 								}
-								zst_pad_push(pDanteTx->app_video_src_pad, zbuf);
+								if (pDanteTx->app_video_src_pad)
+									zst_pad_push(pDanteTx->app_video_src_pad, zbuf);
 								if (pDanteTx->rtsp_video_pad)
 									zst_pad_push(pDanteTx->rtsp_video_pad, zbuf);
 								if (pDanteTx->app_video_mirror_src_pad)
@@ -1533,7 +1535,8 @@ struct App0 {
 				}
 				if (now_ms - last_stat_time >= 3000) {
 					double elapsed_sec = (double)(now_ms - last_stat_time) / 1000.0;
-					uint32_t active_flows = zst_dante_video_coordinator_get_flow_count(tx->coordinator);
+					uint32_t active_flows = tx->coordinator
+						? zst_dante_video_coordinator_get_flow_count(tx->coordinator) : 0;
 					double video_fps = elapsed_sec > 0.0
 						? (double)(video_frames - last_video_frames) / elapsed_sec : 0.0;
 					double video_mbps = elapsed_sec > 0.0
@@ -1633,6 +1636,7 @@ struct App0 {
 					last_audio_frames = audio_frames;
 					last_audio_bytes = audio_bytes;
 					last_audio_samples = audio_samples;
+					if (g_tx_rtsp_only) fflush(stdout);
 				}
 			}
 			return NULL;
@@ -1763,23 +1767,28 @@ struct App0 {
 				return (QRESULT)-1;
 			}
 
-			/* 1. Dante DVR Session (skipped in direct RTP mode) */
-			if (!direct_mode) {
+			/* Independent RTSP diagnostics create no DVR/DEP/coordinator objects. */
+			if (g_tx_rtsp_only)
+				LOGI("RTSP-only mode: no Dante DVR, DEP audio or AVH flows");
+			/* 1. Dante DVR Session */
+			if (!direct_mode && !g_tx_rtsp_only) {
 				tx->session = zst_dante_session_create("/var/run/dante/dvr");
 				set_uint(tx->session, "tx-video-channels", 1);
 				set_uint(tx->session, "rx-video-channels", 1);
 			}
 
 			/* 2. Dante Video Coordinator */
-			tx->coordinator = zst_dante_video_coordinator_create();
-			if (tx->session)
-				zst_dante_video_coordinator_attach_session(tx->coordinator, tx->session);
-			set_uint(tx->coordinator, ZST_DANTE_VIDEO_COORDINATOR_PROP_TX_SEND_BUFFER_SIZE,
-			         g_tx_send_buffer_size);
-			tx->tx_video_pad = zst_dante_video_coordinator_request_tx_input_pad(tx->coordinator, 0);
+			if (!g_tx_rtsp_only) {
+				tx->coordinator = zst_dante_video_coordinator_create();
+				if (tx->session)
+					zst_dante_video_coordinator_attach_session(tx->coordinator, tx->session);
+				set_uint(tx->coordinator, ZST_DANTE_VIDEO_COORDINATOR_PROP_TX_SEND_BUFFER_SIZE,
+				         g_tx_send_buffer_size);
+				tx->tx_video_pad = zst_dante_video_coordinator_request_tx_input_pad(tx->coordinator, 0);
 
-			tx->app_video_src_pad = zst_pad_create("app_video_src", ZST_PAD_SRC);
-			zst_pad_link(tx->app_video_src_pad, tx->tx_video_pad);
+				tx->app_video_src_pad = zst_pad_create("app_video_src", ZST_PAD_SRC);
+				zst_pad_link(tx->app_video_src_pad, tx->tx_video_pad);
+			}
 			tx->rtsp_server = zst_rtsp_server_create();
 			if (!tx->rtsp_server ||
 				zst_rtsp_server_add_session(tx->rtsp_server, "session0") != ZST_OK) {
@@ -1799,7 +1808,7 @@ struct App0 {
 				zst_element_get_pad(tx->rtsp_server, "session0_video"));
 			zst_pad_link(tx->rtsp_audio_pad,
 				zst_element_get_pad(tx->rtsp_server, "session0_audio"));
-			if (!direct_mode && !g_tx_direct_mirror_rx_ip.empty()) {
+			if (!direct_mode && !g_tx_rtsp_only && !g_tx_direct_mirror_rx_ip.empty()) {
 				tx->mirror_rtp_payloader = zst_rtp_payloader_create();
 				tx->mirror_udp_sink = zst_dante_udp_sink_create();
 				if (!tx->mirror_rtp_payloader || !tx->mirror_udp_sink) {
@@ -1824,7 +1833,7 @@ struct App0 {
 			}
 
 			/* 3. Dante DEP Audio Sink (skipped in direct RTP mode) */
-			if (!direct_mode) {
+			if (!direct_mode && !g_tx_rtsp_only) {
 				tx->tx_dep_sink = zst_dante_dep_audio_sink_create();
 				set_str(tx->tx_dep_sink, "shm-name", "DanteEP");
 				set_str(tx->tx_dep_sink, "channels", "0,1");
@@ -1847,13 +1856,14 @@ struct App0 {
 			}
 
 			/* Add elements to pipeline */
-			zst_pipeline_add(tx->pipe, tx->coordinator);
+			if (tx->coordinator)
+				zst_pipeline_add(tx->pipe, tx->coordinator);
 			zst_pipeline_add(tx->pipe, tx->rtsp_server);
 			if (tx->mirror_rtp_payloader) {
 				zst_pipeline_add(tx->pipe, tx->mirror_rtp_payloader);
 				zst_pipeline_add(tx->pipe, tx->mirror_udp_sink);
 			}
-			if (!direct_mode) {
+			if (!direct_mode && !g_tx_rtsp_only) {
 				zst_pipeline_add(tx->pipe, tx->tx_resampler);
 				zst_pipeline_add(tx->pipe, tx->tx_dep_sink);
 			}
@@ -1993,6 +2003,8 @@ int main(int argc, char* argv[]) {
 	for (int i = 1; i < argc; i++) {
 		if (strcmp(argv[i], "--use-qcap") == 0) {
 			g_tx_use_qcap = true;
+		} else if (strcmp(argv[i], "--rtsp-only") == 0) {
+			g_tx_rtsp_only = true;
 		} else if (strcmp(argv[i], "--direct") == 0 && i + 1 < argc) {
 			g_tx_direct_option_used = true;
 			g_tx_direct_rx_ip = argv[++i];
@@ -2017,6 +2029,7 @@ int main(int argc, char* argv[]) {
 		} else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
 			printf("Usage: sc6f0-dante-tx [--use-qcap] [--direct <rx-ip>] [--port <port>] [--direct-mirror <rx-ip>] [--mirror-port <port>] [--tx-sndbuf <bytes>] [--dump-stream <file>]\n");
 			printf("  zstreamer RTSP AV: rtsp://<tx-ip>:8554/session0 (H.264 + AAC)\n");
+			printf("  --rtsp-only       Independent RTSP encoder test; no Dante DVR/DEP/AVH\n");
 			printf("  --use-qcap         Send Dante video/audio through QCAP (channel 0); requires Dante DEP/DanteEP\n");
 			printf("  --direct <rx-ip>  Direct RTP mode: unicast H.264 to rx-ip:port,\n");
 			printf("                    bypassing the Dante daemon (audio disabled)\n");
@@ -2037,6 +2050,13 @@ int main(int argc, char* argv[]) {
 		}
 	}
 
+	if (g_tx_rtsp_only && (g_tx_use_qcap || !g_tx_direct_rx_ip.empty() ||
+	    !g_tx_direct_mirror_rx_ip.empty() || g_tx_direct_port != 16490 ||
+	    g_tx_direct_mirror_port != 16491)) {
+		fprintf(stderr, "sc6f0-dante-tx: --rtsp-only cannot combine with QCAP Dante or direct RTP routes\n");
+		if (g_tx_dump) fclose(g_tx_dump);
+		return 1;
+	}
 	if (g_tx_use_qcap && (g_tx_direct_option_used || g_tx_dump)) {
 		fprintf(stderr, "sc6f0-dante-tx: --use-qcap is incompatible with --direct/--port, --direct-mirror/--mirror-port, and --dump-stream\n");
 		if (g_tx_dump) {
