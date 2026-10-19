@@ -17,15 +17,20 @@ recovery and overflow errors, not ordinary backpressure.
 
 Both runs use the same candidate App, SDK, zstreamer, source boot and SDI/ALSA
 parameters. First run normal `--media-path linux-decode --mode 3840x2160@60`.
-Then add `--dep-audio-batched` to opt into queue-periods=300 and block-samples=960.
-With 16-frame/48kHz DEP periods this means a 100ms endpoint queue and 20ms reads,
-instead of the current library's 8-period / 2.67ms queue and 16-frame reads.
+Then add `--dep-audio-batched` to request zstreamer `queue-time-ms=100` and
+`block-time-ms=20`. The library resolves these from the mapped DEP format;
+the App no longer hardcodes producer period counts or output frame counts.
+At 48kHz this gives a 4800-frame queue and 960-frame reads, replacing the
+legacy library's 8-period / 2.67ms queue and 16-frame reads on the tested source.
 The experiment changes both queue headroom and batching, not one isolated cause.
 It does not change ALSA's 160ms buffer or HDMI-specific output settings.
 
 The option is deliberately not the default and is rejected with RTSP, QCAP,
 Ultra, direct RTP, non-48kHz and measurement-only modes. No library rebuild is
-needed; existing zstreamer properties are used and setter failures are fatal.
+needed for the original frame/period A/B. The time-based API migration does
+require an updated zstreamer library; setter failures are fatal rather than a
+silent fallback. `[RX PCM]` reports resolved dep-block/dep-capacity. API details:
+`zstreamer/wiki/dante-dep-audio-batching.md` in the sibling repository.
 
 Compare steady-state deltas after video and audio actually start. Record board
 boot IDs, source fps, App hash, errors, queue loss and analyzer counts per run.

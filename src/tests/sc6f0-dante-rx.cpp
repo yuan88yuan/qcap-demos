@@ -132,12 +132,12 @@ namespace __sc6f0_dante_rx__ {
 	static bool g_dep_audio_batched = false;
 	static bool configure_dep_audio_batch(zst_element_t* source) {
 		if (!g_dep_audio_batched) return true;
-		if (zst_element_set_property(source, "queue-periods", "300") != ZST_OK ||
-		    zst_element_set_property(source, "block-samples", "960") != ZST_OK) {
+		if (zst_element_set_property(source, ZST_DANTE_DEP_AUDIO_PROP_QUEUE_TIME_MS, "100") != ZST_OK ||
+		    zst_element_set_property(source, ZST_DANTE_DEP_AUDIO_PROP_BLOCK_TIME_MS, "20") != ZST_OK) {
 			LOGE("DEP audio batching properties rejected");
 			return false;
 		}
-		LOGI("DEP audio A/B: queue-periods=300, block-samples=960 (100ms queue at 16-frame periods/48kHz)");
+		LOGI("DEP audio batching: queue-time-ms=100, block-time-ms=20 (resolved by zstreamer at mapped rate)");
 		return true;
 	}
 
@@ -976,13 +976,15 @@ namespace __sc6f0_dante_rx__ {
 	}
 
 	static void log_pcm_stats(const zst_dante_rx_t* rx) {
-		LOGI("[RX PCM] accepted=%llu eagain=%llu short=%llu xruns=%llu recovery-errors=%llu queue-dropped=%llu",
+		LOGI("[RX PCM] accepted=%llu eagain=%llu short=%llu xruns=%llu recovery-errors=%llu queue-dropped=%llu dep-block=%u dep-capacity=%u",
 			(unsigned long long)rx->audio_accepted_frames.load(),
 			(unsigned long long)rx->audio_again.load(),
 			(unsigned long long)rx->audio_short_writes.load(),
 			(unsigned long long)rx->audio_xruns.load(),
 			(unsigned long long)rx->audio_recovery_errors.load(),
-			(unsigned long long)rx->audio_queue_dropped.load());
+			(unsigned long long)rx->audio_queue_dropped.load(),
+			get_uint_prop(rx->rx_dep_src, ZST_DANTE_DEP_AUDIO_PROP_EFFECTIVE_BLOCK_SAMPLES),
+			get_uint_prop(rx->rx_dep_src, ZST_DANTE_DEP_AUDIO_PROP_QUEUE_CAPACITY_FRAMES));
 	}
 
 	/* ── qcap2 ALLEGRO2 hardware decoder ────────────────────────────── */
@@ -3870,7 +3872,7 @@ int main(int argc, char* argv[]) {
 			printf("  --use-qcap         Use the QCAP Dante receiver instead of zstreamer (fixed DVR/DEP defaults)\n");
 			printf("  --dvr <path>       Path to Dante DVR socket (default: /var/run/dante/dvr)\n");
 			printf("  --dep <name>       Dante DEP shared memory name (default: DanteEP)\n");
-			printf("  --dep-audio-batched  A/B: 960-frame DEP blocks, 300-period queue (linux-decode only)\n");
+			printf("  --dep-audio-batched  Library-managed 20ms DEP blocks, 100ms queue (linux-decode only)\n");
 			printf("  --channels <list>  Audio channels to monitor (default: 0,1)\n");
 			printf("  --rate <hz>        Audio sample rate in Hz (default: 48000)\n");
 			printf("  --interval <sec>   Periodic statistics interval (default: 3)\n");
