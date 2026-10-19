@@ -42,6 +42,7 @@ extern "C" {
 #include "ZzUtils.h"
 #include "testkit.h"
 #include "sc6f0-dante-rx-output.h"
+#include "sc6f0-pcm-write-queue.h"
 
 // zstreamer headers
 #include "zst_types.h"
@@ -125,6 +126,19 @@ namespace __sc6f0_dante_rx__ {
 		char buf[32];
 		snprintf(buf, sizeof(buf), "%u", v);
 		zst_element_set_property(el, p, buf);
+	}
+
+	// Opt-in A/B experiment; keep existing HDMI/SDI DEP defaults unchanged.
+	static bool g_dep_audio_batched = false;
+	static bool configure_dep_audio_batch(zst_element_t* source) {
+		if (!g_dep_audio_batched) return true;
+		if (zst_element_set_property(source, "queue-periods", "300") != ZST_OK ||
+		    zst_element_set_property(source, "block-samples", "960") != ZST_OK) {
+			LOGE("DEP audio batching properties rejected");
+			return false;
+		}
+		LOGI("DEP audio A/B: queue-periods=300, block-samples=960 (100ms queue at 16-frame periods/48kHz)");
+		return true;
 	}
 
 	static uint32_t get_uint_prop(zst_element_t* el, const char* p) {
@@ -590,7 +604,10 @@ namespace __sc6f0_dante_rx__ {
 		std::atomic<uint64_t>        decoder_display_errors{0};
 		std::atomic<uint64_t>        audio_playback_errors{0};
 		std::atomic<uint64_t>        audio_unsupported_periods{0};
+		std::atomic<uint64_t>        audio_accepted_frames{0}, audio_again{0}, audio_short_writes{0};
+		std::atomic<uint64_t>        audio_xruns{0}, audio_recovery_errors{0}, audio_queue_dropped{0};
 		std::vector<uint8_t>         audio_pending_frame;
+		bool                          audio_short_tail = false;
 		uint64_t                      audio_pending_pts = 0;
 		std::atomic<uint64_t>        decoder_input_packets{0};
 		std::atomic<uint64_t>        decoder_pushed_packets{0};
@@ -903,6 +920,8 @@ namespace __sc6f0_dante_rx__ {
 		if (rx->audio_pcm) snd_pcm_close(rx->audio_pcm);
 		rx->audio_pcm = nullptr;
 		rx->audio_pcm_started = false;
+		rx->audio_pending_frame.clear();
+		rx->audio_short_tail = false;
 	}
 
 	static void rx_audio_playback(zst_dante_rx_t* rx, const zst_buffer_t* buf,
@@ -917,13 +936,12 @@ namespace __sc6f0_dante_rx__ {
 		const uint32_t sample_format = audio ? audio->format : ZST_AUDIO_FMT_S32LE;
 		const size_t samples = audio ? audio->nb_samples : buf->memory.size / 8;
 		if (channels != 2 || rate != 48000 || sample_format != ZST_AUDIO_FMT_S32LE ||
-			samples == 0 || buf->memory.size != samples * 8) {
+			samples == 0 || samples > 48000 || buf->memory.size != samples * 8) {
 			rx->audio_unsupported_periods++;
 			return;
 		}
 
 		const size_t input_bytes = samples * channels * sizeof(int32_t);
-		const size_t output_bytes = 960 * 2 * sizeof(int32_t);
 		if (rx->audio_pending_frame.empty())
 			rx->audio_pending_pts = buf->pts;
 		const size_t offset = rx->audio_pending_frame.size();
@@ -942,17 +960,29 @@ namespace __sc6f0_dante_rx__ {
 		}
 		/* AAC commonly produces 1024 samples; preserve the remainder while
 		 * feeding the same 960-sample HDMI periods used by AVH PCM. */
-		while (rx->audio_pending_frame.size() >= output_bytes) {
-			snd_pcm_sframes_t written = snd_pcm_writei(rx->audio_pcm,
-				rx->audio_pending_frame.data(), 960);
-			rx->audio_pending_frame.erase(rx->audio_pending_frame.begin(),
-				rx->audio_pending_frame.begin() + output_bytes);
-			if (written != 960 && written != -EAGAIN) {
-				if (written < 0 && (written == -EPIPE || written == -ESTRPIPE))
-					snd_pcm_prepare(rx->audio_pcm);
-				rx->audio_playback_errors++;
-			}
-		}
+		const auto stats = sc6f0_pcm::drain(rx->audio_pending_frame, rx->audio_short_tail,
+			[&](const uint8_t* data, size_t frames) {
+				return snd_pcm_writei(rx->audio_pcm, data, frames);
+			}, [&]() { return snd_pcm_prepare(rx->audio_pcm); });
+		rx->audio_accepted_frames += stats.accepted;
+		rx->audio_again += stats.again;
+		rx->audio_short_writes += stats.short_writes;
+		rx->audio_xruns += stats.xruns;
+		rx->audio_recovery_errors += stats.recovery_errors;
+		rx->audio_queue_dropped += stats.dropped;
+		// Short writes/EAGAIN are normal nonblocking backpressure when retained.
+		rx->audio_playback_errors += stats.errors + stats.recovery_errors;
+		if (stats.dropped) rx->audio_playback_errors++;
+	}
+
+	static void log_pcm_stats(const zst_dante_rx_t* rx) {
+		LOGI("[RX PCM] accepted=%llu eagain=%llu short=%llu xruns=%llu recovery-errors=%llu queue-dropped=%llu",
+			(unsigned long long)rx->audio_accepted_frames.load(),
+			(unsigned long long)rx->audio_again.load(),
+			(unsigned long long)rx->audio_short_writes.load(),
+			(unsigned long long)rx->audio_xruns.load(),
+			(unsigned long long)rx->audio_recovery_errors.load(),
+			(unsigned long long)rx->audio_queue_dropped.load());
 	}
 
 	/* ── qcap2 ALLEGRO2 hardware decoder ────────────────────────────── */
@@ -1956,6 +1986,7 @@ namespace __sc6f0_dante_rx__ {
 					(unsigned long)pool_dropped, (unsigned long)push_failed,
 					(unsigned long)recovery_skipped,
 					(unsigned long)decoded, decoded_fps);
+				log_pcm_stats(rx);
 
 				if (active_flows > 0 || cur_vpkts > 0) {
 					LOGI("[DANTE RX STATS] flows=%u | VIDEO: %lu AUs (%.2f MB, %.1f fps, %.2f Mbps) | RTP: %lu udp-in, %lu reord-in (%.0f/s), lost=%lu, late=%lu, old=%lu, dup=%lu, parse-fail=%lu, dep-in=%lu, dep-drop=%lu, qof=%lu, qd=%lu | PROBE port+10: reord-in=%lu lost=%lu | AUDIO: %u Hz, %u ch, fmt=%u, %lu periods (%.2f MB, %.2f Mbps, %lu samples, %.1f p/s, underflow=%u, overrun=%u)",
@@ -2109,8 +2140,9 @@ namespace __sc6f0_dante_rx__ {
 		/* 4. Dante DEP audio is excluded from RTP-only measurement mode. */
 		if (!direct_mode && !rtp_stats_only) {
 			rx->rx_dep_src = zst_dante_dep_audio_source_create();
-			if (!rx->rx_dep_src) {
+			if (!rx->rx_dep_src || !configure_dep_audio_batch(rx->rx_dep_src)) {
 				LOGE("zst_dante_dep_audio_source_create() failed");
+				if (rx->rx_dep_src) zst_element_destroy(rx->rx_dep_src);
 				rx_h264_parser_destroy(rx);
 				zst_element_destroy(rx->rx_video_sink);
 				zst_element_destroy(rx->coordinator);
@@ -3772,6 +3804,7 @@ namespace __sc6f0_dante_rx__ {
 			     (unsigned long long)p.video_frames.load(),(unsigned long long)p.output->decoded_frames.load(),
 			     (unsigned long long)p.output->decoded_errors.load(),(unsigned long long)p.audio_frames.load(),
 			     (unsigned long long)p.output->audio_playback_errors.load());
+			log_pcm_stats(p.output);
 		}
 		zst_element_set_state(p.source,ZST_STATE_NULL);
 		stop_vdec_decoder(p.output);
@@ -3837,6 +3870,7 @@ int main(int argc, char* argv[]) {
 			printf("  --use-qcap         Use the QCAP Dante receiver instead of zstreamer (fixed DVR/DEP defaults)\n");
 			printf("  --dvr <path>       Path to Dante DVR socket (default: /var/run/dante/dvr)\n");
 			printf("  --dep <name>       Dante DEP shared memory name (default: DanteEP)\n");
+			printf("  --dep-audio-batched  A/B: 960-frame DEP blocks, 300-period queue (linux-decode only)\n");
 			printf("  --channels <list>  Audio channels to monitor (default: 0,1)\n");
 			printf("  --rate <hz>        Audio sample rate in Hz (default: 48000)\n");
 			printf("  --interval <sec>   Periodic statistics interval (default: 3)\n");
@@ -3872,6 +3906,8 @@ int main(int argc, char* argv[]) {
 			dvr_socket = argv[++i];
 		} else if (strcmp(argv[i], "--dep") == 0 && i + 1 < argc) {
 			dep_name = argv[++i];
+		} else if (strcmp(argv[i], "--dep-audio-batched") == 0) {
+			g_dep_audio_batched = true;
 		} else if (strcmp(argv[i], "--channels") == 0 && i + 1 < argc) {
 			channels = argv[++i];
 		} else if (strcmp(argv[i], "--rate") == 0 && i + 1 < argc) {
@@ -3946,6 +3982,11 @@ int main(int argc, char* argv[]) {
 	}
 	if (reorder_timeout_ms < 1 || reorder_timeout_ms > 10000) {
 		LOGE("Invalid --reorder-timeout-ms %u (expected 1..10000)", reorder_timeout_ms);
+		return 1;
+	}
+	if (g_dep_audio_batched && (use_qcap || direct_mode || !rtsp_url.empty() ||
+	    recv_only || rtp_stats_only || media_path != "linux-decode" || sample_rate != 48000)) {
+		LOGE("--dep-audio-batched requires 48kHz native DEP linux-decode playback");
 		return 1;
 	}
 	if (!rtsp_url.empty() && (use_qcap || direct_mode || !reconstructed_path.empty() ||
