@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
 """Host-only fake MMIO tests. Never opens /dev/mem or connects to hardware."""
+import contextlib
 import importlib.util
+import io
 from pathlib import Path
+import subprocess
+import struct
+import tempfile
 import unittest
+from unittest.mock import patch
 
 root = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location('probe', root / 'src/tests/sc6f0-axis-probe-read.py')
@@ -24,6 +30,94 @@ class Fake:
 
 
 class ReaderTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.temp = tempfile.TemporaryDirectory(prefix='sc6f0-mmio32-test-')
+        cls.addClassCleanup(cls.temp.cleanup)
+        cls.native_path = Path(cls.temp.name) / 'libsc6f0-mmio32.so'
+        subprocess.run(['cc', '-std=c11', '-O2', '-Wall', '-Wextra', '-Werror',
+                        '-fPIC', '-shared', str(root / 'src/tests/sc6f0-mmio32.c'),
+                        '-o', str(cls.native_path)], check=True)
+        cls.native = probe.NativeMMIO(cls.native_path)
+
+    def register_map(self, trace):
+        r = probe.RegisterMap.__new__(probe.RegisterMap)
+        r.base = probe.PROBE_BASE
+        r.trace = trace
+        r.memory = bytearray(4096)
+        r.address = probe.ctypes.addressof(probe.ctypes.c_char.from_buffer(r.memory))
+        r.io = self.native
+        return r
+
+    def test_mmio_trace_read_and_write(self):
+        r = self.register_map(trace=True)
+        out = io.StringIO()
+        with contextlib.redirect_stderr(out):
+            r.write32(0xC, 3)
+            self.assertEqual(r.read32(0xC), 3)
+        self.assertEqual(out.getvalue().splitlines(), [
+            'MMIO write32 begin address=0xb102000c value=0x00000003',
+            'MMIO write32 done address=0xb102000c value=0x00000003',
+            'MMIO read32 begin address=0xb102000c',
+            'MMIO read32 done address=0xb102000c value=0x00000003'])
+
+    def test_mmio_trace_precedes_failed_access(self):
+        r = self.register_map(trace=True)
+        out = io.StringIO()
+        def fail(*args):
+            self.assertEqual(out.getvalue(), 'MMIO read32 begin address=0xb1020000\n')
+            raise OSError('simulated bus failure')
+        with contextlib.redirect_stderr(out), patch.object(r.io, 'read32', side_effect=fail):
+            with self.assertRaises(OSError):
+                r.read32(0)
+        self.assertNotIn('done', out.getvalue())
+
+    def test_mmio_trace_disabled_and_bounds_preserved(self):
+        r = self.register_map(trace=False)
+        out = io.StringIO()
+        with contextlib.redirect_stderr(out):
+            self.assertEqual(r.read32(0), 0)
+            with self.assertRaises(ValueError):
+                r.read32(1)
+            with self.assertRaises(ValueError):
+                r.read32(4096)
+            with self.assertRaises(ValueError):
+                r.write32(0, 3)
+            with self.assertRaises(ValueError):
+                r.write32(0xC, 4)
+        self.assertEqual(out.getvalue(), '')
+
+    def test_legacy_pack_into_zeroes_before_value_conversion(self):
+        # Ordinary RAM only: demonstrates why buffer packing is not MMIO.
+        # CPython clears the destination before converting/packing the value.
+        memory = bytearray(b'\xa5' * 4)
+        observed = []
+        class Command:
+            def __index__(self):
+                observed.append(bytes(memory))
+                return 3
+        struct.pack_into('<I', memory, 0, Command())
+        self.assertEqual(observed, [b'\x00' * 4])
+        self.assertEqual(memory, b'\x03\x00\x00\x00')
+
+    def test_native_store_preserves_adjacent_bytes(self):
+        r = self.register_map(trace=False)
+        r.memory[:] = b'\xa5' * 4096
+        r.write32(0xC, 3)
+        self.assertEqual(r.memory[0xC:0x10], b'\x03\x00\x00\x00')
+        self.assertEqual(r.memory[:0xC], b'\xa5' * 0xC)
+        self.assertEqual(r.memory[0x10:], b'\xa5' * (4096 - 0x10))
+        self.assertEqual(r.read32(0xC), 3)
+
+    def test_missing_native_helper_has_no_fallback(self):
+        with self.assertRaises(OSError):
+            probe.NativeMMIO(Path(self.temp.name) / 'missing.so')
+
+    def test_no_python_buffer_pack_mmio(self):
+        source = (root / 'src/tests/sc6f0-axis-probe-read.py').read_text()
+        self.assertNotIn('struct.pack_into(', source)
+        self.assertNotIn('struct.unpack_from(', source)
+
     def test_read_only(self):
         r = Fake()
         sample = probe.capture(r)

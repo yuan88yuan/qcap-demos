@@ -61,20 +61,38 @@ int main() {
     assert(sdi_card_id("xlnx-sdi12") && sdi_card_id("xlnx_sdi"));
     assert(!sdi_card_id("xlnxhdmi1") && !sdi_card_id("xlnxi2s0"));
     assert(!sdi_card_id("xlnxsdiOther") && !sdi_card_id(""));
-    auto e = sdi_capabilities();
-    for (size_t base : {size_t(0),size_t(128)}) {
-        unsigned int sum = 0;
-        for (size_t i=0;i<128;++i) sum += e[base+i];
-        assert((sum&255)==0);
+    std::array<unsigned char,256> e;
+    for (uint32_t width : {1920u,3840u}) {
+        const uint32_t height = width == 1920 ? 1080 : 2160;
+        assert(sdi_capabilities(width,height,60,e));
+        for (size_t base : {size_t(0),size_t(128)}) {
+            unsigned int sum = 0;
+            for (size_t i=0;i<128;++i) sum += e[base+i];
+            assert((sum&255)==0);
+        }
+        assert(e[0]==0 && e[1]==255 && e[7]==0 && e[126]==1);
+        assert(e[20]==0xa0 && e[24]==2); // RGB8, preferred DTD
+        for(size_t i=35;i<38;++i) assert(e[i]==0); // no established timings
+        for(size_t i=38;i<54;++i) assert(e[i]==1); // no standard timings
+        assert((e[54]|(unsigned(e[55])<<8))*10 == (width==1920 ? 148500u : 594000u));
+        assert((unsigned(e[56])|((e[58]>>4)<<8))==width);
+        assert((unsigned(e[59])|((e[61]>>4)<<8))==height);
+        const unsigned htotal = width + (e[57]|((e[58]&15)<<8));
+        const unsigned vtotal = height + (e[60]|((e[61]&15)<<8));
+        assert((e[54]|(unsigned(e[55])<<8))*10000u == htotal*vtotal*60u);
+        for(size_t i : {size_t(72),size_t(90),size_t(108)}) {
+            assert(e[i]==0 && e[i+1]==0); // no additional DTD
+        }
+        assert(e[128]==2 && e[129]==3 && e[130]==8);
+        assert(e[131]==0); // no YCbCr444/422 or extra CTA DTDs
+        assert(e[132]==0x23 && e[133]==0x09 && e[134]==4 && e[135]==4);
+        // No video VIC (60-family CTA VICs also admit 59.94); sole exact DTD.
+        for(size_t i=136;i<255;++i) assert(e[i]==0); // no VSDB/HDR/extra modes
     }
-    assert(e[0]==0 && e[1]==255 && e[7]==0 && e[126]==1);
-    assert(e[20]==0xa0); // digital RGB8, unspecified physical interface
-    assert((e[54]|(unsigned(e[55])<<8))*10 == 148500);
-    assert((e[72]|(unsigned(e[73])<<8))*10 == 594000);
-    assert(e[128]==2 && e[129]==3 && e[130]==11);
-    assert(e[132]==0x42 && e[133]==16 && e[134]==97);
-    assert(e[135]==0x23 && e[136]==0x09 && e[137]==4 && e[138]==4);
-    for(size_t i=139;i<255;++i) assert(e[i]==0); // no VSDB/HDR/extra modes
+    assert(!sdi_capabilities(1920,1080,59,e));
+    assert(!sdi_capabilities(3840,1080,60,e));
+    assert(!sdi_capabilities(1280,720,60,e));
+    for(auto byte : e) assert(byte==0); // unsupported mode never returns a usable EDID
     drmModeConnector hdmi = {DRM_MODE_CONNECTOR_HDMIA, 10};
     drmModeConnector sdi = {DRM_MODE_CONNECTOR_Unknown, 11};
     drmModeModeInfo mode = {1920,1080,148500,2200,1125,0};

@@ -76,6 +76,15 @@ qcap_add_executable(zdev-ticks-stat
   SOURCES "${PROJECT_SOURCE_DIR}/src/utils/zdev-ticks-stat.cpp"
   DEPS)
 
+# Explicit-width MMIO helper for the passive AXIS probe Python reader.
+# Standalone: do not link QCAP/zstreamer or rebuild those SDKs for diagnostics.
+if(BUILD_SC6F0)
+  add_library(sc6f0-mmio32 SHARED EXCLUDE_FROM_ALL
+    "${PROJECT_SOURCE_DIR}/src/tests/sc6f0-mmio32.c")
+  set_target_properties(sc6f0-mmio32 PROPERTIES POSITION_INDEPENDENT_CODE ON)
+  target_compile_options(sc6f0-mmio32 PRIVATE -O2 -Wall -Wextra -Werror)
+endif()
+
 # Tests/demos registered by src/tests/tests.mk.
 set(TEST_TARGETS)
 macro(qcap_add_test target source)

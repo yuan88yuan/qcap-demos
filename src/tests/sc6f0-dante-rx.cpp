@@ -87,6 +87,12 @@ namespace __sc6f0_dante_rx__ {
 	static const char* output_name() { return output_is_sdi() ? "SDI" : "HDMI"; }
 	static uint32_t g_sdi_output_width = 1920;
 	static uint32_t g_sdi_output_height = 1080;
+	/* Test hook. The FPGA SDI audio embedder ("SDI FPGA Passthrough") accepts
+	 * the enable write at HD/3G but returns EINVAL at 2160p60/12G, which would
+	 * otherwise abort the whole modeset. With this set the SDI output carries
+	 * video only instead of the app exiting. */
+	static bool g_sdi_audio_optional = false;
+	static bool g_sdi_audio_disabled = false;
 	static std::string output_audio_card() {
 		if (!output_is_sdi()) return "hw:xlnxhdmi1";
 		std::string selected;
@@ -2993,12 +2999,25 @@ namespace __sc6f0_dante_rx__ {
 		ctx->modeset_active = true;
 		ctx->overlay_active = enable_overlay;
 		ctx->current_mode = mode;
-		if (output_is_sdi() && enable_overlay && set_sdi_fpga_passthrough(true) != 0) {
-			LOGE("SDI video committed, but native FPGA audio could not be enabled");
-			return -1;
+		if (output_is_sdi() && enable_overlay && !g_sdi_audio_disabled &&
+		    set_sdi_fpga_passthrough(true) != 0) {
+			if (!g_sdi_audio_optional) {
+				LOGE("SDI video committed, but the native FPGA audio embedder "
+				     "refused enable for %ux%u@%.2fHz. Check kernel FPGA audio "
+				     "shared-mode/validation diagnostics. Re-run with "
+				     "--sdi-audio-optional for video-only output.",
+				     mode.hdisplay, mode.vdisplay, mode_vrefresh(&mode));
+				return -1;
+			}
+			LOGW("SDI FPGA audio embedder unavailable for %ux%u@%.2fHz "
+			     "(see kernel FPGA audio diagnostics); continuing video-only "
+			     "due to --sdi-audio-optional",
+			     mode.hdisplay, mode.vdisplay, mode_vrefresh(&mode));
 		}
 
 		// Ensure VTPG is generating frames to keep v_mix master layer active
+		if (output_is_sdi() && g_sdi_audio_disabled)
+			LOGI("[SDI] FPGA audio embedder intentionally disabled (--no-sdi-audio)");
 		configure_vtpg(output_w, output_h, g_tpg_pattern);
 		if (enable_overlay) {
 			set_vmix_layer1_opaque();
@@ -3071,8 +3090,16 @@ namespace __sc6f0_dante_rx__ {
 
 	static void dau_get_edid(struct dau_service *dau, struct DBusMessage *reply, void *ctxt) {
 		if (output_is_sdi()) {
-			const auto capabilities = sc6f0_rx_output::sdi_capabilities();
-			LOGI("[SDI][DAU] returning fixed software capabilities, not cable EDID");
+			auto* ctx = static_cast<ultra_direct_context_t*>(ctxt);
+			std::array<unsigned char, 256> capabilities{};
+			if (!ctx || !ctx->fixed_mode_override ||
+			    !sc6f0_rx_output::sdi_capabilities(ctx->fixed_width,
+				ctx->fixed_height, ctx->fixed_fps, capabilities)) {
+				dau_reply_error(dau, reply, "SDI requires a supported explicit --mode");
+				return;
+			}
+			LOGI("[SDI][DAU] software EDID: only %ux%u@%u RGB8 (not cable EDID)",
+			     ctx->fixed_width, ctx->fixed_height, ctx->fixed_fps);
 			dau_reply_get_edid(dau, reply, capabilities.data());
 			return;
 		}
@@ -3108,6 +3135,18 @@ namespace __sc6f0_dante_rx__ {
 
 		ctx->current_video_format = *format;
 		ctx->format_changes++;
+		const uint32_t previous_overlay_format = ctx->ultra_overlay_format;
+		if (output_is_sdi() && format->locked &&
+		    (format->width != ctx->fixed_width || format->height != ctx->fixed_height ||
+		     format->framerate != ctx->fixed_fps || format->interlaced ||
+		     format->colorformat != VIDEO_COLORFORMAT_RGB)) {
+			LOGE("[SDI][DAU] rejecting stream outside configured %ux%u@%u RGB contract; selecting DUMMY",
+			     ctx->fixed_width, ctx->fixed_height, ctx->fixed_fps);
+			apply_drm_modeset(ctx, ctx->fixed_width, ctx->fixed_height,
+				ctx->fixed_fps, false);
+			dau_reply_error(dau, reply, "Stream does not match SDI timing/RGB contract");
+			return;
+		}
 		if (format->locked && format->width && format->height && format->framerate) {
 			ctx->last_locked_video_format = *format;
 			ctx->ultra_overlay_format = format->colorformat == VIDEO_COLORFORMAT_RGB ?
@@ -3129,6 +3168,20 @@ namespace __sc6f0_dante_rx__ {
 		uint32_t target_h = ctx->fixed_mode_override ? ctx->fixed_height : format->height;
 		double target_fps = ctx->fixed_mode_override ? (double)ctx->fixed_fps : (double)format->framerate;
 		uint32_t overlay_format = ctx->ultra_overlay_format;
+
+		// SDI unchanged locked-format fast path: preserve the running stream.
+		// Replacing FBs for an identical DAU notification unnecessarily stops
+		// VProcSS and reroutes the mixer in the middle of an active AXIS frame.
+		if (output_is_sdi() && format->locked && ctx->modeset_active &&
+		    ctx->overlay_active && previous_overlay_format == overlay_format &&
+		    ctx->current_mode.hdisplay == target_w &&
+		    ctx->current_mode.vdisplay == target_h &&
+		    std::fabs(mode_vrefresh(&ctx->current_mode) - target_fps) < 0.005) {
+			LOGI("[SDI][DAU] unchanged locked format; preserving active video pipeline");
+			dau_reply_success(dau, reply);
+			return;
+		}
+		// End unchanged locked-format fast path.
 
 		int result;
 		if (format->locked) {
@@ -3236,6 +3289,11 @@ namespace __sc6f0_dante_rx__ {
 	                            uint32_t reorder_timeout_ms = 1) {
 		if (stat_interval == 0)
 			stat_interval = 3;
+		if (output_is_sdi() && (!fixed_mode_override ||
+		    !sc6f0_rx_output::sdi_size(fixed_w, fixed_h) || fixed_fps != 60)) {
+			LOGE("SDI Ultra requires --mode 1920x1080@60 or 3840x2160@60; Dante output is RGB-only");
+			return 1;
+		}
 		LOGI("[ULTRA DIRECT] Dante Ultra FPGA media path: VSINK video (v_mix layer 1) and AES3 audio (SI1) -> %s", output_name());
 		LOGI("[ULTRA DIRECT] Hardware passthrough: bypasses DVR socket, DEP, VCU, and ALSA PCM playback.");
 
@@ -3823,6 +3881,8 @@ namespace __sc6f0_dante_rx__ {
 using namespace __sc6f0_dante_rx__;
 
 int main(int argc, char* argv[]) {
+	// Keep DAU negotiation diagnostics visible while running under systemd.
+	setvbuf(stdout, nullptr, _IOLBF, 0);
 	g_argc = argc;
 	g_argv = argv;
 
@@ -3887,6 +3947,10 @@ int main(int argc, char* argv[]) {
 			printf("                     If omitted, mode dynamically tracks Dante TX format via DAU\n");
 			printf("  --tpg-pattern <id> VTPG background pattern ID for ultra-direct mode\n");
 			printf("                     (7=solid black [default], 9=color bars, 0=pass-through)\n");
+			printf("  --sdi-audio-optional  Keep the SDI output up video-only when the FPGA SDI\n");
+			printf("                     audio embedder cannot be enabled; inspect kernel diagnostics\n");
+			printf("  --no-sdi-audio      Disable the FPGA SDI audio embedder in ultra-direct mode,\n");
+			printf("                     including subsequent DAU format updates (video-only test)\n");
 			printf("  --dump-reconstructed <path>  Write depayloaded Annex-B video AUs\n");
 			printf("  --direct <tx-ip>   Direct RTP mode: receive unicast RTP from tx-ip:port,\n");
 			printf("                     bypassing the Dante daemon entirely (no decode by default)\n");
@@ -3912,6 +3976,10 @@ int main(int argc, char* argv[]) {
 			dep_name = argv[++i];
 		} else if (strcmp(argv[i], "--dep-audio-batched") == 0) {
 			g_dep_audio_batched = true;
+		} else if (strcmp(argv[i], "--sdi-audio-optional") == 0) {
+			g_sdi_audio_optional = true;
+		} else if (strcmp(argv[i], "--no-sdi-audio") == 0) {
+			g_sdi_audio_disabled = true;
 		} else if (strcmp(argv[i], "--channels") == 0 && i + 1 < argc) {
 			channels = argv[++i];
 		} else if (strcmp(argv[i], "--rate") == 0 && i + 1 < argc) {

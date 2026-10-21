@@ -4,14 +4,17 @@
 Default reads the published snapshot. --snapshot issues a diagnostic capture;
 --clear clears ONLY probe statistics after every capture (use 250ms windows).
 Requires FPGA 0x26102005 and compact probe ABI 2.0. Overflow is never valid data.
+Requires adjacent libsc6f0-mmio32.so: device access uses single volatile 32-bit
+loads/stores, never struct.pack_into (which may zero/fill a buffer first).
 """
 import argparse
+import ctypes
 import fcntl
 import json
 import mmap
 import os
 from pathlib import Path
-import struct
+import sys
 import time
 
 FPGA = 0x26102005
@@ -26,20 +29,57 @@ OVERFLOW_NAMES = ('window_cycles', 'reserved1', 'reserved2', 'reserved3', 'reser
 POINT_NAMES = ('dante_out', 'cdc_out', 'vproc_in', 'vproc_out', 'mixer_overlay_in')
 
 
+class NativeMMIO:
+    def __init__(self, path=None):
+        path = path or Path(__file__).resolve().with_name('libsc6f0-mmio32.so')
+        self.library = ctypes.CDLL(str(path))  # Fail closed; no buffer-packing fallback.
+        self.library.sc6f0_mmio32_abi.argtypes = []
+        self.library.sc6f0_mmio32_abi.restype = ctypes.c_uint32
+        if self.library.sc6f0_mmio32_abi() != 1:
+            raise RuntimeError('Unknown native MMIO helper ABI')
+        self.library.sc6f0_mmio32_read.argtypes = [ctypes.c_void_p]
+        self.library.sc6f0_mmio32_read.restype = ctypes.c_uint32
+        self.library.sc6f0_mmio32_write.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+        self.library.sc6f0_mmio32_write.restype = None
+
+    def read32(self, address):
+        return self.library.sc6f0_mmio32_read(address)
+
+    def write32(self, address, value):
+        self.library.sc6f0_mmio32_write(address, value)
+
+
 class RegisterMap:
-    def __init__(self, fd, base):
+    def __init__(self, fd, base, trace=False):
+        self.base = base
+        self.trace = trace
+        self.io = NativeMMIO()
         self.memory = mmap.mmap(fd, 4096, mmap.MAP_SHARED,
                                 mmap.PROT_READ | mmap.PROT_WRITE, offset=base)
+        self.address = ctypes.addressof(ctypes.c_char.from_buffer(self.memory))
 
     def read32(self, offset):
         if offset % 4 or not 0 <= offset < 4096:
             raise ValueError('Invalid probe register offset')
-        return struct.unpack_from('<I', self.memory, offset)[0]
+        self.trace_access('read32 begin', offset)
+        value = self.io.read32(self.address + offset)
+        self.trace_access('read32 done', offset, value)
+        return value
+
+    def trace_access(self, operation, offset, value=None):
+        # Flush BEFORE the potentially blocking bus access. A Python timeout
+        # cannot cancel a CPU load/store stalled by a nonresponding AXI slave.
+        if self.trace:
+            detail = '' if value is None else f' value={value:#010x}'
+            print(f'MMIO {operation} address={self.base + offset:#010x}{detail}',
+                  file=sys.stderr, flush=True)
 
     def write32(self, offset, value):
         if offset != 0xC or value not in (1, 3):
             raise ValueError('Only probe SNAPSHOT/CLEAR_AFTER_SNAPSHOT may be written')
-        struct.pack_into('<I', self.memory, offset, value)
+        self.trace_access('write32 begin', offset, value)
+        self.io.write32(self.address + offset, value)
+        self.trace_access('write32 done', offset, value)
 
     def close(self):
         self.memory.close()
@@ -138,6 +178,8 @@ def capture(regs, request=False, clear=False, timeout=1.0):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--trace-mmio', action='store_true',
+                        help='flush each MMIO operation to stderr before/after access; not a bus timeout')
     parser.add_argument('--snapshot', action='store_true')
     parser.add_argument('--clear', action='store_true')
     parser.add_argument('--count', type=int, default=1)
@@ -151,11 +193,12 @@ def main():
     with lock_path.open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         fd = os.open('/dev/mem', os.O_RDWR | os.O_SYNC)
-        env = RegisterMap(fd, ENV_BASE)
+        env = None
         regs = None
         try:
+            env = RegisterMap(fd, ENV_BASE, trace=args.trace_mmio)
             validate_fpga(env)  # BEFORE mapping/touching B1020000 on old hardware.
-            regs = RegisterMap(fd, PROBE_BASE)
+            regs = RegisterMap(fd, PROBE_BASE, trace=args.trace_mmio)
             result = 0
             for i in range(args.count):
                 sample = capture(regs, args.snapshot, args.clear)
@@ -167,7 +210,8 @@ def main():
         finally:
             if regs is not None:
                 regs.close()
-            env.close()
+            if env is not None:
+                env.close()
             os.close(fd)
     return result
 

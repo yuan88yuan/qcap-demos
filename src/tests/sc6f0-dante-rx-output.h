@@ -47,11 +47,17 @@ inline bool sdi_card_id(const std::string& id) {
 }
 
 /* DAU protocol capability descriptor, not EDID read from an SDI cable.
- * Advertise only integer 1080p60/2160p60, RGB8 and 2ch 48kHz 24-bit PCM.
- * No HDMI VSDB, HDCP, HDR, deep-color or monitor-size claims.
+ * Advertise exactly the configured integer timing, RGB8 and 2ch 48kHz
+ * 24-bit PCM. Dante's scaler must target the configured SDI output, not
+ * choose another resolution from a list of monitor capabilities.
+ * No HDMI VSDB, HDCP, HDR, deep-color or monitor-size claims. Do not add a
+ * CTA video VIC: the 60-family VIC also admits 59.94. The exact preferred
+ * DTD is the only video timing; CTA carries the audio descriptor only.
  */
-inline std::array<unsigned char, 256> sdi_capabilities() {
-	std::array<unsigned char, 256> e{};
+inline bool sdi_capabilities(uint32_t width, uint32_t height, uint32_t fps,
+	std::array<unsigned char, 256>& e) {
+	e.fill(0);
+	if (!sdi_size(width, height) || fps != 60) return false;
 	const unsigned char header[] = {0, 255, 255, 255, 255, 255, 255, 0};
 	for (size_t i = 0; i < 8; ++i) e[i] = header[i];
 	e[8] = 0x66; e[9] = 0xa1; e[10] = 1; e[17] = 36;
@@ -61,20 +67,22 @@ inline std::array<unsigned char, 256> sdi_capabilities() {
 		0x58,0x2c,0x45,0,0,0,0,0,0,0x1e};
 	const unsigned char uhd[] = {0x08,0xe8,0,0x30,0xf2,0x70,0x5a,0x80,
 		0xb0,0x58,0x8a,0,0,0,0,0,0,0x1e};
-	for (size_t i = 0; i < 18; ++i) { e[54+i] = hd[i]; e[72+i] = uhd[i]; }
+	const unsigned char* timing = width == 1920 ? hd : uhd;
+	for (size_t i = 0; i < 18; ++i) e[54+i] = timing[i];
+	e[75] = 0x10; // unused descriptor, not a second timing
 	e[93] = 0xfc;
 	const char name[] = "SC6F0 SDI RX\n";
 	for (size_t i = 0; i < 13; ++i) e[95+i] = i < sizeof(name)-1 ? name[i] : ' ';
 	e[111] = 0x10; e[126] = 1;
-	e[128] = 0x02; e[129] = 0x03; e[130] = 11;
-	e[132] = 0x42; e[133] = 16; e[134] = 97; // CTA VICs 1080p60, 2160p60
-	e[135] = 0x23; e[136] = 0x09; e[137] = 0x04; e[138] = 0x04;
+	e[128] = 0x02; e[129] = 0x03; e[130] = 8;
+	// RGB-only flags, no Video Data Block or fractional-rate alternative.
+	e[132] = 0x23; e[133] = 0x09; e[134] = 0x04; e[135] = 0x04;
 	for (size_t base : {size_t(0), size_t(128)}) {
 		unsigned int sum = 0;
 		for (size_t i = 0; i < 127; ++i) sum += e[base+i];
 		e[base+127] = static_cast<unsigned char>(0u-sum);
 	}
-	return e;
+	return true;
 }
 }
 #endif
