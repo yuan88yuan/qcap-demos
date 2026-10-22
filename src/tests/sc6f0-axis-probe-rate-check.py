@@ -51,9 +51,9 @@ def main():
     env = regs = None
     try:
         env = probe.RegisterMap(fd, probe.ENV_BASE)
-        probe.validate_fpga(env)
+        version = probe.validate_fpga(env)
         regs = probe.RegisterMap(fd, probe.PROBE_BASE)
-        probe.validate_probe(regs)
+        probe.validate_probe(regs, expected_fpga=version)
         for trial in range(args.count):
             start = observe(env, regs)
             time.sleep(args.interval)

@@ -30,6 +30,13 @@ class Reference:
 
 
 class RateDiagnosticsTests(unittest.TestCase):
+    def test_supported_fpga_guards(self):
+        for version in ('0x26102005 SDIR 0x00000100', '0x26102101 SDIR 0x00000100'):
+            mode.validate_version(version)
+        for version in ('0x26102102 SDIR', '0x26102101 SDIT', '', '0x26102005SDIR'):
+            with self.assertRaises(RuntimeError):
+                mode.validate_version(version)
+
     def test_supported_rates(self):
         for width, height, integer, fractional in (
                 (1920, 1080, 148500, 148350), (3840, 2160, 594000, 593406)):

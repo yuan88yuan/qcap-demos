@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Controlled SDIR candidate05 output-rate A/B; preserves all framebuffer planes.
+"""Controlled SDIR ABI2/ABI3 FPGA output-rate A/B; preserves all framebuffer planes.
 
 Only connector is_frac and CRTC pixel-clock mode change. Controller/EDID,
 Fast Switching, overlay routing, audio and App service are NOT modified.
@@ -36,6 +36,12 @@ class Blob(c.Structure):
     _fields_ = [('id', c.c_uint32), ('length', c.c_uint32), ('data', c.c_void_p)]
 
 
+def validate_version(version):
+    fields = version.split()
+    if len(fields) < 2 or fields[0] not in ('0x26102005', '0x26102101') or fields[1] != 'SDIR':
+        raise RuntimeError('Requires known SDIR probe ABI2/ABI3 FPGA')
+
+
 def rate_for_mode(width, height, fractional):
     if (width, height) not in ((1920, 1080), (3840, 2160)) or fractional not in (0, 1):
         raise ValueError('Only 1080p/2160p integer/fractional 60 family is supported')
@@ -63,8 +69,7 @@ def main():
     if not product.startswith(b'SC6F0 SDI Dante RX'):
         raise RuntimeError('Not the named SDI RX product')
     version = Path('/sys/devices/platform/amba_pl@0/b1010000.zzlab_env_ctrl/zdev_ver').read_text()
-    if not ''.join(version.split()).startswith('0x26102005SDIR'):
-        raise RuntimeError('Requires candidate05/SDIR')
+    validate_version(version)
     lib = c.CDLL('libdrm.so.2', use_errno=True)
 
     def bind(name, result, *types):

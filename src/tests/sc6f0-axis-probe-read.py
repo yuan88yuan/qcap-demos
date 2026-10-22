@@ -3,7 +3,8 @@
 
 Default reads the published snapshot. --snapshot issues a diagnostic capture;
 --clear clears ONLY probe statistics after every capture (use 250ms windows).
-Requires FPGA 0x26102005 and compact probe ABI 2.0. Overflow is never valid data.
+Supports legacy FPGA 0x26102005/ABI2 and downstream FPGA 0x26102101/ABI3.
+Exact FPGA/ABI pairing is mandatory. Overflow is never valid data.
 Requires adjacent libsc6f0-mmio32.so: device access uses single volatile 32-bit
 loads/stores, never struct.pack_into (which may zero/fill a buffer first).
 """
@@ -27,6 +28,12 @@ OVERFLOW_NAMES = ('window_cycles', 'reserved1', 'reserved2', 'reserved3', 'reser
                   'line_beats', 'frame_lines', 'frame_beats', 'runs',
                   'period_range', 'period_overrun_count')
 POINT_NAMES = ('dante_out', 'cdc_out', 'vproc_in', 'vproc_out', 'mixer_overlay_in')
+PROFILES = {
+    FPGA: {'abi': ABI, 'names': POINT_NAMES, 'widths': (72, 48, 48, 48, 48)},
+    0x26102101: {'abi': 0x00030000,
+                 'names': ('dante_out', 'mixer_overlay_in', 'mixer_out', 'csc_out', 'packer_out'),
+                 'widths': (72, 48, 48, 48, 64)},
+}
 
 
 class NativeMMIO:
@@ -87,17 +94,23 @@ class RegisterMap:
 
 def validate_fpga(env):
     version, platform = env.read32(0), env.read32(4)
-    if version != FPGA or platform != 0x53444952:
+    if version not in PROFILES or platform != 0x53444952:
         raise RuntimeError(f'Refusing probe access: FPGA={version:#010x}, platform={platform:#010x}; '
-                           f'requires {FPGA:#010x}/SDIR')
+                           'requires known legacy/downstream probe FPGA/SDIR')
     return version
 
 
-def validate_probe(regs):
-    if (regs.read32(0), regs.read32(4), regs.read32(8)) != (MAGIC, ABI, 5):
+def validate_probe(regs, expected_fpga=None):
+    magic, abi, points = regs.read32(0), regs.read32(4), regs.read32(8)
+    matches = [fpga for fpga, profile in PROFILES.items() if profile['abi'] == abi]
+    if magic != MAGIC or points != 5 or len(matches) != 1:
         raise RuntimeError('Unknown probe identity/ABI/point count; no command issued')
+    fpga = matches[0]
+    if expected_fpga is not None and expected_fpga != fpga:
+        raise RuntimeError('FPGA/probe ABI mismatch; no command issued')
     if (regs.read32(0x30), regs.read32(0x34)) != (3, 28):
         raise RuntimeError('Unknown compact probe features; no command issued')
+    return fpga
 
 
 def decode_point(words):
@@ -133,8 +146,9 @@ def decode_point(words):
     }
 
 
-def capture(regs, request=False, clear=False, timeout=1.0):
-    validate_probe(regs)
+def capture(regs, request=False, clear=False, timeout=1.0, expected_fpga=None):
+    fpga = validate_probe(regs, expected_fpga)
+    profile = PROFILES[fpga]
     if clear and not request:
         raise ValueError('--clear requires --snapshot')
     prior_seq = regs.read32(0x10)
@@ -160,7 +174,7 @@ def capture(regs, request=False, clear=False, timeout=1.0):
     if sequence == 0:
         raise RuntimeError('No published snapshot yet; explicitly request --snapshot')
     points = {}
-    for point, name in enumerate(POINT_NAMES):
+    for point, name in enumerate(profile['names']):
         if mask & (1 << point):
             words = [regs.read32(0x100 + point * 0x100 + i * 4) for i in range(64)]
             points[name] = decode_point(words)
@@ -169,7 +183,8 @@ def capture(regs, request=False, clear=False, timeout=1.0):
     if regs.read32(0x10) != sequence:
         raise RuntimeError('Snapshot sequence changed during read; discard torn sample')
     complete = mask == 31 and all(point['measurement_complete'] for point in points.values() if point is not None)
-    return {'fpga': f'{FPGA:#010x}', 'abi': '2.0', 'sequence': sequence,
+    return {'fpga': f'{fpga:#010x}', 'abi': f"{profile['abi'] >> 16}.0", 'sequence': sequence,
+            'point_data_width_bits': dict(zip(profile['names'], profile['widths'])),
             'busy': bool(status & 1), 'timed_out': bool(status & 2),
             'valid_mask': mask, 'partial': mask != 31,
             'measurement_complete': complete,
@@ -197,11 +212,11 @@ def main():
         regs = None
         try:
             env = RegisterMap(fd, ENV_BASE, trace=args.trace_mmio)
-            validate_fpga(env)  # BEFORE mapping/touching B1020000 on old hardware.
+            version = validate_fpga(env)  # BEFORE mapping/touching B1020000 on unknown hardware.
             regs = RegisterMap(fd, PROBE_BASE, trace=args.trace_mmio)
             result = 0
             for i in range(args.count):
-                sample = capture(regs, args.snapshot, args.clear)
+                sample = capture(regs, args.snapshot, args.clear, expected_fpga=version)
                 print(json.dumps(sample, sort_keys=True), flush=True)
                 if not sample['measurement_complete']:
                     result = 2

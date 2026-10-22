@@ -147,6 +147,24 @@ class ReaderTests(unittest.TestCase):
             probe.capture(r, request=True)
         self.assertEqual(r.writes, [])
 
+    def test_downstream_fpga_and_layout(self):
+        r = Fake(); r.values[0] = 0x26102101; r.values[4] = 0x53444952
+        self.assertEqual(probe.validate_fpga(r), 0x26102101)
+        r = Fake(); r.values[4] = 0x00030000
+        sample = probe.capture(r, expected_fpga=0x26102101)
+        self.assertEqual(sample['abi'], '3.0')
+        self.assertEqual(sample['fpga'], '0x26102101')
+        self.assertEqual(tuple(sample['points']), ('dante_out', 'mixer_overlay_in', 'mixer_out', 'csc_out', 'packer_out'))
+        self.assertEqual(sample['point_data_width_bits']['packer_out'], 64)
+        self.assertNotIn('vproc_in', sample['points'])
+
+    def test_crossed_fpga_abi_no_command(self):
+        for fpga, abi in ((0x26102101, 0x00020000), (0x26102005, 0x00030000)):
+            r = Fake(); r.values[4] = abi
+            with self.assertRaisesRegex(RuntimeError, 'mismatch'):
+                probe.capture(r, request=True, expected_fpga=fpga)
+            self.assertEqual(r.writes, [])
+
     def test_old_fpga_rejected(self):
         r = Fake(); r.values[0] = 0x26101501; r.values[4] = 0x53444952
         with self.assertRaises(RuntimeError):
