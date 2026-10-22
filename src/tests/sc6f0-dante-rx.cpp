@@ -42,6 +42,7 @@ extern "C" {
 #include "ZzUtils.h"
 #include "testkit.h"
 #include "sc6f0-dante-rx-output.h"
+#include "sc6f0-sdi-resync-policy.h"
 #include "sc6f0-pcm-write-queue.h"
 
 // zstreamer headers
@@ -2726,7 +2727,155 @@ namespace __sc6f0_dante_rx__ {
 
 		uint64_t format_changes{0};
 		uint64_t hotplug_events{0};
+		// Transitional SDI resync workaround state; opt-in, not normal mode policy.
+		void* sdi_status_map{MAP_FAILED};
+		uint32_t sdi_last_status{UINT32_MAX};
+		sc6f0_sdi_resync::Policy sdi_resync;
 	};
+
+	static bool drm_property_value(int fd, uint32_t object, uint32_t kind,
+	                               const char* name, uint64_t* value) {
+		const uint32_t id = drm_property_id(fd, object, kind, name);
+		std::shared_ptr<drmModeObjectProperties> props(
+			drmModeObjectGetProperties(fd, object, kind), drmModeFreeObjectProperties);
+		if (!id || !props) return false;
+		for (uint32_t i = 0; i < props->count_props; ++i) {
+			if (props->props[i] == id) { *value = props->prop_values[i]; return true; }
+		}
+		return false;
+	}
+
+	/* TRANSITIONAL WORKAROUND: register-only SDI output resynchronization.
+	 * Operator observed FS OFF->ON picture shift with healthy ABI3 counters up to
+	 * packer_out/SDI VIDEO_IN. Same-mode ACTIVE0->1 restores picture; repeated
+	 * register-triggered recoveries were also observed by the operator (2026-10-22).
+	 * This masks an unresolved downstream synchronization fault; it is NOT the
+	 * root-cause fix, seamless switching, or an FS OFF NO SIGNAL solution.
+	 *
+	 * The App has NO FS ON/OFF event interface. Do not use cable/HDR callbacks as
+	 * substitutes. 0xB00C006C bit11 is sticky history, NOT live lock/picture state.
+	 * Lag12 + bit11 with debounce only matches the captured fault heuristically.
+	 *
+	 * Lifecycle: init -> poll -> read -> Policy::observe -> on_sdi_resync_requested
+	 * -> reinitialize_sdi_output; cleanup unmaps the read-only status page.
+	 * All operations run on the Ultra main loop, serialized with DAU modesets;
+	 * the on_* callback is internal, not an event from Dante/FS or another thread.
+	 * Preserve the opt-in gate and safety limits until a root-cause fix replaces
+	 * this entire workaround. See wiki/SDI-RX-FAST-SWITCH-TRANSITION-20261021.md in
+	 * the sibling sc6f0-dante repository for fault/recovery evidence and limits.
+	 */
+	static void init_sdi_resync(ultra_direct_context_t* ctx) {
+		const char* enabled = getenv("SC6F0_SDI_AUTO_RESYNC");
+		if (!output_is_sdi() || !enabled || strcmp(enabled, "1")) return;
+		char version[128] = {}, product[128] = {};
+		FILE* f = fopen("/sys/devices/platform/amba_pl@0/b1010000.zzlab_env_ctrl/zdev_ver", "r");
+		if (f) { if (!fgets(version, sizeof(version), f)) version[0] = 0; fclose(f); }
+		f = fopen("/proc/device-tree/vp_boot/product", "r");
+		if (f) { const size_t n = fread(product, 1, sizeof(product) - 1, f); product[n] = 0; fclose(f); }
+		if (strncmp(version, "0x26102101 SDIR", 15) ||
+		    strncmp(product, "SC6F0 SDI Dante RX", 18)) {
+			LOGE("[SDI RESYNC] unsupported FPGA/product; watchdog disabled");
+			return;
+		}
+		int fd = open("/dev/mem", O_RDONLY | O_SYNC);
+		if (fd >= 0) {
+			ctx->sdi_status_map = mmap(nullptr, 4096, PROT_READ, MAP_SHARED, fd, 0xB00C0000);
+			close(fd);
+		}
+		if (ctx->sdi_status_map == MAP_FAILED) {
+			LOGE("[SDI RESYNC] read-only status mapping failed; watchdog disabled, errno=%d", errno);
+			return;
+		}
+		LOGW("[SDI RESYNC] EXPERIMENT enabled: 0xB00C006C bit11 + lag12 for 2s; "
+		     "500ms sampling, 5s cooldown, max3/min; TRANSITIONAL WORKAROUND, not a picture/FS detector");
+	}
+
+	// Only call with a successfully initialized read-only mapping.
+	static uint32_t read_sdi_resync_status(const ultra_direct_context_t* ctx) {
+		return *reinterpret_cast<volatile const uint32_t*>(
+			static_cast<const uint8_t*>(ctx->sdi_status_map) + 0x6c); // 0xB00C006C
+	}
+
+	static void cleanup_sdi_resync(ultra_direct_context_t* ctx) {
+		if (ctx && ctx->sdi_status_map != MAP_FAILED) {
+			munmap(ctx->sdi_status_map, 4096);
+			ctx->sdi_status_map = MAP_FAILED;
+		}
+	}
+
+	// Called only on the Ultra main loop, serialized with DAU dispatch/modesets.
+	// Reproduce the validated Python experiment: new same-mode blob + ACTIVE0/1;
+	// do not use apply_drm_modeset (it reallocates FBs and changes overlay state).
+	static bool reinitialize_sdi_output(ultra_direct_context_t* ctx) {
+		const int fd = ctx->drm_fd;
+		uint64_t active = 0, frac = 0, primary = 0, overlay = 0, source = 0, mode_id = 0;
+		if (!drm_property_value(fd, ctx->crtc_id, DRM_MODE_OBJECT_CRTC, "ACTIVE", &active) || !active ||
+		    !drm_property_value(fd, ctx->crtc_id, DRM_MODE_OBJECT_CRTC, "MODE_ID", &mode_id) ||
+		    !drm_property_value(fd, ctx->connector_id, DRM_MODE_OBJECT_CONNECTOR, "is_frac", &frac) || frac ||
+		    !drm_property_value(fd, ctx->primary_plane_id, DRM_MODE_OBJECT_PLANE, "FB_ID", &primary) ||
+		    !drm_property_value(fd, ctx->overlay_plane_id, DRM_MODE_OBJECT_PLANE, "FB_ID", &overlay) ||
+		    !drm_property_value(fd, ctx->overlay_plane_id, DRM_MODE_OBJECT_PLANE, "SC6F0_OVERLAY_SOURCE", &source) ||
+		    primary != ctx->primary_fb_id || !primary || overlay != ctx->overlay_fb_id || !overlay || source != 1)
+			return false;
+		std::shared_ptr<drmModePropertyBlobRes> old(
+			drmModeGetPropertyBlob(fd, mode_id), drmModeFreePropertyBlob);
+		if (!old || old->length != sizeof(drmModeModeInfo) ||
+		    memcmp(old->data, &ctx->current_mode, sizeof(ctx->current_mode)) ||
+		    !is_sdi_mode(ctx->current_mode)) return false;
+		uint32_t blob = 0;
+		if (drmModeCreatePropertyBlob(fd, old->data, old->length, &blob)) return false;
+		std::shared_ptr<drmModeAtomicReq> off(drmModeAtomicAlloc(), drmModeAtomicFree);
+		std::shared_ptr<drmModeAtomicReq> on(drmModeAtomicAlloc(), drmModeAtomicFree);
+		const uint32_t active_id = drm_property_id(fd, ctx->crtc_id, DRM_MODE_OBJECT_CRTC, "ACTIVE");
+		const uint32_t mode_prop = drm_property_id(fd, ctx->crtc_id, DRM_MODE_OBJECT_CRTC, "MODE_ID");
+		const uint32_t frac_id = drm_property_id(fd, ctx->connector_id, DRM_MODE_OBJECT_CONNECTOR, "is_frac");
+		bool ok = off && on && active_id && mode_prop && frac_id;
+		if (ok) ok = drmModeAtomicAddProperty(off.get(), ctx->crtc_id, active_id, 0) >= 0 &&
+			drmModeAtomicAddProperty(on.get(), ctx->crtc_id, active_id, 1) >= 0 &&
+			drmModeAtomicAddProperty(on.get(), ctx->crtc_id, mode_prop, blob) >= 0 &&
+			drmModeAtomicAddProperty(on.get(), ctx->connector_id, frac_id, frac) >= 0;
+		const uint32_t test = DRM_MODE_ATOMIC_ALLOW_MODESET | DRM_MODE_ATOMIC_TEST_ONLY;
+		if (ok) ok = !drmModeAtomicCommit(fd, on.get(), test, nullptr) &&
+			!drmModeAtomicCommit(fd, off.get(), test, nullptr);
+		if (ok) {
+			ok = !drmModeAtomicCommit(fd, off.get(), DRM_MODE_ATOMIC_ALLOW_MODESET, nullptr) &&
+				!drmModeAtomicCommit(fd, on.get(), DRM_MODE_ATOMIC_ALLOW_MODESET, nullptr);
+			if (!ok) {
+				LOGE("[SDI RESYNC] ACTIVE commit failed errno=%d; attempting original-state rollback", errno);
+				if (drmModeAtomicAddProperty(on.get(), ctx->crtc_id, mode_prop, mode_id) < 0 ||
+				    drmModeAtomicCommit(fd, on.get(), DRM_MODE_ATOMIC_ALLOW_MODESET, nullptr))
+					LOGE("[SDI RESYNC] ROLLBACK FAILED errno=%d; output may be inactive", errno);
+			}
+		}
+		drmModeDestroyPropertyBlob(fd, blob);
+		return ok;
+	}
+
+	// Transitional workaround callback: policy accepted one bounded recovery.
+	// A committed reset is not media acceptance; journal it for LV7300 correlation.
+	static void on_sdi_resync_requested(ultra_direct_context_t* ctx, uint32_t before) {
+		LOGW("[SDI RESYNC] attempt=%u before=0x%08x lag=%u; same-mode ACTIVE0->1, planes retained",
+		     ctx->sdi_resync.attempts, before, before >> 16);
+		const bool ok = reinitialize_sdi_output(ctx);
+		const uint32_t after = read_sdi_resync_status(ctx);
+		ctx->sdi_resync.failed = !ok;
+		LOGW("[SDI RESYNC] attempt=%u committed=%d after=0x%08x watchdog=%s; external media acceptance required",
+		     ctx->sdi_resync.attempts, int(ok), after, ok ? "enabled" : "DISABLED");
+	}
+
+	static void poll_sdi_resync(ultra_direct_context_t* ctx, uint64_t now_ms) {
+		if (ctx->sdi_status_map == MAP_FAILED || ctx->sdi_resync.failed ||
+		    now_ms < ctx->sdi_resync.next_sample_ms) return;
+		const uint32_t status = read_sdi_resync_status(ctx);
+		if (status != ctx->sdi_last_status) {
+			LOGI("[SDI RESYNC] status=0x%08x lag=%u lost_align_history=%u",
+			     status, status >> 16, (status >> 11) & 1);
+			ctx->sdi_last_status = status;
+		}
+		bool eligible = ctx->modeset_active && ctx->overlay_active && !ctx->avh_active;
+		if (ctx->sdi_resync.observe(now_ms, status, eligible))
+			on_sdi_resync_requested(ctx, status);
+	}
 
 	static uint32_t g_tpg_pattern = 7; // 7 = XTPG_BKGND_SOLID_BLACK, 9 = XTPG_BKGND_COLOR_BARS
 
@@ -3031,6 +3180,7 @@ namespace __sc6f0_dante_rx__ {
 	}
 
 	static void cleanup_ultra_direct_drm(ultra_direct_context_t* ctx) {
+		cleanup_sdi_resync(ctx);
 		if (!ctx || ctx->drm_fd < 0) return;
 		if (set_sdi_fpga_passthrough(false) != 0)
 			LOGE("SDI embedder disable failed during cleanup");
@@ -3464,6 +3614,7 @@ namespace __sc6f0_dante_rx__ {
 
 		uint64_t last_report_ms = 0;
 		bool have_last_status = false;
+		init_sdi_resync(&ctx);
 		int last_status_route = 0;
 		uint32_t last_status_width = 0, last_status_height = 0, last_status_refresh = 0;
 		std::string last_status_mode_name;
@@ -3617,6 +3768,7 @@ namespace __sc6f0_dante_rx__ {
 			struct timespec ts;
 			clock_gettime(CLOCK_MONOTONIC, &ts);
 			uint64_t now_ms = (uint64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+			poll_sdi_resync(&ctx, now_ms);
 			if (now_ms - last_report_ms >= (uint64_t)stat_interval * 1000) {
 				last_report_ms = now_ms;
 				int route = read_hdmi_audio_route();
