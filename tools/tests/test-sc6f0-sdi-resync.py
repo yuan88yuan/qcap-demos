@@ -12,6 +12,11 @@ with tempfile.TemporaryDirectory(prefix='sdi-resync-', dir='/tmp/opencode') as t
 #include <cassert>
 using sc6f0_sdi_resync::Policy;
 int main() {
+    assert(sc6f0_sdi_resync::known_fpga("0x26102101 SDIR 0x00000100"));
+    assert(sc6f0_sdi_resync::known_fpga("0x26102201 SDIR 0x00000100"));
+    assert(!sc6f0_sdi_resync::known_fpga("0x26102201 DNTX"));
+    assert(!sc6f0_sdi_resync::known_fpga("0x26102202 SDIR"));
+    assert(!sc6f0_sdi_resync::known_fpga(nullptr));
     assert(sc6f0_sdi_resync::has_suspect_alignment_history(0x000c09a7));
     assert(!sc6f0_sdi_resync::has_suspect_alignment_history(0x000c0186));
     assert(!sc6f0_sdi_resync::has_suspect_alignment_history(0x039c09a7));

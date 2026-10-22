@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <string.h>
 
 namespace sc6f0_sdi_resync {
 // TRANSITIONAL WORKAROUND, not a root-cause fix or picture/current-lock detector.
@@ -12,6 +13,12 @@ constexpr uint64_t kDebounceMs = 2000;
 constexpr uint64_t kCooldownMs = 5000;
 constexpr uint64_t kAttemptWindowMs = 60000;
 constexpr unsigned kMaxAttempts = 3;
+
+inline bool known_fpga(const char* version) {
+	// Native SDI register layout retained when diagnostic ABI3 taps are removed.
+	return version && (!strncmp(version, "0x26102101 SDIR", 15) ||
+	                   !strncmp(version, "0x26102201 SDIR", 15));
+}
 
 inline bool has_suspect_alignment_history(uint32_t status) {
 	// 0xB00C006C bit11 is sticky lost-align history, not live picture state.

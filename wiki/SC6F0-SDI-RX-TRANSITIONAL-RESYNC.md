@@ -30,3 +30,10 @@ Evidence lives in the coordination workspace:
 Test deployment is transient under /run, not a persistent full-image delivery.
 Next delivery must explicitly enable the workaround and accept its newly
 audited no-probe FPGA version; otherwise the compatibility guard fails closed.
+
+No-probe delivery candidate0x26102201 is now explicitly allowed alongside the
+accepted ABI3 FPGA0x26102101. Both retain the native SDI0xB00C006C register;
+the workaround does not access the removed diagnostic0xB1020000 aperture.
+Unknown IDs and non-SDIR identities still fail closed. Host tests cover both
+allowed identities and rejected unknown/cross-product identities. This adds
+compatibility for the new full-image candidate, not new hardware acceptance.

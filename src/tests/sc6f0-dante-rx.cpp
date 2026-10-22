@@ -2772,7 +2772,7 @@ namespace __sc6f0_dante_rx__ {
 		if (f) { if (!fgets(version, sizeof(version), f)) version[0] = 0; fclose(f); }
 		f = fopen("/proc/device-tree/vp_boot/product", "r");
 		if (f) { const size_t n = fread(product, 1, sizeof(product) - 1, f); product[n] = 0; fclose(f); }
-		if (strncmp(version, "0x26102101 SDIR", 15) ||
+		if (!sc6f0_sdi_resync::known_fpga(version) ||
 		    strncmp(product, "SC6F0 SDI Dante RX", 18)) {
 			LOGE("[SDI RESYNC] unsupported FPGA/product; watchdog disabled");
 			return;
