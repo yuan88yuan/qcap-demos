@@ -1,0 +1,323 @@
+#!/usr/bin/env python3
+"""
+SC6F0 Pushbutton Linux Usermode Driver & API
+Provides hardware-independent event monitoring and state polling for
+SC6F0 onboard buttons (SW0 ~ SW4 / BTN_0 ~ BTN_4) via Linux evdev subsystem.
+"""
+
+import os
+import sys
+import time
+import glob
+import fcntl
+import array
+import struct
+import select
+import argparse
+from typing import Optional, Dict, Callable, Tuple
+
+# Linux Input Subsystem constants
+EV_SYN = 0x00
+EV_KEY = 0x01
+EV_REP = 0x14
+
+BTN_MAP = {
+    0x100: "sw0",
+    0x101: "sw1",
+    0x102: "sw2",
+    0x103: "sw3",
+    0x104: "sw4",
+}
+
+BTN_NAMES = {
+    "sw0": 0x100,
+    "sw1": 0x101,
+    "sw2": 0x102,
+    "sw3": 0x103,
+    "sw4": 0x104,
+}
+
+# 64-bit Linux struct input_event: timeval (16 bytes) + type (2) + code (2) + value (4) = 24 bytes
+EVENT_FORMAT = "qqHHi"
+EVENT_SIZE = struct.calcsize(EVENT_FORMAT)
+
+
+def _eviocgkey(length: int) -> int:
+    """Linux ioctl macro: EVIOCGKEY(len) = _IOC(_IOC_READ, 'E', 0x18, len)"""
+    return 2 << 30 | length << 16 | ord("E") << 8 | 0x18
+
+
+def find_gpio_keys_device() -> Optional[str]:
+    """Auto-detect the /dev/input/event* device corresponding to 'gpio-keys'."""
+    # Check sysfs devices
+    for p in sorted(glob.glob("/sys/class/input/event*")):
+        name_path = os.path.join(p, "device", "name")
+        if os.path.isfile(name_path):
+            try:
+                with open(name_path, "r") as f:
+                    name = f.read().strip()
+                if "gpio-keys" in name:
+                    dev_name = os.path.basename(p)
+                    dev_path = os.path.join("/dev/input", dev_name)
+                    if os.path.exists(dev_path):
+                        return dev_path
+            except (OSError, IOError):
+                continue
+    # Fallback default
+    if os.path.exists("/dev/input/event0"):
+        return "/dev/input/event0"
+    return None
+
+
+class ButtonEvent:
+    def __init__(self, code: int, name: str, value: int, timestamp: float):
+        self.code = code
+        self.name = name
+        self.value = value  # 1 = Pressed, 0 = Released, 2 = Repeat
+        self.timestamp = timestamp
+
+    @property
+    def is_press(self) -> bool:
+        return self.value == 1
+
+    @property
+    def is_release(self) -> bool:
+        return self.value == 0
+
+    @property
+    def is_repeat(self) -> bool:
+        return self.value == 2
+
+    def __repr__(self) -> str:
+        action = "PRESSED" if self.is_press else ("RELEASED" if self.is_release else "REPEAT")
+        return f"<ButtonEvent name={self.name} code=0x{self.code:03x} action={action} ts={self.timestamp:.3f}>"
+
+
+class SC6F0ButtonMonitor:
+    """Usermode API for SC6F0 onboard buttons."""
+
+    def __init__(self, device_path: Optional[str] = None):
+        if device_path is None:
+            detected = find_gpio_keys_device()
+            if not detected:
+                raise FileNotFoundError("Could not locate gpio-keys /dev/input device")
+            self.device_path = detected
+        else:
+            self.device_path = device_path
+
+        self._fd: Optional[int] = None
+        self._press_timestamps: Dict[str, float] = {}
+
+    def open(self):
+        if self._fd is None:
+            self._fd = os.open(self.device_path, os.O_RDONLY | os.O_NONBLOCK)
+
+    def close(self):
+        if self._fd is not None:
+            os.close(self._fd)
+            self._fd = None
+
+    def __enter__(self):
+        self.open()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+    def get_instantaneous_states(self) -> Dict[str, bool]:
+        """
+        Query current button press states using EVIOCGKEY ioctl without waiting for events.
+        Returns dict: {'sw0': True/False, 'sw1': True/False, ...} where True = Pressed.
+        """
+        was_opened = self._fd is not None
+        if not was_opened:
+            self.open()
+
+        buf = array.array("B", [0] * 64)
+        try:
+            fcntl.ioctl(self._fd, _eviocgkey(len(buf)), buf)
+        finally:
+            if not was_opened:
+                self.close()
+
+        states = {}
+        for code, name in BTN_MAP.items():
+            byte_idx = code // 8
+            bit_idx = code % 8
+            states[name] = bool(buf[byte_idx] & (1 << bit_idx))
+        return states
+
+    def read_event(self, timeout: Optional[float] = None) -> Optional[ButtonEvent]:
+        """
+        Read the next button event. Returns None on timeout.
+        """
+        if self._fd is None:
+            self.open()
+
+        r, _, _ = select.select([self._fd], [], [], timeout)
+        if not r:
+            return None
+
+        while True:
+            try:
+                raw = os.read(self._fd, EVENT_SIZE)
+            except BlockingIOError:
+                return None
+
+            if len(raw) < EVENT_SIZE:
+                return None
+
+            tv_sec, tv_usec, ev_type, ev_code, ev_value = struct.unpack(EVENT_FORMAT, raw)
+            if ev_type == EV_KEY and ev_code in BTN_MAP:
+                ts = tv_sec + (tv_usec / 1e6)
+                name = BTN_MAP[ev_code]
+                return ButtonEvent(ev_code, name, ev_value, ts)
+
+    def monitor(
+        self,
+        on_press: Optional[Callable[[str, float], None]] = None,
+        on_release: Optional[Callable[[str, float, float], None]] = None,
+        timeout: Optional[float] = None,
+    ):
+        """
+        Continuously listen for events and dispatch callbacks.
+        - on_press(name, ts)
+        - on_release(name, hold_duration_sec, ts)
+        """
+        start_time = time.monotonic()
+        while True:
+            remaining = None
+            if timeout is not None:
+                elapsed = time.monotonic() - start_time
+                remaining = max(0.0, timeout - elapsed)
+                if remaining <= 0:
+                    break
+
+            ev = self.read_event(timeout=remaining)
+            if ev is None:
+                if timeout is not None:
+                    break
+                continue
+
+            if ev.is_press:
+                self._press_timestamps[ev.name] = ev.timestamp
+                if on_press:
+                    on_press(ev.name, ev.timestamp)
+            elif ev.is_release:
+                press_ts = self._press_timestamps.pop(ev.name, ev.timestamp)
+                hold_sec = max(0.0, ev.timestamp - press_ts)
+                if on_release:
+                    on_release(ev.name, hold_sec, ev.timestamp)
+
+
+# ---------------------------------------------------------------------------
+# CLI Command Implementations
+# ---------------------------------------------------------------------------
+
+def cmd_status(args):
+    """Print current instantaneous button states."""
+    try:
+        with SC6F0ButtonMonitor(args.device) as monitor:
+            states = monitor.get_instantaneous_states()
+    except Exception as e:
+        print(f"Error querying button status: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    print("=== SC6F0 Onboard Button Status ===")
+    print(f"Device: {args.device or find_gpio_keys_device()}")
+    print("-" * 45)
+    print(f"{'Button':<8} {'Key Code':<12} {'Linux Name':<12} {'State':<10}")
+    print("-" * 45)
+    for name, code in BTN_NAMES.items():
+        is_pressed = states.get(name, False)
+        state_str = "\033[1;32mPRESSED\033[0m" if is_pressed else "RELEASED"
+        print(f"{name.upper():<8} 0x{code:03x} ({code:<4}) {'BTN_' + name[-1]:<12} {state_str}")
+    print("-" * 45)
+
+
+def cmd_monitor(args):
+    """Monitor live button press/release events."""
+    dev = args.device or find_gpio_keys_device()
+    print(f"Listening on {dev} (timeout: {args.timeout or 'infinite'}s)... Press Ctrl+C to stop.")
+
+    def on_press(btn: str, ts: float):
+        t_str = time.strftime("%H:%M:%S", time.localtime(ts))
+        ms = int((ts % 1) * 1000)
+        code = BTN_NAMES[btn]
+        print(f"[{t_str}.{ms:03d}] \033[1;32m[PRESS]\033[0m   {btn.upper()} (BTN_{btn[-1]}, 0x{code:03x})")
+
+    def on_release(btn: str, hold_sec: float, ts: float):
+        t_str = time.strftime("%H:%M:%S", time.localtime(ts))
+        ms = int((ts % 1) * 1000)
+        code = BTN_NAMES[btn]
+        print(f"[{t_str}.{ms:03d}] \033[1;34m[RELEASE]\033[0m {btn.upper()} (BTN_{btn[-1]}, 0x{code:03x}) held {hold_sec*1000:.1f}ms")
+
+    try:
+        with SC6F0ButtonMonitor(args.device) as monitor:
+            monitor.monitor(on_press=on_press, on_release=on_release, timeout=args.timeout)
+    except KeyboardInterrupt:
+        print("\nMonitoring stopped.")
+
+
+def cmd_wait(args):
+    """Wait for a specific button press."""
+    target = args.button.lower()
+    if target != "any" and target not in BTN_NAMES:
+        print(f"Error: Unknown button '{target}'. Valid buttons: sw0, sw1, sw2, sw3, sw4, any", file=sys.stderr)
+        sys.exit(2)
+
+    dev = args.device or find_gpio_keys_device()
+    if target == "any":
+        print(f"Waiting for ANY button press on {dev} (timeout: {args.timeout or 'infinite'}s)...")
+    else:
+        print(f"Waiting for {target.upper()} press on {dev} (timeout: {args.timeout or 'infinite'}s)...")
+
+    start = time.monotonic()
+    with SC6F0ButtonMonitor(args.device) as monitor:
+        while True:
+            remaining = None
+            if args.timeout is not None:
+                elapsed = time.monotonic() - start
+                remaining = max(0.0, args.timeout - elapsed)
+                if remaining <= 0:
+                    print(f"Timeout: button was not pressed within {args.timeout}s.", file=sys.stderr)
+                    sys.exit(1)
+
+            ev = monitor.read_event(timeout=remaining)
+            if ev and ev.is_press:
+                if target == "any" or ev.name == target:
+                    print(f"Detected press: {ev.name.upper()} (BTN_{ev.name[-1]})")
+                    sys.exit(0)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="SC6F0 Pushbutton Linux API & CLI Utility")
+    parser.add_argument("--device", "-d", default=None, help="Input device path (default: auto-detect)")
+
+    subparsers = parser.add_subparsers(dest="command", help="Command to execute")
+
+    # status
+    p_status = subparsers.add_parser("status", help="Query instantaneous button states")
+    p_status.set_defaults(func=cmd_status)
+
+    # monitor
+    p_monitor = subparsers.add_parser("monitor", help="Continuously monitor press/release events")
+    p_monitor.add_argument("--timeout", "-t", type=float, default=None, help="Timeout in seconds")
+    p_monitor.set_defaults(func=cmd_monitor)
+
+    # wait
+    p_wait = subparsers.add_parser("wait", help="Wait for a specific button press")
+    p_wait.add_argument("button", help="Button to wait for: sw0, sw1, sw2, sw3, sw4, or any")
+    p_wait.add_argument("--timeout", "-t", type=float, default=None, help="Timeout in seconds")
+    p_wait.set_defaults(func=cmd_wait)
+
+    args = parser.parse_args()
+    if not args.command:
+        parser.print_help()
+        sys.exit(0)
+
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()
