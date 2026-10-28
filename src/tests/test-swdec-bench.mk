@@ -1,12 +1,18 @@
 ################## test-swdec-bench ##################
+NVDEC_CLASS_DIR=/usr/src/jetson_multimedia_api/samples/common/classes
+
+# The NVDEC helper classes are external sources supplied by the target platform
+# (Jetson Multimedia API). Skip the whole module when the tree is unavailable so
+# the module does not register an unbuildable target; mirrors the gate in
+# cmake/QcapTargets.cmake.
+ifneq ($(wildcard $(NVDEC_CLASS_DIR)/NvVideoDecoder.cpp),)
+
 $(call decl_mod,TEST_SWDEC_BENCH)
 $(call add_flags_mod,TEST_SWDEC_BENCH)
 $(call add_mods,TEST_SWDEC_BENCH,ZZLAB QCAP)
 
 TEST_SWDEC_BENCH_E=test-swdec-bench
 TESTS+=$${TEST_SWDEC_BENCH_e}
-
-NVDEC_CLASS_DIR=/usr/src/jetson_multimedia_api/samples/common/classes
 
 TEST_SWDEC_BENCH_SRCS+=\
 tests/test-swdec-bench.cpp
@@ -65,3 +71,9 @@ $(D)/nvdec_classes/%.o: $(NVDEC_CLASS_DIR)/%.cpp
 
 # Make the executable depend on NVDEC class objects
 $(D)/bin/$(TEST_SWDEC_BENCH_E): $(NVDEC_CLASS_OBJS)
+
+else # $(NVDEC_CLASS_DIR) unavailable
+
+$(info [TEST_SWDEC_BENCH] Skipping target: $(NVDEC_CLASS_DIR) is unavailable on $(PLATFORM))
+
+endif # Jetson Multimedia API availability

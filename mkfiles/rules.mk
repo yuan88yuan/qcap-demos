@@ -15,6 +15,12 @@ $(info GIT_COMMIT_HASH=${GIT_COMMIT_HASH})
 $(info GIT_BRANCH_NAME=${GIT_BRANCH_NAME})
 $(info DOCKER_HOME=${DOCKER_HOME})
 
+# Pin the default goal to the documented utilities build. Without this, make
+# falls back to the first explicit rule text it reads (currently a module
+# dependency line), which silently changes whenever a module .mk is reordered
+# or skipped.
+.DEFAULT_GOAL := all
+
 # modules
 include mkfiles/flags.mk
 include mkfiles/mods.mk
