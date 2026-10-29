@@ -17,7 +17,8 @@ constexpr unsigned kMaxAttempts = 3;
 inline bool known_fpga(const char* version) {
 	// Native SDI register layout retained when diagnostic ABI3 taps are removed.
 	return version && (!strncmp(version, "0x26102101 SDIR", 15) ||
-	                   !strncmp(version, "0x26102201 SDIR", 15));
+	                   !strncmp(version, "0x26102201 SDIR", 15) ||
+	                   !strncmp(version, "0x26102701 SDIR", 15));
 }
 
 inline bool has_suspect_alignment_history(uint32_t status) {

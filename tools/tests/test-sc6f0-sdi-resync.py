@@ -14,6 +14,7 @@ using sc6f0_sdi_resync::Policy;
 int main() {
     assert(sc6f0_sdi_resync::known_fpga("0x26102101 SDIR 0x00000100"));
     assert(sc6f0_sdi_resync::known_fpga("0x26102201 SDIR 0x00000100"));
+    assert(sc6f0_sdi_resync::known_fpga("0x26102701 SDIR 0x00000100"));
     assert(!sc6f0_sdi_resync::known_fpga("0x26102201 DNTX"));
     assert(!sc6f0_sdi_resync::known_fpga("0x26102202 SDIR"));
     assert(!sc6f0_sdi_resync::known_fpga(nullptr));
